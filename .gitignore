@@ -1,0 +1,40 @@
+# Dependencies
+node_modules/
+
+# API keys and secrets (NEVER commit)
+pipeline/apikey.txt
+pipeline/aqua_apikey.txt
+pipeline/omkar-key.txt
+pipeline/trendsmcp-key.txt
+*.key.txt
+*apikey*
+
+# Generated content (large, regeneratable)
+frames/backup_*/
+frames/*.png
+frames/*.mp4
+frames/*.jpg
+video/*.mp4
+video/*.png
+
+# Generated JSON state (regeneratable from pipeline)
+storyboard/characters.json
+storyboard/frames.json
+storyboard/influencers.json
+foxy-shots/
+foxy-results.txt
+continue_full.log
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log

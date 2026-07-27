@@ -1,0 +1,218 @@
+[
+  {
+    "id": "grwm-morning",
+    "title": "Get Ready With Me",
+    "category": "lifestyle",
+    "icon": "💄",
+    "scene_prompt": "Candid smartphone photo of a woman doing her morning makeup routine at a vanity mirror, soft natural bathroom light from a window, beauty products and brushes scattered on the counter, she's looking at the mirror applying lipstick, wearing a cozy robe, warm aesthetic morning vibes, shot on iPhone, photorealistic, vertical composition",
+    "animation_prompt": "She reaches for a makeup brush, dabs it gently, and applies it to her cheek while glancing at the mirror; soft natural morning light, gentle handheld phone movement",
+    "caption": "morning routine ✨ get ready with me #grwm #morningroutine #aesthetic"
+  },
+  {
+    "id": "ootd-mirror",
+    "title": "Outfit of the Day",
+    "category": "fashion",
+    "icon": "👗",
+    "scene_prompt": "Candid mirror selfie of a woman in a stylish outfit, standing in a clean minimalist bedroom, full body visible in mirror, holding phone up to take the photo, soft daylight from a window, wearing trendy streetwear, confident pose, realistic iPhone selfie quality, vertical composition",
+    "animation_prompt": "She adjusts her jacket, does a small turn to show the outfit, then smiles at the mirror; casual natural movement, slight phone sway",
+    "caption": "outfit check 🔥 what do we think? #ootd #outfitinspo #fashiongram"
+  },
+  {
+    "id": "morning-coffee",
+    "title": "Morning Coffee",
+    "category": "lifestyle",
+    "icon": "☕",
+    "scene_prompt": "Candid smartphone photo of a woman sitting at a cozy cafe table near a window, holding a latte with foam art, warm golden morning light streaming through the window, aesthetic cafe interior with plants, she's looking down at the coffee with a soft smile, wearing a knit sweater, candid real-life influencer vibe, photorealistic phone photography, vertical composition",
+    "animation_prompt": "She lifts the coffee cup to her lips, takes a slow sip, sets it down and looks out the window with a content smile; gentle handheld sway, warm cafe lighting",
+    "caption": "slow mornings ☕ the best kind of day #coffeelover #cafestyle #slowliving"
+  },
+  {
+    "id": "golden-hour-walk",
+    "title": "Golden Hour Walk",
+    "category": "travel",
+    "icon": "🌅",
+    "scene_prompt": "Candid photo of a woman walking down a tree-lined city street during golden hour sunset, warm orange light backlighting her hair, long shadows on the pavement, she's mid-stride looking ahead confidently, wearing a flowy dress, wind gently moving her hair, candid street-style photography, photorealistic, vertical composition",
+    "animation_prompt": "She walks forward slowly, her hair and dress flowing in the breeze, golden light catching her face; smooth tracking movement following her, warm sunset glow",
+    "caption": "golden hour hits different 🌅 #goldenhour #sunsetwalk #aesthetic"
+  },
+  {
+    "id": "gym-selfie",
+    "title": "Gym Mirror Selfie",
+    "category": "fitness",
+    "icon": "💪",
+    "scene_prompt": "Candid mirror selfie of a woman in workout clothes at a modern gym, holding phone to take photo in the gym mirror, wearing athletic leggings and sports bra, gym equipment visible in background, bright gym lighting, confident post-workout pose, realistic smartphone selfie quality, vertical composition",
+    "animation_prompt": "She wipes sweat from her forehead, flexes slightly, and gives a confident smirk at the mirror; natural gym ambient movement, slight phone shake",
+    "caption": "post workout glow 💪 #gymlife #fitnessmotivation #workout"
+  },
+  {
+    "id": "cafe-work",
+    "title": "Café Work Session",
+    "category": "productivity",
+    "icon": "💻",
+    "scene_prompt": "Candid photo of a woman working on a laptop in an aesthetic cafe, warm ambient lighting, coffee cup and notebook on the table, she's focused on the screen with natural concentration, wearing a casual stylish outfit, plants and wooden decor in background, cozy productivity vibe, photorealistic candid photography, vertical composition",
+    "animation_prompt": "She types on the laptop, pauses to take a sip of coffee, then continues typing with a thoughtful expression; natural subtle movement, warm cafe ambient light",
+    "caption": "emails & matcha 📝 work from your favorite spot #cafework #digitalnomad #aesthetic"
+  },
+  {
+    "id": "cooking-kitchen",
+    "title": "Cozy Cooking",
+    "category": "food",
+    "icon": "🍳",
+    "scene_prompt": "Candid photo of a woman cooking in a bright modern kitchen, smiling at the camera while stirring something in a pan, wearing an apron over casual clothes, fresh vegetables on the counter, warm kitchen lighting, steam rising from the pan, homey authentic cooking moment, photorealistic, vertical composition",
+    "animation_prompt": "She stirs the pan, looks at the camera and smiles, then tastes from a spoon; natural cooking motion, warm kitchen light, slight steam visible",
+    "caption": "Sunday cooking ☀️ what are you making? #homecooking #foodie #cozyvibes"
+  },
+  {
+    "id": "skincare-routine",
+    "title": "Skincare Routine",
+    "category": "beauty",
+    "icon": "🧴",
+    "scene_prompt": "Candid close-up photo of a woman applying skincare products in a bright bathroom, holding a skincare bottle, soft natural daylight, clean white bathroom aesthetic, she's pressing serum into her skin with fingertips, fresh-faced with no makeup, dewy glowing skin, intimate beauty influencer photography, photorealistic, vertical composition",
+    "animation_prompt": "She dispenses serum onto her fingertips, presses it gently into her cheeks, then looks at the camera with a soft smile; close-up beauty shot, soft lighting",
+    "caption": "glass skin starts here ✨ #skincareroutine #glowingskin #beautytips"
+  },
+  {
+    "id": "beach-day",
+    "title": "Beach Day",
+    "category": "travel",
+    "icon": "🏖️",
+    "scene_prompt": "Candid photo of a woman at a beautiful beach on a sunny day, standing at the shoreline with waves gently lapping at her feet, wearing a stylish swimsuit and sarong, wind in her hair, bright blue sky and ocean, she's looking at the horizon with a peaceful expression, vacation vibe, photorealistic, vertical composition",
+    "animation_prompt": "She walks along the shoreline, waves washing over her feet, she looks out at the ocean and smiles; natural beach movement, bright sunlight, gentle breeze",
+    "caption": "ocean therapy 🌊 where to next? #beachday #oceanlover #vacationmode"
+  },
+  {
+    "id": "rooftop-sunset",
+    "title": "Rooftop Sunset",
+    "category": "lifestyle",
+    "icon": "🌇",
+    "scene_prompt": "Candid photo of a woman on a city rooftop at sunset, leaning on a railing with a city skyline behind her, golden and pink sky, wearing an elegant evening outfit, she's looking at the view with a serene expression, wind in her hair, high-end influencer aesthetic, photorealistic, vertical composition",
+    "animation_prompt": "She leans on the railing, her hair blows gently in the wind, she turns to look at the camera with a peaceful smile as the sun sets behind her; cinematic golden light",
+    "caption": "city lights & sunsets 🌇 #rooftop #sunsetlover #citylife"
+  },
+  {
+    "id": "lazy-morning-bed",
+    "title": "Lazy Morning",
+    "category": "lifestyle",
+    "icon": "🛏️",
+    "scene_prompt": "Candid photo of a woman relaxing in bed in the morning, wrapped in white bedsheets, soft natural window light, she's propped up on pillows looking at her phone with a relaxed smile, wearing an oversized t-shirt, cozy authentic morning vibe, messy hair, photorealistic, vertical composition",
+    "animation_prompt": "She stretches languidly under the covers, picks up her phone, smiles at something on screen, then looks at the camera; soft morning light, cozy atmosphere",
+    "caption": "no plans today 🌙 stay in bed #cozymorning #slowliving #bedday"
+  },
+  {
+    "id": "street-style-walk",
+    "title": "Street Style Walk",
+    "category": "fashion",
+    "icon": "🚶",
+    "scene_prompt": "Candid photo of a woman walking confidently down a trendy urban street, stylish outfit with a long coat and boots, city storefronts and people in background, overcast soft natural light, she's mid-stride looking straight ahead, street-style fashion photography, photorealistic, vertical composition",
+    "animation_prompt": "She walks toward the camera with confidence, coat flowing behind her, slight smile; smooth tracking shot, urban background movement, overcast soft light",
+    "caption": "streets as my runway 🖤 #streetstyle #ootd #cityfashion"
+  },
+  {
+    "id": "shopping-haul",
+    "title": "Shopping Haul",
+    "category": "fashion",
+    "icon": "🛍️",
+    "scene_prompt": "Candid photo of a woman in a stylish boutique, holding up a dress against herself in front of a mirror, shopping bags at her feet, bright boutique lighting with warm tones, she's looking at the mirror with an excited expression, stylish outfit, shopping influencer vibe, photorealistic, vertical composition",
+    "animation_prompt": "She holds the dress up to her body, turns slightly examining it in the mirror, smiles excitedly at the camera; natural shopping movement, bright boutique light",
+    "caption": "found some gems today ✨ haul coming soon! #shoppinghaul #fashionfinds #retailtherapy"
+  },
+  {
+    "id": "yoga-garden",
+    "title": "Yoga in Garden",
+    "category": "fitness",
+    "icon": "🧘",
+    "scene_prompt": "Candid photo of a woman doing yoga on a mat in a lush green garden, mid-stretch pose with arms raised overhead, wearing athletic wear, soft morning light filtering through trees, peaceful natural setting with plants and flowers, serene expression, wellness influencer aesthetic, photorealistic, vertical composition",
+    "animation_prompt": "She flows through a yoga pose, stretching her arms overhead, breathing deeply, transitioning slowly to the next pose; peaceful natural movement, dappled garden light",
+    "caption": "finding my peace 🌿 morning flow #yogalife #wellness #mindfulness"
+  },
+  {
+    "id": "brunch-friends",
+    "title": "Brunch Date",
+    "category": "food",
+    "icon": "🥑",
+    "scene_prompt": "Candid photo of a woman at a trendy brunch restaurant, beautiful avocado toast and coffee on the table in front of her, she's about to take a bite with chopsticks, bright natural restaurant lighting, aesthetic food presentation, wearing a cute weekend outfit, food influencer photography, photorealistic, vertical composition",
+    "animation_prompt": "She picks up a fork, takes a bite of her food, sets it down and gives a delighted smile to the camera; natural dining movement, bright restaurant light",
+    "caption": "brunch is always a good idea 🥑 #brunchgoals #foodiegram #weekendvibes"
+  },
+  {
+    "id": "park-picnic",
+    "title": "Park Picnic",
+    "category": "lifestyle",
+    "icon": "🧺",
+    "scene_prompt": "Candid photo of a woman sitting on a picnic blanket in a green park, spread with fruits, bread and a basket, dappled sunlight through trees, she's holding a strawberry about to eat it, wearing a sundress, flowers in her hair, peaceful outdoor moment, photorealistic, vertical composition",
+    "animation_prompt": "She picks up a strawberry, brings it to her lips, smiles at the camera, then looks up at the sky; natural outdoor movement, dappled sunlight, gentle breeze",
+    "caption": "simple moments 🌸 park picnic days #picnic #parkday #slowliving"
+  },
+  {
+    "id": "car-selfie",
+    "title": "Car Selfie",
+    "category": "lifestyle",
+    "icon": "🚗",
+    "scene_prompt": "Candid car selfie photo of a woman sitting in the driver's seat, holding phone up at face level, parked car interior visible, soft daylight through the windshield, she's wearing sunglasses pushed up on her head, confident smile, casual everyday driving outfit, realistic smartphone selfie, photorealistic, vertical composition",
+    "animation_prompt": "She adjusts her sunglasses, fixes her hair, and gives a confident smile to the camera; natural car interior, soft outdoor light through windows",
+    "caption": "running errands but make it cute 😎 #carselfie #dailyvibes #errands"
+  },
+  {
+    "id": "reading-books",
+    "title": "Cozy Reading",
+    "category": "productivity",
+    "icon": "📖",
+    "scene_prompt": "Candid photo of a woman reading a book in a cozy window seat, soft natural light streaming in, wearing a chunky knit sweater, cup of tea beside her, warm cozy interior with bookshelves, she's focused on the book with a gentle expression, aesthetic reading nook, photorealistic, vertical composition",
+    "animation_prompt": "She turns a page, tucks hair behind her ear, looks up thoughtfully, then returns to reading; calm slow movement, warm cozy light",
+    "caption": "lost in a good book 📚 what should I read next? #booklovers #cozyvibes #readingnook"
+  },
+  {
+    "id": "night-out",
+    "title": "Night Out",
+    "category": "fashion",
+    "icon": "🌙",
+    "scene_prompt": "Candid photo of a woman on a city street at night, neon signs and city lights reflecting, she's wearing an elegant evening dress, standing under street lights with a glamorous confident pose, bokeh city lights in background, nighttime influencer aesthetic, photorealistic, vertical composition",
+    "animation_prompt": "She adjusts her dress, looks at the camera with a glamorous expression, city lights twinkle behind her; smooth slow movement, neon reflections",
+    "caption": "night out energy ✨ #nighout #citylights #eveningglamour"
+  },
+  {
+    "id": "baking-cookies",
+    "title": "Baking Cookies",
+    "category": "food",
+    "icon": "🍪",
+    "scene_prompt": "Candid photo of a woman baking cookies in a warm kitchen, dusting flour on a wooden surface, cookie dough cut into shapes, wearing a cute apron with flour on her cheek, warm kitchen lighting, cozy homemade baking aesthetic, she's looking at the camera with a playful smile, photorealistic, vertical composition",
+    "animation_prompt": "She rolls out dough, sprinkles flour, wipes some off her cheek and laughs at the camera; natural baking motion, warm kitchen light",
+    "caption": "baking Sunday 🍪 smell that? #baking #homemade #cozykitchen"
+  },
+  {
+    "id": "hair-flip",
+    "title": "Hair Flip",
+    "category": "beauty",
+    "icon": "💁",
+    "scene_prompt": "Candid beauty photo of a woman with gorgeous hair, mid hair-flip moment, hair catching the light as it moves, soft studio backdrop, she's looking at the camera with a confident expression, beauty editorial style, glossy healthy hair, photorealistic, vertical composition",
+    "animation_prompt": "She tosses her hair, it flows beautifully through the air, she smiles confidently at the camera; beauty commercial style slow motion, soft lighting",
+    "caption": "good hair day 💁 tag someone with great hair #hairflip #beauty #confidence"
+  },
+  {
+    "id": "balcony-plants",
+    "title": "Plant Care",
+    "category": "lifestyle",
+    "icon": "🪴",
+    "scene_prompt": "Candid photo of a woman watering plants on a sunny balcony, multiple potted plants around her, she's holding a watering can with a gentle smile, bright morning light, wearing a casual outfit, peaceful plant parent aesthetic, greenery everywhere, photorealistic, vertical composition",
+    "animation_prompt": "She lifts the watering can, waters the plants, brushes leaves gently with her fingers, and smiles contentedly; natural gentle movement, bright morning light",
+    "caption": "plant mom life 🪴 they're growing! #plantcare #plantmom #balconygarden"
+  },
+  {
+    "id": "sunset-balcony",
+    "title": "Sunset Balcony",
+    "category": "lifestyle",
+    "icon": "🌇",
+    "scene_prompt": "Candid photo of a woman leaning on a balcony railing watching a sunset, warm golden and pink sky, city below, she's holding a glass of wine, wearing a flowy summer dress, wind gently blowing her hair, peaceful end-of-day moment, photorealistic, vertical composition",
+    "animation_prompt": "She takes a sip of wine, leans back, looks at the sunset with a serene smile, hair blowing gently; slow peaceful movement, warm golden light",
+    "caption": "sunset sessions 🍷 these are the moments #sunset #balconyviews #eveningvibes"
+  },
+  {
+    "id": "outfit-transition",
+    "title": "Outfit Transition",
+    "category": "fashion",
+    "icon": "🔄",
+    "scene_prompt": "Candid photo of a woman striking a confident pose in a chic streetwear outfit, clean white studio background, full body visible, wearing trendy oversized jacket, cargo pants and sneakers, fashion editorial street style, dynamic confident pose, photorealistic, vertical composition",
+    "animation_prompt": "She does a quick spin, the jacket flows, she lands in a confident pose and smiles at the camera; dynamic fashion transition movement, clean studio light",
+    "caption": "transition game 🔥 rate the fit! #outfittransition #streetstyle #fashion"
+  }
+]

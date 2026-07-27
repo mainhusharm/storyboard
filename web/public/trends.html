@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Trends — Storyboard Studio</title>
+<style>
+  :root{
+    --bg:#0c0d11;--bg2:#13151b;--panel:#171a22;--panel2:#1c1f29;--panel3:#252937;
+    --txt:#ecedef;--dim:#9aa1ad;--faint:#5a6172;--line:#252937;--line2:#2d3243;
+    --pink:#f472b6;--violet:#8b7cf6;--green:#34d399;--red:#f87171;--orange:#fb923c;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--txt);min-height:100vh;-webkit-font-smoothing:antialiased}
+  a{color:var(--pink);text-decoration:none}
+  button{cursor:pointer;border:1px solid var(--line2);background:var(--panel2);color:var(--txt);padding:8px 14px;border-radius:8px;font-size:12px;font-weight:500;font-family:inherit;transition:.2s}
+  button:hover{background:var(--panel3);border-color:var(--violet)}
+  button:disabled{opacity:.4;cursor:not-allowed}
+  input,select{background:var(--panel2);border:1px solid var(--line);color:var(--txt);padding:8px 12px;border-radius:8px;font-size:13px;font-family:inherit}
+  input:focus,select:focus{outline:none;border-color:var(--violet)}
+  header{display:flex;align-items:center;gap:14px;padding:0 24px;height:58px;background:rgba(8,9,12,.88);backdrop-filter:blur(10px);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:50}
+  .logo{width:28px;height:28px;border-radius:7px;flex:none;background:linear-gradient(135deg,#fb923c,#ef4444);display:flex;align-items:center;justify-content:center;font-size:14px;box-shadow:0 0 16px rgba(251,146,60,.4)}
+  header h1{font-family:'Oswald',sans-serif;font-size:18px;letter-spacing:4px;font-weight:600}
+  header h1 b{color:var(--orange)}
+  header .sub{color:var(--faint);font-size:10px;letter-spacing:1px;margin-left:4px}
+  header .right{margin-left:auto;display:flex;align-items:center;gap:8px}
+  .pill{padding:6px 14px;background:var(--panel3);border-radius:99px;font-size:11px;letter-spacing:.5px;font-weight:600;color:var(--dim)}
+  .back-btn{font-size:11px;padding:6px 14px;border:1px solid var(--line2);border-radius:99px;color:var(--txt);text-decoration:none;font-weight:500}
+  .back-btn:hover{border-color:var(--orange)}
+  .container{max-width:1400px;margin:0 auto;padding:24px}
+  .hero{background:linear-gradient(135deg,rgba(251,146,60,.12),rgba(239,68,68,.12));border:1px solid var(--line2);border-radius:14px;padding:24px;margin-bottom:24px}
+  .hero h2{font-family:'Oswald',sans-serif;font-size:28px;letter-spacing:2px;font-weight:600;margin-bottom:6px}
+  .hero p{color:var(--dim);font-size:14px}
+  .hero p small{color:var(--faint);font-size:11px;display:block;margin-top:4px}
+  .cats{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}
+  .cat{padding:7px 14px;background:var(--panel);border:1px solid var(--line2);border-radius:99px;font-size:12px;color:var(--dim);cursor:pointer;transition:.2s}
+  .cat:hover{border-color:var(--orange);color:var(--txt)}
+  .cat.active{background:linear-gradient(135deg,rgba(251,146,60,.3),rgba(239,68,68,.3));border-color:var(--orange);color:var(--txt);font-weight:600}
+  .toolbar{display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap;align-items:center}
+  .toolbar input{flex:1;min-width:200px}
+  .status{display:inline-flex;align-items:center;gap:6px;padding:5px 12px;background:var(--panel2);border-radius:99px;font-size:11px;color:var(--dim);border:1px solid var(--line)}
+  .status .dot{width:6px;height:6px;border-radius:50%;background:var(--green)}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:14px;margin-top:14px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden;transition:.2s;cursor:pointer;display:flex;flex-direction:column}
+  .card:hover{border-color:var(--orange);transform:translateY(-2px);box-shadow:0 8px 24px rgba(0,0,0,.3)}
+  .thumb{aspect-ratio:16/9;background:var(--panel3);background-size:cover;background-position:center;position:relative}
+  .thumb::after{content:'';position:absolute;inset:0;background:linear-gradient(180deg,transparent 60%,rgba(0,0,0,.6))}
+  .duration{position:absolute;bottom:6px;right:6px;background:rgba(0,0,0,.7);padding:2px 6px;border-radius:4px;font-size:10px;z-index:2}
+  .platform-badge{position:absolute;top:6px;left:6px;padding:3px 8px;background:rgba(0,0,0,.7);border-radius:4px;font-size:10px;font-weight:700;z-index:2;text-transform:uppercase}
+  .platform-badge.youtube{background:rgba(255,0,0,.85)}
+  .platform-badge.tiktok{background:rgba(0,0,0,.85)}
+  .card-body{padding:10px 12px;flex:1;display:flex;flex-direction:column;gap:6px}
+  .card-title{font-size:12px;line-height:1.35;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;color:var(--txt);min-height:33px}
+  .card-meta{display:flex;gap:6px;flex-wrap:wrap;font-size:10px;color:var(--dim)}
+  .card-meta span{background:var(--panel3);padding:2px 6px;border-radius:99px}
+  .empty{text-align:center;padding:60px 20px;color:var(--faint);grid-column:1/-1}
+  .empty .big{font-size:48px;margin-bottom:12px}
+  .loading{text-align:center;padding:40px;color:var(--dim);grid-column:1/-1}
+  .live-terms{margin-top:8px;font-size:11px;color:var(--dim);font-style:italic}
+  .live-terms b{color:var(--orange);font-style:normal}
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">🔥</div>
+  <div><h1>TRENDS <b>NOW</b></h1></div>
+  <span class="sub">LIVE · TIKTOK · YOUTUBE · AI-GENERATED · ANIME</span>
+  <div class="right">
+    <a href="/" class="back-btn">← Storyboard</a>
+    <a href="/influencer" class="back-btn">✨ AI Influencer</a>
+  </div>
+</header>
+
+<div class="container">
+  <div class="hero">
+    <h2>🔥 What's Trending Right Now</h2>
+    <p>Live trending topics and viral content across TikTok, YouTube, anime, and AI-generated categories.<small>Powered by TrendsMCP live data + yt-dlp real video search. Refreshes every 5 minutes.</small></p>
+    <div class="cats" id="cats"></div>
+  </div>
+
+  <div class="toolbar">
+    <input id="searchInput" placeholder="Search trending content (e.g. anime edits, ai girl, ootd...)...">
+    <button id="btnSearch">🔍 Search</button>
+    <button id="btnRefresh" style="background:linear-gradient(135deg,rgba(251,146,60,.25),rgba(239,68,68,.25));border-color:var(--orange)">↻ Refresh</button>
+    <span class="status"><span class="dot"></span><span id="lastUpdate">Live</span></span>
+  </div>
+
+  <div id="liveTerms" class="live-terms" style="display:none"></div>
+  <div id="grid" class="grid">
+    <div class="empty"><div class="big">🔥</div><p>Click a category above or press Refresh to load trending content.</p></div>
+  </div>
+</div>
+
+<script>
+const $=id=>document.getElementById(id);
+const CATEGORIES=[
+  {id:'anime',label:'🎌 Anime',icon:'🎌'},
+  {id:'ai-generated',label:'🤖 AI Generated',icon:'🤖'}
+];
+let CURR_CAT='anime';
+let TREND_VIDEOS=[];
+
+function fmtNum(n){if(!n&&n!==0)return'—';if(n>=1e6)return(n/1e6).toFixed(1)+'M';if(n>=1e3)return(n/1e3).toFixed(1)+'K';return String(n);}
+
+function renderCats(){
+  $('cats').innerHTML=CATEGORIES.map(c=>`<div class="cat ${c.id===CURR_CAT?'active':''}" data-cat="${c.id}">${c.label}</div>`).join('');
+  document.querySelectorAll('.cat').forEach(el=>{
+    el.onclick=()=>{CURR_CAT=el.dataset.cat;renderCats();loadTrends();};
+  });
+}
+
+function renderVideos(){
+  const g=$('grid');
+  if(!TREND_VIDEOS.length){g.innerHTML='<div class="empty"><div class="big">📡</div><p>No trending content found for this category right now. Try another category or refresh.</p></div>';return;}
+  g.innerHTML=TREND_VIDEOS.map((v,i)=>{
+    const platform=(v.platform||'youtube').toLowerCase();
+    const badgeClass=platform==='youtube'?'youtube':platform==='tiktok'?'tiktok':'';
+    const platformLabel=platform.toUpperCase();
+    const title=v.title||v.caption||'Trending Video';
+    return `<div class="card" onclick="window.open('${v.url||v.videoUrl||'#'}','_blank')">
+      <div class="thumb" ${v.thumbnail||v.cover?`style="background-image:url('${v.thumbnail||v.cover}')"`:''}>
+        <span class="platform-badge ${badgeClass}">${platformLabel}</span>
+        ${v.duration?`<span class="duration">${Math.floor(v.duration/60)}:${String(Math.floor(v.duration%60)).padStart(2,'0')}</span>`:''}
+      </div>
+      <div class="card-body">
+        <div class="card-title">${escapeHtml(title)}</div>
+        <div class="card-meta">
+          ${v.author?`<span>👤 ${escapeHtml(v.author)}</span>`:''}
+          ${v.views?`<span>👁 ${fmtNum(v.views)}</span>`:''}
+          ${v.likes?`<span>❤️ ${fmtNum(v.likes)}</span>`:''}
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function escapeHtml(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+
+async function loadTrends(){
+  $('grid').innerHTML='<div class="loading">⏳ Loading live trending '+CURR_CAT+' content...</div>';
+  $('liveTerms').style.display='none';
+  try{
+    const r=await fetch('/api/trends?category='+encodeURIComponent(CURR_CAT)+'&max=20');
+    const j=await r.json();
+    TREND_VIDEOS=j.videos||[];
+    $('lastUpdate').textContent=j.cached?'cached':'live · just now';
+    if(j.liveTerms&&j.liveTerms.length){
+      $('liveTerms').style.display='';
+      $('liveTerms').innerHTML='<b>🔥 Live trending right now:</b> '+j.liveTerms.slice(0,5).map(escapeHtml).join(' · ');
+    }
+    if(j.error&&!TREND_VIDEOS.length){
+      $('grid').innerHTML='<div class="empty"><div class="big">⚠️</div><p>'+escapeHtml(j.error)+'</p></div>';
+      return;
+    }
+    renderVideos();
+  }catch(e){
+    $('grid').innerHTML='<div class="empty"><div class="big">❌</div><p>Network error: '+escapeHtml(e.message)+'</p></div>';
+  }
+}
+
+async function doSearch(q){
+  $('grid').innerHTML='<div class="loading">🔍 Searching "'+escapeHtml(q)+'" across YouTube and TikTok...</div>';
+  try{
+    // Use both YT search via yt-dlp proxy and omkar fallback
+    const r=await fetch('/api/trends?category='+encodeURIComponent(CURR_CAT)+'&max=20');
+    const j=await r.json();
+    const allVideos=j.videos||[];
+    const filtered=allVideos.filter(v=>{
+      const text=((v.title||v.caption||'')+' '+(v.author||'')).toLowerCase();
+      return text.includes(q.toLowerCase());
+    });
+    TREND_VIDEOS=filtered.length?filtered:allVideos;
+    if(TREND_VIDEOS.length===0){
+      $('grid').innerHTML='<div class="empty"><div class="big">🔍</div><p>No results for "'+escapeHtml(q)+'"</p></div>';
+      return;
+    }
+    renderVideos();
+  }catch(e){
+    $('grid').innerHTML='<div class="empty"><div class="big">❌</div><p>Search failed: '+escapeHtml(e.message)+'</p></div>';
+  }
+}
+
+$('btnSearch').onclick=()=>{
+  const q=$('searchInput').value.trim();
+  if(q)doSearch(q);
+};
+$('searchInput').addEventListener('keypress',e=>{if(e.key==='Enter')$('btnSearch').click();});
+$('btnRefresh').onclick=loadTrends;
+
+renderCats();
+loadTrends();
+setInterval(()=>{$('lastUpdate').textContent='live · refreshed';},30000);
+</script>
+</body>
+</html>

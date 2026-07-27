@@ -1,0 +1,848 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI Influencer Studio</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Oswald:wght@500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg:#08090c;--bg2:#0d0f14;--panel:#11141b;--panel2:#161a23;--panel3:#1c2130;
+    --line:#222836;--line2:#2e3650;
+    --txt:#eef1f6;--dim:#8a94a8;--faint:#556074;
+    --amber:#f0a32e;--amber2:#ffc45e;--teal:#2dd4bf;--red:#f87171;--violet:#8b7cf6;--pink:#f472b6;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  ::-webkit-scrollbar{width:8px}::-webkit-scrollbar-track{background:var(--bg2)}::-webkit-scrollbar-thumb{background:var(--line2);border-radius:4px}
+  body{background:var(--bg);color:var(--txt);font:14px/1.55 Inter,system-ui,sans-serif;
+    background-image:radial-gradient(900px 400px at 85% -10%,rgba(244,114,182,.07),transparent 60%),radial-gradient(700px 500px at -10% 110%,rgba(139,124,246,.06),transparent 60%);min-height:100vh}
+
+  header{display:flex;align-items:center;gap:14px;padding:0 24px;height:58px;background:rgba(8,9,12,.88);backdrop-filter:blur(10px);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:50}
+  .logo{width:28px;height:28px;border-radius:7px;flex:none;background:linear-gradient(135deg,var(--pink),var(--violet));display:flex;align-items:center;justify-content:center;font-size:14px;box-shadow:0 0 16px rgba(244,114,182,.3)}
+  header h1{font-family:Oswald;font-size:18px;letter-spacing:4px;font-weight:600}
+  header h1 b{color:var(--pink)}
+  header .sub{color:var(--faint);font-size:10px;letter-spacing:1px;margin-left:4px}
+  header .right{margin-left:auto;display:flex;align-items:center;gap:8px}
+  .pill{display:flex;align-items:center;gap:6px;font-size:10px;letter-spacing:.5px;background:var(--panel2);border:1px solid var(--line);border-radius:99px;padding:4px 11px;color:var(--dim)}
+  .pill .dot{width:6px;height:6px;border-radius:50%;background:var(--teal);box-shadow:0 0 6px var(--teal)}
+  .pill.busy .dot{background:var(--pink);box-shadow:0 0 6px var(--pink);animation:blink 1s infinite alternate}
+  @keyframes blink{to{opacity:.3}}
+  .back-btn{font-size:11px;padding:6px 12px;border:1px solid var(--line2);border-radius:7px;background:var(--panel2);color:var(--dim);cursor:pointer;text-decoration:none;transition:.15s}
+  .back-btn:hover{color:var(--pink);border-color:var(--pink)}
+
+  #gprog{height:2px;background:transparent;position:sticky;top:58px;z-index:49}
+  #gprog>div{height:100%;width:0%;transition:width .45s;background:linear-gradient(90deg,var(--pink),var(--violet));box-shadow:0 0 10px rgba(244,114,182,.5)}
+
+  .wrap{display:grid;grid-template-columns:400px 1fr;gap:18px;padding:18px 24px 40px;align-items:start;max-width:1920px;margin:0 auto}
+  @media(max-width:1100px){.wrap{grid-template-columns:1fr}}
+
+  .panel{background:linear-gradient(180deg,var(--panel),var(--bg2));border:1px solid var(--line);border-radius:12px;padding:16px;box-shadow:0 8px 24px rgba(0,0,0,.3)}
+  .panel+.panel{margin-top:14px}
+  .step{display:flex;align-items:baseline;gap:9px;margin-bottom:12px}
+  .step .n{font-family:Oswald;font-size:12px;font-weight:700;color:#100c04;background:var(--pink);border-radius:5px;padding:1px 7px}
+  .step h2{font-family:Oswald;font-size:13px;letter-spacing:3px;font-weight:600;text-transform:uppercase}
+
+  label.f{display:block;font-size:9px;letter-spacing:1.5px;text-transform:uppercase;color:var(--faint);margin:10px 0 4px}
+  input,select,textarea{width:100%;background:var(--panel2);color:var(--txt);border:1px solid var(--line);border-radius:8px;padding:8px 10px;font:13px Inter;transition:border-color .15s}
+  input:focus,select:focus,textarea:focus{outline:none;border-color:var(--pink);box-shadow:0 0 0 2px rgba(244,114,182,.1)}
+  select{appearance:none;cursor:pointer;background-image:linear-gradient(45deg,transparent 50%,var(--dim) 50%),linear-gradient(135deg,var(--dim) 50%,transparent 50%);background-position:calc(100% - 14px) 50%,calc(100% - 9px) 50%;background-size:4px 4px;background-repeat:no-repeat}
+  textarea{min-height:80px;font:11.5px/1.6 "JetBrains Mono",Consolas,monospace;resize:vertical}
+  .row2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px}
+
+  button{cursor:pointer;font:600 12px Inter;border-radius:8px;padding:9px 12px;border:1px solid var(--line2);background:var(--panel3);color:var(--txt);transition:transform .12s,border-color .15s,box-shadow .15s}
+  button:hover:not(:disabled){transform:translateY(-1px);border-color:var(--pink);box-shadow:0 4px 12px rgba(0,0,0,.4)}
+  button:disabled{opacity:.3;cursor:not-allowed}
+  button.cta{width:100%;margin-top:12px;padding:11px;background:linear-gradient(135deg,var(--pink),var(--violet));border:none;color:#fff;font-size:12.5px;letter-spacing:.8px;text-transform:uppercase;box-shadow:0 5px 16px rgba(244,114,182,.2)}
+  button.cta:hover:not(:disabled){box-shadow:0 7px 22px rgba(244,114,182,.35);border:none}
+  .desc-box{margin-top:12px;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:12px;font:11.5px/1.7 "JetBrains Mono",monospace;color:var(--dim);max-height:200px;overflow-y:auto;display:none}
+  .desc-box.show{display:block}
+  .desc-box b{color:var(--pink);font-size:9px;letter-spacing:2px;text-transform:uppercase;display:block;margin-bottom:6px;font-family:Oswald;font-weight:600}
+
+  /* refs grid */
+  .refs-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px}
+  .ref-cell{aspect-ratio:1;border-radius:10px;border:1px solid var(--line);background:var(--panel2) center/cover no-repeat;position:relative;overflow:hidden;cursor:pointer;transition:transform .15s,border-color .15s}
+  .ref-cell:hover{transform:scale(1.03);border-color:var(--pink)}
+  .ref-cell .label{position:absolute;bottom:4px;left:4px;font:600 9px Inter;background:rgba(0,0,0,.7);padding:2px 6px;border-radius:4px;color:var(--pink)}
+  .ref-cell .del{position:absolute;top:4px;right:4px;background:rgba(248,113,113,.8);color:#fff;border:none;border-radius:4px;width:20px;height:20px;font-size:11px;cursor:pointer;opacity:0;transition:.15s;padding:0;line-height:1}
+  .ref-cell:hover .del{opacity:1}
+  .ref-cell.empty{display:flex;align-items:center;justify-content:center;color:var(--faint);font-size:10px;letter-spacing:1px}
+
+  /* lock overlay for content creation */
+  .lock-overlay{position:absolute;inset:0;background:rgba(8,9,12,.92);backdrop-filter:blur(4px);border-radius:12px;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;z-index:10}
+  .lock-overlay.hide{display:none}
+
+  /* mode toggle */
+  .mode-btn{cursor:pointer;font:600 11px Inter;padding:9px;transition:background .15s,color .15s}
+  .mode-btn.active{background:var(--panel3) !important;color:var(--pink) !important}
+  .mode-btn:hover:not(.active){color:var(--txt)}
+
+  /* ref selector for img2img */
+  .ref-selector{gap:6px}
+  .ref-selector .ref-sel-item{flex:none;width:64px;height:64px;border-radius:8px;border:2px solid var(--line);background:var(--panel2) center/cover no-repeat;cursor:pointer;transition:border-color .15s,transform .15s;position:relative}
+  .ref-selector .ref-sel-item:hover{transform:scale(1.05);border-color:var(--pink)}
+  .ref-selector .ref-sel-item.selected{border-color:var(--pink);box-shadow:0 0 0 3px rgba(244,114,182,.2)}
+  .ref-selector .ref-sel-item{opacity:1}
+  .ref-selector .ref-sel-item .tag{position:absolute;bottom:2px;left:2px;font-size:7px;background:rgba(0,0,0,.7);border-radius:3px;padding:1px 3px}
+
+  /* project header */
+  .project-header{background:linear-gradient(135deg,var(--panel),var(--bg2));border:1px solid var(--line2);border-radius:12px;padding:16px;display:flex;align-items:center;gap:14px;margin-bottom:14px}
+
+  #log{height:140px;overflow-y:auto;border-radius:8px;padding:8px 10px;background:#05070a;border:1px solid var(--line);font:10.5px/1.7 "JetBrains Mono",Consolas,monospace;color:#6ee7a0;white-space:pre-wrap}
+  #log .t{color:var(--faint)}#log .err{color:var(--red)}#log .ok{color:var(--pink)}
+
+  /* main content area */
+  .infl-select{margin-bottom:16px;display:flex;gap:8px;align-items:center}
+  .infl-select select{flex:1}
+  .infl-select .del{padding:9px 10px;font-size:11px;color:var(--red);border-color:rgba(248,113,113,.3)}
+
+  .create-box{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:16px}
+  .create-box .step{margin-bottom:10px}
+  .prompt-area{min-height:100px !important;font:13px/1.6 Inter !important;background:var(--panel2)}
+  .opts{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:8px}
+  .gen-row{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
+  .gen-row button{padding:11px}
+  .gen-row .img-btn{background:linear-gradient(135deg,var(--pink),var(--violet));border:none;color:#fff}
+  .gen-row .vid-btn{border-color:rgba(45,212,191,.4);color:var(--teal)}
+
+  /* content gallery */
+  .gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:14px}
+  .galcard{background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden;transition:transform .18s,border-color .18s,box-shadow .18s}
+  .galcard:hover{transform:translateY(-2px);border-color:var(--line2);box-shadow:0 12px 32px rgba(0,0,0,.45)}
+  .galcard .gimg{aspect-ratio:1;background:var(--panel2) center/cover no-repeat;position:relative}
+  .galcard .gimg video{width:100%;height:100%;object-fit:cover}
+  .galcard .gimg .vid-badge{position:absolute;top:8px;right:8px;background:rgba(45,212,191,.15);color:var(--teal);border:1px solid rgba(45,212,191,.3);padding:2px 7px;border-radius:5px;font:600 9px Inter;letter-spacing:.5px}
+  .galcard .gbody{padding:10px 12px}
+  .galcard .gbody .gprompt{font-size:11px;color:var(--dim);line-height:1.4;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  .galcard .gbody .gmeta{display:flex;gap:6px;margin-top:6px;flex-wrap:wrap}
+  .galcard .gbody .badge{font-size:9px;color:var(--faint);background:var(--panel2);border:1px solid var(--line);border-radius:5px;padding:2px 6px}
+  .galcard .gactions{display:flex;gap:6px;padding:0 12px 12px}
+  .galcard .gactions button{flex:1;padding:7px;font-size:10.5px}
+
+  .empty{text-align:center;padding:80px 20px;border:1px dashed var(--line2);border-radius:14px;color:var(--dim)}
+  .empty .big{font-size:40px;margin-bottom:12px}
+  .empty h3{font-family:Oswald;letter-spacing:3px;font-size:16px;color:var(--txt);margin-bottom:6px}
+  .empty p{font-size:12px;max-width:400px;margin:0 auto}
+
+  /* hover overlay for selecting content to animate */
+  .galcard .goverlay{position:absolute;inset:0;background:rgba(8,9,12,.75);display:none;align-items:center;justify-content:center;flex-direction:column;gap:8px}
+  .galcard:hover .goverlay{display:flex}
+  .galcard .goverlay span{color:var(--dim);font-size:10px;letter-spacing:1px;text-transform:uppercase}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">✨</div>
+  <div><h1>AI INFLUENCER <b>STUDIO</b></h1></div>
+  <span class="sub">DEFINE · LOCK · CREATE · ANIMATE</span>
+  <div class="right">
+    <div class="pill" id="phasepill"><div class="dot"></div><span id="phasetxt">IDLE</span></div>
+    <a href="/trends" class="back-btn" style="background:linear-gradient(135deg,rgba(251,146,60,.2),rgba(239,68,68,.2));border-color:var(--orange);color:var(--orange);font-weight:600">🔥 Trends</a>
+    <a href="/" class="back-btn">← Storyboard</a>
+  </div>
+</header>
+<div id="gprog"><div></div></div>
+
+<div class="wrap">
+  <!-- LEFT SIDEBAR -->
+  <div>
+    <!-- Influencer selector -->
+    <div class="panel">
+      <div class="infl-select">
+        <select id="inflSelect"><option value="">— Select influencer —</option></select>
+        <button class="del" id="btnDelete" title="Delete">🗑</button>
+      </div>
+      <button class="cta" id="btnNew" style="background:var(--panel3);color:var(--txt);border:1px solid var(--line2)">+ New AI Influencer</button>
+    </div>
+
+    <!-- Profile form -->
+    <div class="panel" id="profilePanel" style="display:none">
+      <div class="step"><span class="n">01</span><h2>Character Identity</h2></div>
+      <label class="f">Name</label>
+      <input id="fName" placeholder="e.g., Aria Skye">
+      <div class="row2">
+        <div><label class="f">Age</label><input id="fAge" placeholder="24" type="number"></div>
+        <div><label class="f">Gender</label><input id="fGender" placeholder="Female / Male / NB"></div>
+      </div>
+      <label class="f">Ethnicity / Skin tone</label>
+      <input id="fEthnicity" placeholder="e.g., Korean, mixed European-Mediterranean, deep brown skin">
+      <label class="f">Hair</label>
+      <input id="fHair" placeholder="e.g., long wavy chestnut brown with honey-blonde highlights">
+      <label class="f">Eyes</label>
+      <input id="fEyes" placeholder="e.g., large almond-shaped hazel eyes">
+      <div class="row2">
+        <div><label class="f">Body type</label><input id="fBody" placeholder="e.g., tall 5'9, slim athletic"></div>
+        <div><label class="f">Signature trait</label><input id="fTrait" placeholder="e.g., star tattoo on left wrist, dimples"></div>
+      </div>
+      <label class="f">Default wardrobe</label>
+      <textarea id="fWardrobe" style="min-height:50px" placeholder="e.g., minimalist streetwear — oversized white tee, high-rise mom jeans, chunky white sneakers, gold hoop earrings"></textarea>
+      <label class="f">Vibe / personality</label>
+      <input id="fVibe" placeholder="e.g., confident, warm, approachable fashion influencer">
+      <button class="cta" id="btnExpand">🧠 Generate Locked Description</button>
+      <div class="desc-box" id="descBox"><b>LOCKED CHARACTER DESCRIPTION</b><span id="descText"></span></div>
+    </div>
+
+    <!-- Reference portraits (MANDATORY before content creation) -->
+    <div class="panel" id="refsPanel" style="display:none">
+      <div class="step"><span class="n">02</span><h2>Reference Photos</h2><span style="margin-left:auto;font-size:9px;color:var(--faint)" id="refStatus">0 refs</span></div>
+      <p style="font-size:11px;color:var(--faint);margin-bottom:8px">🔒 Reference images are REQUIRED before creating content. Upload real photos or generate AI portraits to lock the character's look.</p>
+      <input type="file" id="refUpload" accept="image/*" multiple style="display:none">
+      <div class="row2" style="margin-bottom:8px">
+        <button id="btnUploadRef" style="background:var(--panel3);color:var(--txt);border:1px solid var(--line2)">📁 Upload Photos</button>
+        <button id="btnRefs" style="background:var(--panel3);color:var(--txt);border:1px solid var(--line2)">📸 Generate Portraits</button>
+      </div>
+      <div class="refs-grid" id="refsGrid"></div>
+      <button class="cta" id="btnAutoCreate2" style="margin-top:10px;background:linear-gradient(135deg,#10b981,#059669);font-size:12px">🚀 Auto Create Story (Scene → Image → Video)</button>
+    </div>
+
+    <!-- Console -->
+    <div class="panel">
+      <div class="step"><span class="n">03</span><h2>Console</h2></div>
+      <div id="log"></div>
+    </div>
+  </div>
+
+  <!-- RIGHT: Project + Content Creation + Gallery -->
+  <div>
+    <!-- Project isolation header -->
+    <div class="create-box" id="projectHeader" style="display:none;padding:18px;display:flex;align-items:center;gap:12px">
+      <div style="width:48px;height:48px;border-radius:12px;border:1px solid var(--line);background:var(--panel2) center/cover no-repeat" id="projectAvatar"></div>
+      <div>
+        <div style="font-family:Oswald;font-size:18px;letter-spacing:2px" id="projectName"></div>
+        <div style="font-size:10px;color:var(--faint);letter-spacing:.5px" id="projectPath"></div>
+      </div>
+      <div style="margin-left:auto;display:flex;gap:6px">
+        <span class="pill" id="projectStats" style="font-size:9px">—</span>
+      </div>
+    </div>
+
+    <!-- Content creation (locked until refs exist) -->
+    <div class="create-box" id="createBox" style="display:none;position:relative">
+      <div class="step"><span class="n">01</span><h2>Create Content</h2></div>
+      <!-- Mode toggle: Text-to-Image vs Image-to-Image -->
+      <div class="mode-toggle" style="display:flex;gap:0;margin-bottom:10px;border:1px solid var(--line);border-radius:8px;overflow:hidden">
+        <button id="modeT2I" class="mode-btn active" style="flex:1;border:none;border-radius:0;background:var(--panel3)">✏️ Text → Image</button>
+        <button id="modeI2I" class="mode-btn" style="flex:1;border:none;border-radius:0;background:transparent;color:var(--dim)">🖼 Image → Image</button>
+      </div>
+      <!-- img2img ref selector (hidden by default) -->
+      <div id="i2iPanel" style="display:none;margin-bottom:10px">
+        <label class="f">Source reference image</label>
+        <div id="refSelector" class="ref-selector" style="display:flex;gap:6px;overflow-x:auto;padding:4px 0"></div>
+        <p style="font-size:10px;color:var(--faint);margin-top:4px">💡 Select any reference photo — uploaded photos (📷) are auto-hosted by the server.</p>
+      </div>
+      <textarea id="contentPrompt" class="prompt-area" placeholder="Describe the scene: e.g., 'posing by a rooftop pool at sunset wearing a black silk slip dress, golden hour backlight, confident smile, city skyline behind'"></textarea>
+      <div class="opts">
+        <select id="style"></select>
+        <select id="ratio">
+          <option value="1:1">1:1 — Instagram</option>
+          <option value="9:16">9:16 — Reels / Stories</option>
+          <option value="4:5">4:5 — Feed portrait</option>
+          <option value="16:9">16:9 — landscape</option>
+          <option value="3:4">3:4 — portrait</option>
+        </select>
+        <select id="imageModel"></select>
+      </div>
+      <div class="gen-row">
+        <button class="img-btn" id="btnGenImage">📸 Generate Image</button>
+        <button class="vid-btn" id="btnGenVideo">🎥 Animate Latest</button>
+      </div>
+      <button class="cta" id="btnAutoCreate" style="margin-top:8px;background:linear-gradient(135deg,#10b981,#059669);font-size:11px">🚀 Auto Create Story (Scene → Image → Video)</button>
+      <!-- LOCK OVERLAY shown when no references exist -->
+      <div class="lock-overlay" id="lockOverlay">
+        <div style="font-size:36px;margin-bottom:8px">🔒</div>
+        <h3 style="font-family:Oswald;font-size:14px;letter-spacing:2px;color:var(--txt)">REFERENCES REQUIRED</h3>
+        <p style="font-size:11px;color:var(--faint);max-width:280px;margin:6px auto">Add reference photos (upload or generate) in the Reference Photos panel before creating content. This locks the character's appearance.</p>
+      </div>
+    </div>
+
+    <!-- TRENDING DISCOVERY -->
+    <div class="create-box" style="padding:16px;margin-bottom:16px">
+      <div class="step"><span class="n">🔥</span><h2>Trending Reels</h2><span style="margin-left:auto;font-size:9px;color:var(--faint)" id="trendStatus"></span></div>
+      <div style="display:flex;gap:0;margin-bottom:10px;border:1px solid var(--line);border-radius:8px;overflow:hidden">
+        <button id="trendTikTok" class="mode-btn active" style="flex:1;border:none;border-radius:0;background:var(--panel3)">🎵 TikTok</button>
+        <button id="trendInstagram" class="mode-btn" style="flex:1;border:none;border-radius:0;background:transparent;color:var(--dim)">📸 Instagram</button>
+        <button id="trendTemplates" class="mode-btn" style="flex:1;border:none;border-radius:0;background:transparent;color:var(--dim)">📋 Templates</button>
+      </div>
+      <!-- TikTok panel -->
+      <div id="trendTikTokPanel">
+        <div style="display:flex;gap:8px;margin-bottom:10px">
+          <input id="trendSearch" placeholder="Search female influencer content (GRWM, OOTD, beauty, travel)..." style="flex:1">
+          <button id="btnTrendSearch" style="padding:8px 14px">🔍</button>
+          <select id="trendMarket" style="width:70px">
+            <option value="us">🇺🇸</option>
+            <option value="gb">🇬🇧</option>
+            <option value="in">🇮🇳</option>
+            <option value="jp">🇯🇵</option>
+            <option value="br">🇧🇷</option>
+            <option value="de">🇩🇪</option>
+          </select>
+        </div>
+        <div style="display:flex;gap:8px;margin-bottom:10px">
+          <button id="btnTrendingFeed" class="cta" style="margin:0;background:var(--panel3);color:var(--txt);border:1px solid var(--line2);font-size:11px">🔥 Load Female Influencer Trends</button>
+          <button id="btnSurpriseTrend" style="padding:8px 12px;white-space:nowrap;border-color:rgba(244,114,182,.5);color:var(--pink)">🎲 Surprise Me</button>
+        </div>
+        <div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:10px">
+          <button onclick="quickTrendSearch('female lifestyle influencer')" style="padding:4px 10px;font-size:10px;background:var(--panel2);border:1px solid var(--line);border-radius:99px;color:var(--dim)">lifestyle</button>
+          <button onclick="quickTrendSearch('girl grwm morning routine')" style="padding:4px 10px;font-size:10px;background:var(--panel2);border:1px solid var(--line);border-radius:99px;color:var(--dim)">grwm</button>
+          <button onclick="quickTrendSearch('girl ootd fashion influencer')" style="padding:4px 10px;font-size:10px;background:var(--panel2);border:1px solid var(--line);border-radius:99px;color:var(--dim)">ootd</button>
+          <button onclick="quickTrendSearch('female beauty skincare creator')" style="padding:4px 10px;font-size:10px;background:var(--panel2);border:1px solid var(--line);border-radius:99px;color:var(--dim)">beauty</button>
+          <button onclick="quickTrendSearch('female fitness influencer routine')" style="padding:4px 10px;font-size:10px;background:var(--panel2);border:1px solid var(--line);border-radius:99px;color:var(--dim)">fitness</button>
+          <button onclick="quickTrendSearch('female travel influencer vlog')" style="padding:4px 10px;font-size:10px;background:var(--panel2);border:1px solid var(--line);border-radius:99px;color:var(--dim)">travel</button>
+        </div>
+      </div>
+      <!-- Instagram panel -->
+      <div id="trendInstagramPanel" style="display:none">
+        <p style="font-size:11px;color:var(--faint);margin-bottom:8px">Paste any Instagram Reel URL to analyze and recreate it for your influencer.</p>
+        <div style="display:flex;gap:8px">
+          <input id="igReelUrl" placeholder="https://www.instagram.com/reel/Cxxxxx/" style="flex:1">
+          <button id="btnFetchIGReel" style="padding:8px 14px">📥 Fetch</button>
+        </div>
+        <div id="igReelInfo" style="display:none;margin-top:8px"></div>
+      </div>
+      <!-- Templates panel -->
+      <div id="trendTemplatesPanel" style="display:none">
+        <p style="font-size:11px;color:var(--faint);margin-bottom:8px">Proven viral formats — click any to generate matching content.</p>
+        <button id="btnLoadTemplates" class="cta" style="background:var(--panel3);color:var(--txt);border:1px solid var(--line2);font-size:11px;margin-bottom:10px">📋 Load Templates</button>
+      </div>
+      <!-- Results grid -->
+      <div id="trendGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px;margin-top:10px"></div>
+    </div>
+
+    <div style="display:flex;align-items:baseline;gap:12px;margin:6px 0 14px">
+      <h2 style="font-family:Oswald;font-size:24px;letter-spacing:5px">CONTENT <span style="color:var(--pink)">GALLERY</span></h2>
+      <span class="pill" id="galleryCount" style="font-size:10px">no content yet</span>
+    </div>
+    <div id="gallery" class="gallery">
+      <div class="empty">
+        <div class="big">✨</div>
+        <h3>NO INFLUENCER LOADED</h3>
+        <p>Create a new AI influencer on the left, generate their locked description + reference portraits, then start creating content here.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+let CUR=null; // current influencer object
+let pollTimer=null;
+
+async function api(p,opts){const sep=p.includes('?')?'&':'?';const r=await fetch('/api'+p+sep+'_'+Date.now(),opts);return r.json()}
+
+async function init(){
+  const m=await api('/models');
+  $('style').innerHTML=(m.styles||[{key:'realistic',label:'Realistic'}]).map(s=>`<option value="${s.key}">${s.label}</option>`).join('');
+  $('imageModel').innerHTML=m.image.map(x=>`<option>${x}</option>`).join('');
+  await loadInfluencerList();
+  poll();pollTimer=setInterval(poll,2500);
+}
+
+async function loadInfluencerList(){
+  const {influencers}=await api('/influencers');
+  const cur=CUR?CUR.id:'';
+  $('inflSelect').innerHTML='<option value="">— Select influencer —</option>'+influencers.map(i=>`<option value="${i.id}" ${i.id===cur?'selected':''}>${esc(i.name)} · ${i.refCount} refs · ${i.contentCount} imgs · ${i.videoCount} vids</option>`).join('');
+  if(cur){ const opt=[...$('inflSelect').options].find(o=>o.value===cur); if(opt)opt.selected=true; }
+}
+
+$('inflSelect').onchange=async()=>{
+  const id=$('inflSelect').value;
+  if(!id){ resetProfile(); return; }
+  await loadInfluencer(id);
+};
+
+$('btnNew').onclick=async()=>{
+  CUR={id:'infl_'+Date.now(),createdAt:Date.now(),name:'',age:'',gender:'',ethnicity:'',hair:'',eyes:'',bodyType:'',defaultWardrobe:'',signatureTrait:'',vibe:'',description:'',refs:[],content:[]};
+  $('inflSelect').value='';
+  fillForm();
+  $('profilePanel').style.display='';
+  $('refsPanel').style.display='';
+  $('createBox').style.display='none';
+  $('projectHeader').style.display='none';
+  $('descBox').classList.remove('show');
+  renderRefs();
+};
+
+function resetProfile(){
+  CUR=null;
+  $('inflSelect').value='';
+  $('profilePanel').style.display='none';
+  $('refsPanel').style.display='none';
+  $('createBox').style.display='none';
+  $('projectHeader').style.display='none';
+  $('gallery').innerHTML='<div class="empty"><div class="big">✨</div><h3>NO INFLUENCER LOADED</h3><p>Create a new AI influencer on the left, upload/generate reference photos, then start creating content here.</p></div>';
+  $('galleryCount').textContent='no content yet';
+}
+
+async function loadInfluencer(id){
+  const {influencer}=await api('/influencer?id='+encodeURIComponent(id));
+  if(!influencer)return;
+  CUR=influencer;
+  fillForm();
+  $('profilePanel').style.display='';
+  $('refsPanel').style.display='';
+  $('projectHeader').style.display='flex';
+  $('createBox').style.display='';
+  $('projectName').textContent=CUR.name||'unnamed';
+  $('projectPath').textContent=`project / frames/${CUR.id}/`;
+  $('descBox').classList.toggle('show',!!CUR.description);
+  $('descText').textContent=CUR.description||'';
+  renderRefs();
+  renderGallery();
+  updateLock();
+}
+
+function updateLock(){
+  const hasRefs = CUR && CUR.refs && CUR.refs.filter(r => r && r.path).length > 0;
+  $('lockOverlay').classList.toggle('hide', !!hasRefs);
+  const refCount = CUR ? (CUR.refs||[]).filter(r=>r&&r.path).length : 0;
+  if($('refStatus')) $('refStatus').textContent = refCount + (refCount===1?' ref':' refs');
+  if($('projectStats')) $('projectStats').textContent = `${refCount} refs · ${CUR?(CUR.content||[]).length:0} content`;
+}
+
+function fillForm(){
+  if(!CUR)return;
+  const f=['name','age','gender','ethnicity','hair','eyes','bodyType','defaultWardrobe','signatureTrait','vibe'];
+  const map={name:'fName',age:'fAge',gender:'fGender',ethnicity:'fEthnicity',hair:'fHair',eyes:'fEyes',bodyType:'fBody',defaultWardrobe:'fWardrobe',signatureTrait:'fTrait',vibe:'fVibe'};
+  for(const k of f)$(map[k]).value=CUR[k]||'';
+}
+
+function gatherProfile(){
+  return {
+    name:$('fName').value.trim(),
+    age:$('fAge').value.trim(),
+    gender:$('fGender').value.trim(),
+    ethnicity:$('fEthnicity').value.trim(),
+    hair:$('fHair').value.trim(),
+    eyes:$('fEyes').value.trim(),
+    bodyType:$('fBody').value.trim(),
+    defaultWardrobe:$('fWardrobe').value.trim(),
+    signatureTrait:$('fTrait').value.trim(),
+    vibe:$('fVibe').value.trim()
+  };
+}
+
+function renderRefs(){
+  const grid=$('refsGrid');
+  if(!CUR){ grid.innerHTML=''; return; }
+  const refs=(CUR.refs||[]).filter(r=>r&&r.path);
+  const total=Math.max(refs.length, 4); // show at least 4 slots
+  const v=Date.now();
+  let html='';
+  for(let i=0;i<total;i++){
+    const r=refs[i];
+    const exists = r && CUR.id;
+    if(r){
+      // check if file exists via the exists flag or assume it does
+      const url=`/frames/${CUR.id}/${r.path}?v=${v}`;
+      const uploaded = r.uploaded ? '<span style="color:var(--teal)">📷 uploaded</span>' : '<span style="color:var(--pink)">🤖 generated</span>';
+      html+=`<div class="ref-cell" style="background-image:url('${url}')" onclick="delRef(${i+1})" title="Click to delete">
+        <span class="label">REF ${i+1} · ${uploaded?'📷':'🤖'}</span>
+        <button class="del" onclick="event.stopPropagation();delRef(${i+1})">×</button>
+      </div>`;
+    } else {
+      html+=`<div class="ref-cell empty">slot ${i+1}</div>`;
+    }
+  }
+  grid.innerHTML=html;
+  updateLock();
+}
+
+function renderGallery(){
+  const g=$('gallery');
+  if(!CUR||!CUR.content||!CUR.content.length){
+    g.innerHTML='<div class="empty"><div class="big">📸</div><h3>NO CONTENT YET</h3><p>Write a scene description above and hit Generate Image. The character description is automatically prepended for consistency.</p></div>';
+    $('galleryCount').textContent='no content yet';
+    return;
+  }
+  $('galleryCount').textContent=`${CUR.content.length} items`;
+  const v=Date.now();
+  g.innerHTML=CUR.content.map(c=>{
+    const img=c.hasImage?`/frames/${CUR.id}/${c.id}.png?v=${v}`:'';
+    const vid=c.hasVideo?`/frames/${CUR.id}/${c.id}.mp4?v=${v}`:'';
+    return `
+    <div class="galcard">
+      <div class="gimg" ${img?`style="background-image:url('${img}')"`:''}>
+        ${vid?`<video src="${vid}" muted loop autoplay playsinline></video>`:''}
+        ${vid?'<div class="vid-badge">▶ VIDEO</div>':''}
+        ${!img?'<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--faint);font-size:10px">awaiting render</div>':''}
+        <div class="goverlay"><span>${esc(c.style||'')} · ${esc(c.ratio||'')}</span></div>
+      </div>
+      <div class="gbody">
+        <div class="gprompt">${esc(c.prompt)}</div>
+        <div class="gmeta"><span class="badge">${esc(c.style||'cinematic')}</span><span class="badge">${esc(c.ratio||'1:1')}</span>${c.videoPath?'<span class="badge" style="color:var(--teal)">▶ animated</span>':''}</div>
+      </div>
+      <div class="gactions">
+        <button onclick="genVideo('${c.id}')">🎥 Animate</button>
+        <button onclick="regen('${c.id}')">↻ Re-render</button>
+      </div>
+    </div>`;
+  }).join('');
+  updateLock();
+}
+async function saveProfile(){
+  if(!CUR)return;
+  const profile=gatherProfile();
+  Object.assign(CUR,profile);
+  // Only save to server if we have a name (backend requires it)
+  if(CUR.name){
+    try{
+      const r=await api('/influencer/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...CUR})});
+      if(r.influencer){CUR=r.influencer;}
+      $('projectHeader').style.display='flex';
+      $('projectName').textContent=CUR.name;
+      $('projectPath').textContent=`project / frames/${CUR.id}/`;
+      if(CUR.description){
+        $('createBox').style.display='';
+        $('descBox').classList.add('show');
+        $('descText').textContent=CUR.description;
+      }
+      renderRefs();
+      updateLock();
+      await loadInfluencerList();
+    }catch(e){}
+  }
+}
+[['fName','blur'],['fAge','blur'],['fGender','blur'],['fEthnicity','blur'],['fHair','blur'],['fEyes','blur'],['fBody','blur'],['fWardrobe','blur'],['fTrait','blur'],['fVibe','blur']].forEach(([id,ev])=>$(id).addEventListener(ev,saveProfile));
+
+// Generate locked description via LLM
+$('btnExpand').onclick=async()=>{
+  const profile=gatherProfile();
+  if(!profile.name)return alert('Enter a name first');
+  Object.assign(CUR,profile);
+  await api('/influencer/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(CUR)});
+  const r=await api('/influencer/expand',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:CUR.id,profile,model:'gemini-3.1-pro'})});
+  if(r.error)alert(r.error);
+};
+
+// Generate reference portraits
+$('btnRefs').onclick=async()=>{
+  if(!CUR)return alert('Create an influencer first');
+  if(!CUR.description)return alert('Generate the locked description first (needed for AI portrait generation). Or use Upload Photos to add real images.');
+  const force = CUR.refs && CUR.refs.length > 0 ? confirm('Regenerate all reference portraits? This will replace existing generated ones.') : false;
+  const r=await api('/influencer/refs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:CUR.id,force})});
+  if(r.error)alert(r.error);
+};
+
+// Upload reference photos
+$('btnUploadRef').onclick=()=>$('refUpload').click();
+$('refUpload').onchange=async(e)=>{
+  if(!CUR)return alert('No influencer loaded. Click "+ New AI Influencer" first.');
+  const files=[...e.target.files];
+  if(!files.length)return;
+  log(`uploading ${files.length} photo(s)...`);
+  for(const f of files){
+    const reader=new FileReader();
+    const dataUrl=await new Promise((res,rej)=>{
+      reader.onload=()=>res(reader.result);
+      reader.onerror=()=>rej(reader.error);
+      reader.readAsDataURL(f)
+    });
+    log(`uploading ${f.name} (${(f.size/1024).toFixed(0)}KB) — analyzing photo to extract character description...`);
+    const r=await api('/influencer/upload-ref',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:CUR.id,image:dataUrl,name:CUR.name||'Untitled'})});
+    if(r.error){alert(r.error);break;}
+    log(`✓ uploaded ${r.filename} — photo analyzed and character description updated`);
+  }
+  e.target.value='';
+  // Reload the influencer from server to get the updated refs and description
+  await loadInfluencer(CUR.id);
+  log('✓ influencer reloaded with new reference photo and updated description');
+};
+async function delRef(idx){
+  if(!CUR||!confirm('Delete this reference photo?'))return;
+  await api('/influencer/delete-ref',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:CUR.id,index:idx})});
+  await loadInfluencer(CUR.id);
+}
+
+function log(msg){ $('log').innerHTML += `<div>[${new Date().toLocaleTimeString()}] ${msg}</div>`; $('log').scrollTop=$('log').scrollHeight; }
+
+// Mode toggle: Text-to-Image vs Image-to-Image
+let CUR_MODE='t2i'; // t2i | i2i
+let SEL_REF_URL=null; // selected ref URL for img2img
+$('modeT2I').onclick=()=>{CUR_MODE='t2i';$('modeT2I').classList.add('active');$('modeI2I').classList.remove('active');$('i2iPanel').style.display='none';$('btnGenImage').textContent='📸 Generate Image'};
+$('modeI2I').onclick=()=>{CUR_MODE='i2i';$('modeI2I').classList.add('active');$('modeT2I').classList.remove('active');$('i2iPanel').style.display='block';$('btnGenImage').textContent='🔄 Transform Image';renderRefSelector()};
+
+function renderRefSelector(){
+  const c=$('refSelector');
+  if(!CUR||!CUR.refs){c.innerHTML='<span style="color:var(--faint);font-size:11px">No references</span>';return;}
+  const refs=CUR.refs.filter(r=>r&&r.path);
+  if(!refs.length){c.innerHTML='<span style="color:var(--faint);font-size:11px">No references. Upload a photo or generate AI portraits first.</span>';return;}
+  const v=Date.now();
+  c.innerHTML='';
+  refs.forEach((r,i)=>{
+    const div=document.createElement('div');
+    div.className='ref-sel-item';
+    div.style.backgroundImage=`url('/frames/${CUR.id}/${r.path}?v=${v}')`;
+    div.innerHTML=`<span class="tag">${r.uploaded?'📷':'🤖'}</span>`;
+    div.onclick=()=>{
+      SEL_REF_URL=r.url||''; // empty string = let backend auto-resolve
+      document.querySelectorAll('.ref-sel-item').forEach(x=>x.classList.remove('selected'));
+      div.classList.add('selected');
+    };
+    if(i===0){SEL_REF_URL=r.url||'';div.classList.add('selected');} // auto-select first
+    c.appendChild(div);
+  });
+}
+
+// Generate content image (text-to-image OR image-to-image based on mode)
+$('btnGenImage').onclick=async()=>{
+  const prompt=$('contentPrompt').value.trim();
+  if(!prompt)return alert('Write a scene description');
+  if(!CUR)return alert('No influencer loaded');
+  if(CUR_MODE==='i2i'){
+    if(!CUR.refs||!CUR.refs.filter(r=>r&&r.path).length)return alert('Upload a reference photo or generate AI portraits first');
+    const r=await api('/influencer/img2img',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:CUR.id,prompt,refUrl:SEL_REF_URL||undefined,style:$('style').value,ratio:$('ratio').value,imageModel:$('imageModel').value})});
+    if(r.error)alert(r.error);
+  } else {
+    if(!CUR.description)return alert('No description loaded — generate locked description first, or switch to Image→Image mode');
+    const r=await api('/influencer/image',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:CUR.id,prompt,style:$('style').value,ratio:$('ratio').value,imageModel:$('imageModel').value})});
+    if(r.error)alert(r.error);
+  }
+};
+
+// Animate latest content
+$('btnGenVideo').onclick=async()=>{
+  if(!CUR||!CUR.content||!CUR.content.length)return alert('Generate an image first');
+  const latest=CUR.content[0];
+  const r=await api('/influencer/video',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:CUR.id,contentId:latest.id,ratio:$('ratio').value})});
+  if(r.error)alert(r.error);
+};
+
+async function autoCreate(){
+  if(!CUR)return alert('Create or select an influencer first');
+  if(!CUR.name)return alert('Enter a name in Step 01 first');
+  const r=await api('/influencer/auto-create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:CUR.id,style:$('style').value,ratio:$('ratio').value,imageModel:$('imageModel').value})});
+  if(r.error)alert(r.error);
+  else log('🚀 auto-create started — scene → image → video');
+}
+$('btnAutoCreate').onclick=autoCreate;
+$('btnAutoCreate2').onclick=autoCreate;
+
+async function genVideo(cid){
+  const r=await api('/influencer/video',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:CUR.id,contentId:cid,ratio:$('ratio').value})});
+  if(r.error)alert(r.error);
+}
+async function regen(cid){
+  const item=CUR.content.find(c=>c.id===cid);
+  if(!item)return;
+  try{await fetch('/frames/'+CUR.id+'/'+cid+'.png',{method:'DELETE'}).catch(()=>{})}catch{}
+  const r=await api('/influencer/image',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:CUR.id,prompt:item.prompt,style:item.style||$('style').value,ratio:item.ratio||$('ratio').value,imageModel:$('imageModel').value})});
+  if(r.error)alert(r.error);
+}
+
+$('btnDelete').onclick=async()=>{
+  if(!CUR)return;
+  if(!confirm(`Delete "${CUR.name||'this influencer'}" and all their content?`))return;
+  await api('/influencer/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:CUR.id})});
+  resetProfile();
+  await loadInfluencerList();
+};
+
+// poll status + refresh when idle
+async function poll(){
+  const s=await api('/infl/status');
+  const busy=s.phase!=='idle';
+  $('phasepill').classList.toggle('busy',busy);
+  $('phasetxt').textContent=busy?`${s.phase.toUpperCase()} ${s.done}/${s.total||'?'}`:'IDLE';
+  $('gprog').firstElementChild.style.width=s.total?Math.round(100*s.done/s.total)+'%':(busy?'12%':'0%');
+  const btns=['btnExpand','btnRefs','btnGenImage','btnGenVideo','btnAutoCreate','btnAutoCreate2','btnTrendingFeed','btnSurpriseTrend','btnTrendSearch','btnFetchIGReel','btnLoadTemplates'];
+  btns.forEach(b=>$(b).disabled=busy);
+  $('log').innerHTML=s.log.map(l=>{
+    const m=l.match(/^(\[[^\]]+\])\s?(.*)$/);
+    const time=m?`<span class="t">${esc(m[1])}</span> `:'';
+    const body=m?m[2]:l;
+    const cls=/FAIL|error|crash/i.test(body)?'err':/DONE|ready|finished/i.test(body)?'ok':'';
+    return `<span class="${cls}">${time}${esc(body)}</span>`;
+  }).join('\n');
+  $('log').scrollTop=$('log').scrollHeight;
+  if(!busy&&poll.wasBusy){
+    poll.wasBusy=false;
+    if(CUR)await loadInfluencer(CUR.id);
+    await loadInfluencerList();
+  }
+  if(busy)poll.wasBusy=true;
+}
+
+// =================== TRENDING SYSTEM ===================
+let TREND_PLATFORM='tiktok';
+let TREND_VIDEOS=[];
+
+function fmtNum(n){if(!n&&n!==0)return'—';if(n>=1e6)return(n/1e6).toFixed(1)+'M';if(n>=1e3)return(n/1e3).toFixed(1)+'K';return String(n);}
+
+function renderTrendGrid(){
+  const g=$('trendGrid');
+  if(!TREND_VIDEOS.length){g.innerHTML='<div style="grid-column:1/-1;text-align:center;padding:20px;color:var(--faint);font-size:11px">No trends loaded yet. Click "Load Trending Now" or search above.</div>';return;}
+  g.innerHTML=TREND_VIDEOS.map((v,i)=>{
+    const hasVideo = v.videoUrl && v.videoUrl !== 'string' && v.videoUrl.startsWith('http');
+    return `<div class="galcard">
+      <div class="gimg" ${!hasVideo && v.cover?`style="background-image:url('${v.cover}')"`:''}>
+        ${hasVideo ? `<video src="${v.videoUrl}" poster="${v.cover||''}" controls loop muted playsinline onclick="event.stopPropagation()"></video>` : ''}
+        ${v.platform==='instagram'?'<div class="vid-badge">📸 IG</div>':'<div class="vid-badge">🎵 TT</div>'}
+        <div class="goverlay" style="cursor:pointer;display:flex;gap:6px;justify-content:center">
+          <span onclick="genFromTrend(${i})" style="color:var(--pink);font-weight:600;background:rgba(0,0,0,.7);padding:4px 10px;border-radius:6px">⚡ Generate</span>
+          <span onclick="showTrendPrompts(${i})" style="color:var(--cyan);font-weight:600;background:rgba(0,0,0,.7);padding:4px 10px;border-radius:6px">📋 Get Prompts</span>
+        </div>
+      </div>
+      <div class="gbody">
+        <div class="gprompt">${esc(v.caption||v.title||'No caption')}</div>
+        <div class="gmeta">
+          ${v.views!=null?`<span class="badge">👁 ${fmtNum(v.views)}</span>`:''}
+          ${v.likes!=null?`<span class="badge">❤️ ${fmtNum(v.likes)}</span>`:''}
+          ${v.duration?`<span class="badge">⏱ ${v.duration}s</span>`:''}
+          ${v.author?`<span class="badge">@${esc(v.author)}</span>`:''}
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// Platform tabs
+$('trendTikTok').onclick=()=>{TREND_PLATFORM='tiktok';['trendTikTok','trendInstagram','trendTemplates'].forEach(id=>$(id).classList.remove('active'));$('trendTikTok').classList.add('active');$('trendTikTokPanel').style.display='';$('trendInstagramPanel').style.display='none';$('trendTemplatesPanel').style.display='none';};
+$('trendInstagram').onclick=()=>{TREND_PLATFORM='instagram';['trendTikTok','trendInstagram','trendTemplates'].forEach(id=>$(id).classList.remove('active'));$('trendInstagram').classList.add('active');$('trendTikTokPanel').style.display='none';$('trendInstagramPanel').style.display='';$('trendTemplatesPanel').style.display='none';};
+$('trendTemplates').onclick=()=>{TREND_PLATFORM='templates';['trendTikTok','trendInstagram','trendTemplates'].forEach(id=>$(id).classList.remove('active'));$('trendTemplates').classList.add('active');$('trendTikTokPanel').style.display='none';$('trendInstagramPanel').style.display='none';$('trendTemplatesPanel').style.display='';};
+
+// Load trending
+$('btnTrendingFeed').onclick=async()=>{
+  $('trendGrid').innerHTML='<div style="grid-column:1/-1;text-align:center;padding:20px;color:var(--faint)">⏳ Loading trending...</div>';
+  const market=$('trendMarket').value;
+  let r;
+  if(TREND_PLATFORM==='instagram'){
+    r=await api('/trending/instagram');
+    if(r.error){$('trendGrid').innerHTML='<div style="color:var(--red);padding:10px">Error: '+r.error+'</div>';return;}
+    TREND_VIDEOS=(r.videos||[]).map(v=>({...v,platform:'instagram'}));
+    $('trendStatus').textContent=TREND_VIDEOS.length+' IG trends';
+  } else {
+    r=await api('/trending/tiktok?market='+market+'&max=12');
+    if(r.error){$('trendGrid').innerHTML='<div style="color:var(--red);padding:10px">Error: '+r.error+'</div>';return;}
+    TREND_VIDEOS=r.videos||[];
+    $('trendStatus').textContent=TREND_VIDEOS.length+' trending';
+  }
+  renderTrendGrid();
+};
+
+$('btnSurpriseTrend').onclick=async()=>{
+  if(!CUR)return alert('Select or create an influencer first');
+  if(!CUR.name)return alert('Enter a name in Step 01 first');
+  const r=await api('/influencer/generate-from-trend',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+    id:CUR.id,style:$('style').value,ratio:$('ratio').value,imageModel:$('imageModel').value
+  })});
+  if(r.error)alert(r.error);
+  else log('🎲 choosing and analyzing a random female influencer trend...');
+};
+
+// Search
+$('btnTrendSearch').onclick=async()=>{
+  const q=$('trendSearch').value.trim();if(!q)return;
+  await doTrendSearch(q);
+};
+$('trendSearch').addEventListener('keypress',e=>{if(e.key==='Enter')$('btnTrendSearch').click();});
+
+async function quickTrendSearch(q){
+  $('trendSearch').value=q;
+  await doTrendSearch(q);
+}
+async function doTrendSearch(q){
+  $('trendGrid').innerHTML='<div style="grid-column:1/-1;text-align:center;padding:20px;color:var(--faint)">🔍 Searching "'+esc(q)+'"...</div>';
+  const market=$('trendMarket').value;
+  const r=await api('/trending/tiktok/search?q='+encodeURIComponent(q)+'&market='+market+'&max=12&sort=most_liked');
+  if(r.error){$('trendGrid').innerHTML='<div style="color:var(--red);padding:10px">Error: '+r.error+'</div>';return;}
+  TREND_VIDEOS=r.videos||[];
+  $('trendStatus').textContent=TREND_VIDEOS.length+' results';
+  renderTrendGrid();
+}
+
+// Templates
+$('btnLoadTemplates').onclick=async()=>{
+  $('trendGrid').innerHTML='<div style="grid-column:1/-1;text-align:center;padding:20px;color:var(--faint)">📋 Loading templates...</div>';
+  const r=await api('/templates');
+  TREND_VIDEOS=(r.templates||[]).map(t=>({...t,platform:'template',caption:t.title+' — '+t.caption,cover:null,views:null,likes:null,duration:null,author:t.category,scene_prompt:t.scene_prompt,anim_prompt:t.animation_prompt,tpl_caption:t.caption}));
+  $('trendStatus').textContent=TREND_VIDEOS.length+' templates';
+  renderTrendGrid();
+};
+
+// Instagram
+$('btnFetchIGReel').onclick=async()=>{
+  const url=$('igReelUrl').value.trim();if(!url||!url.includes('instagram.com'))return alert('Paste a valid Instagram reel URL');
+  $('igReelInfo').style.display='block';
+  $('igReelInfo').innerHTML='<div style="color:var(--faint);padding:8px">⏳ Fetching reel data...</div>';
+  const r=await api('/trending/instagram',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url})});
+  if(r.error){$('igReelInfo').innerHTML='<div style="color:var(--red);padding:8px">Error: '+esc(r.error)+'</div>';return;}
+  TREND_VIDEOS=[{platform:'instagram',caption:r.data?.caption||r.data?.title||'Instagram Reel',author:r.data?.author||r.data?.owner||'',views:r.data?.view_count,likes:r.data?.like_count,duration:r.data?.duration,cover:r.data?.thumbnail,videoUrl:r.data?.video_url,instagramUrl:url}];
+  renderTrendGrid();
+};
+
+// Generate from trend
+async function genFromTrend(idx){
+  if(!CUR)return alert('Select or create an influencer first');
+  if(!CUR.name)return alert('Enter a name in Step 01 first');
+  const v=TREND_VIDEOS[idx];if(!v)return;
+  const r=await api('/influencer/generate-from-trend',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+    id:CUR.id,style:$('style').value,ratio:$('ratio').value,imageModel:$('imageModel').value,
+    caption:v.caption||'',hashtags:'',duration:v.duration||0,views:v.views||0,platform:v.platform||'tiktok',cover:v.cover||'',videoUrl:v.videoUrl||''
+  })});
+  if(r.error)alert(r.error);
+  else log('🔥 generating from trend — scene → image → video');
+}
+
+init();
+
+function showTrendPrompts(idx){
+  var v=TREND_VIDEOS[idx];if(!v)return;
+  var m=document.getElementById('promptModal');var mc=document.getElementById('promptModalContent');
+  m.style.display='flex';
+  mc.innerHTML='<div style="color:var(--faint,#888);padding:20px;text-align:center">\u23F3 Generating prompts...</div>';
+  api('/influencer/trend-prompts',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({caption:v.caption||v.title||'',author:v.author||'',views:v.views,platform:v.platform,cover:v.cover,videoUrl:v.videoUrl})
+  }).then(function(r){
+    if(r.error){mc.innerHTML='<div style="color:var(--red,#f44);padding:20px">'+r.error+'</div>';return;}
+    mc.innerHTML=
+      '<div style="margin-bottom:16px">'+
+      '<label style="color:var(--cyan,#0ff);font-size:12px;font-weight:600;display:block;margin-bottom:6px">IMG2IMG Prompt (image generation)</label>'+
+      '<textarea id="modalImgPrompt" style="width:100%;min-height:100px;background:var(--bg,#111);color:var(--txt,#fff);border:1px solid var(--line,#333);border-radius:8px;padding:10px;font-size:12px;font-family:monospace;resize:vertical">'+esc(r.imgPrompt||'')+'</textarea>'+
+      '<button onclick="copyPromptText(\x27modalImgPrompt\x27)" style="margin-top:4px;padding:4px 10px;font-size:11px;background:var(--panel3,#333);color:var(--txt,#fff);border:1px solid var(--line,#333);border-radius:6px;cursor:pointer">Copy</button>'+
+      '</div>'+
+      '<div style="margin-bottom:16px">'+
+      '<label style="color:var(--pink,#f6a);font-size:12px;font-weight:600;display:block;margin-bottom:6px">IMG2VIDEO Prompt (video animation)</label>'+
+      '<textarea id="modalVidPrompt" style="width:100%;min-height:80px;background:var(--bg,#111);color:var(--txt,#fff);border:1px solid var(--line,#333);border-radius:8px;padding:10px;font-size:12px;font-family:monospace;resize:vertical">'+esc(r.vidPrompt||'')+'</textarea>'+
+      '<button onclick="copyPromptText(\x27modalVidPrompt\x27)" style="margin-top:4px;padding:4px 10px;font-size:11px;background:var(--panel3,#333);color:var(--txt,#fff);border:1px solid var(--line,#333);border-radius:6px;cursor:pointer">Copy</button>'+
+      '</div>'+
+      '<div style="display:flex;gap:8px;flex-wrap:wrap">'+
+      '<button onclick="usePromptsAndGen('+idx+')" style="padding:8px 16px;font-size:12px;background:var(--pink,#f6a);color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:600">Use Prompts & Generate</button>'+
+      '<button onclick="document.getElementById(\x27promptModal\x27).style.display=\x27none\x27" style="padding:8px 16px;font-size:12px;background:var(--panel3,#333);color:var(--txt,#fff);border:1px solid var(--line,#333);border-radius:8px;cursor:pointer">Close</button>'+
+      '</div>';
+  }).catch(function(e){mc.innerHTML='<div style="color:var(--red,#f44);padding:20px">Error: '+e.message+'</div>';});
+}
+function copyPromptText(id){
+  var el=document.getElementById(id);if(!el)return;
+  navigator.clipboard.writeText(el.value).then(function(){el.style.borderColor='var(--cyan,#0ff)';setTimeout(function(){el.style.borderColor='var(--line,#333)'},1000);});
+}
+async function usePromptsAndGen(idx){
+  var v=TREND_VIDEOS[idx];if(!v||!CUR)return alert('Select an influencer first');
+  var imgP=document.getElementById('modalImgPrompt')?.value||'';
+  var vidP=document.getElementById('modalVidPrompt')?.value||'';
+  if(!imgP)return alert('Image prompt is empty');
+  document.getElementById('promptModal').style.display='none';
+  log('⚡ generating with your custom prompts...');
+  var r=await api('/influencer/generate-from-trend',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({id:CUR.id,style:$('style').value,ratio:$('ratio').value,imageModel:$('imageModel').value,
+      caption:v.caption||v.title||'',hashtags:'',duration:v.duration||0,views:v.views||0,
+      platform:v.platform||'tiktok',cover:v.cover||'',videoUrl:v.videoUrl||'',
+      customImgPrompt:imgP,customVidPrompt:vidP})
+  });
+  if(r.error)alert(r.error);else log('⚡ generation started with custom prompts');
+}
+</script>
+
+<div id="promptModal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.8);z-index:9999;justify-content:center;align-items:center">
+  <div style="background:var(--panel,#1a1a2e);border:1px solid var(--line,#333);border-radius:12px;padding:20px;max-width:600px;width:90%;max-height:80vh;overflow-y:auto">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+      <h3 style="margin:0;color:var(--txt,#fff)">📋 Prompts for this trend</h3>
+      <span onclick="document.getElementById('promptModal').style.display='none'" style="cursor:pointer;font-size:20px;color:var(--dim,#888)">✕</span>
+    </div>
+    <div id="promptModalContent"></div>
+  </div>
+</div>
+</body>
+</html>
