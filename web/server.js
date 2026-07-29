@@ -871,7 +871,7 @@ async function resolveInfluencerRefUrl(infl) {
   return null;
 }
 async function readJson(f) { try { return JSON.parse(await fsp.readFile(f, 'utf8')); } catch { return null; } }
-async function writeJson(f, d) { await fsp.writeFile(f, JSON.stringify(d, null, 2)); }
+async function writeJson(f, d) { await fsp.mkdir(path.dirname(f), { recursive: true }); await fsp.writeFile(f, JSON.stringify(d, null, 2)); }
 
 // ---------------- PaxSenix helpers ----------------
 async function paxFetch(url, opts = {}, timeoutMs = 120000) {
@@ -2219,6 +2219,10 @@ async function generateInfluencerVideo(infl, contentId, ratio, videoDuration = 6
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.png': 'image/png', '.jpg': 'image/jpeg', '.mp4': 'video/mp4', '.mp3': 'audio/mpeg', '.json': 'application/json' };
 function sendJson(res, code, obj) { res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(obj)); }
 function readBody(req) { return new Promise((resolve, reject) => { let s = ''; req.on('data', c => { s += c; if (s.length > 15e6) req.destroy(); }); req.on('end', () => { try { resolve(s ? JSON.parse(s) : {}); } catch (e) { reject(e); } }); req.on('error', reject); }); }
+async function runJobOnVercel(res, jobFn, successData = { ok: true }) {
+  try { await jobFn(); return sendJson(res, 200, successData); }
+  catch (e) { return sendJson(res, 500, { error: String(e.message || e) }); }
+}
 
 // Save uploaded base64 image as a reference photo.
 // Uploads to catbox.moe for a permanent public URL that PaxSenix img2img can use directly.
@@ -2277,6 +2281,13 @@ const requestHandler = async (req, res) => {
       const targetDuration = Math.max(10, Math.min(600, Number(duration) || 120));
       const secPerFrame = Number(clipDuration) || 6;
       setPhase('storyboard', 1); logLine(`storyboard generation: ${model || MODELS[0]} — target ${targetDuration}s — ${secPerFrame}s per clip`);
+      if (IS_VERCEL) return runJobOnVercel(res, async () => {
+        const { characters, frames } = await generateStoryboard(script, model || MODELS[0], targetDuration, look || '', language || DEFAULT_LANGUAGE, secPerFrame);
+        job.ok = 1; job.done = 1;
+        const totalDur = frames.reduce((s, f) => s + (f.duration_sec || 0), 0);
+        logLine(`storyboard ready: ${characters.length} characters, ${frames.length} frames (${totalDur}s total)`);
+        job.phase = 'idle';
+      });
       (async () => {
         try {
           const { characters, frames } = await generateStoryboard(script, model || MODELS[0], targetDuration, look || '', language || DEFAULT_LANGUAGE, secPerFrame);
@@ -2357,9 +2368,9 @@ const requestHandler = async (req, res) => {
       const chars = await readJson(CHARS_JSON) || [];
       if (!chars.length) return sendJson(res, 400, { error: 'no characters — generate storyboard first' });
       const body = await readBody(req).catch(() => ({}));
-      // Force re-render if requested (true = all, array = specific IDs)
       if (body.force === true) { for (const c of chars) { try { fs.unlinkSync(charRefFile(c.id)); } catch {} } }
       else if (Array.isArray(body.force)) { for (const id of body.force) { try { fs.unlinkSync(charRefFile(id)); } catch {} } }
+      if (IS_VERCEL) return runJobOnVercel(res, async () => { await generateCharRefs(chars, body.imageModel || IMAGE_MODELS[0], body.style || 'cinematic'); job.phase = 'idle'; });
       generateCharRefs(chars, body.imageModel || IMAGE_MODELS[0], body.style || 'cinematic').catch(e => { logLine(`char-refs crash: ${e.message}`); job.phase = 'idle'; });
       return sendJson(res, 202, { started: true, count: chars.length });
     }
@@ -2375,6 +2386,7 @@ const requestHandler = async (req, res) => {
         for (const f of frames) { try { fs.unlinkSync(frameFile(f.frame)); } catch {} }
       }
       const chars = await readJson(CHARS_JSON) || [];
+      if (IS_VERCEL) return runJobOnVercel(res, async () => { await generateImages(frames, body.imageModel || IMAGE_MODELS[0], body.ratio || '16:9', body.style || 'cinematic', body.consistency !== false, chars); job.phase = 'idle'; });
       generateImages(frames, body.imageModel || IMAGE_MODELS[0], body.ratio || '16:9', body.style || 'cinematic', body.consistency !== false, chars).catch(e => { logLine(`images crash: ${e.message}`); job.phase = 'idle'; });
       return sendJson(res, 202, { started: true, count: frames.length });
     }
@@ -2385,6 +2397,7 @@ const requestHandler = async (req, res) => {
       const frames = await readJson(FRAMES_JSON) || [];
       if (!frames.length) return sendJson(res, 400, { error: 'no frames' });
       if (body.force) { for (const f of frames) { if (f.animation_prompt) { try { fs.unlinkSync(videoFile(f.frame)); } catch {} } } }
+      if (IS_VERCEL) return runJobOnVercel(res, async () => { await generateVideos(frames, body.ratio || '16:9', body.videoModel || DEFAULT_VIDEO_MODEL); job.phase = 'idle'; });
       generateVideos(frames, body.ratio || '16:9', body.videoModel || DEFAULT_VIDEO_MODEL).catch(e => { logLine(`videos crash: ${e.message}`); job.phase = 'idle'; });
       return sendJson(res, 202, { started: true, count: frames.filter(f => f.animation_prompt).length });
     }
@@ -2393,6 +2406,7 @@ const requestHandler = async (req, res) => {
       if (job.phase !== 'idle') return sendJson(res, 409, { error: 'busy' });
       const body = await readBody(req).catch(() => ({}));
       const frames = await readJson(FRAMES_JSON) || [];
+      if (IS_VERCEL) return runJobOnVercel(res, async () => { await combineFilm(frames, body.ratio || '16:9'); job.phase = 'idle'; });
       combineFilm(frames, body.ratio || '16:9').then(fp => { if (!fp) logLine('combine: no output'); }).catch(e => { logLine(`combine crash: ${e.message}`); job.phase = 'idle'; });
       return sendJson(res, 202, { started: true });
     }
@@ -2407,10 +2421,10 @@ const requestHandler = async (req, res) => {
       const body = await readBody(req).catch(() => ({}));
       const frames = await readJson(FRAMES_JSON) || [];
       if (!frames.length) return sendJson(res, 400, { error: 'no frames' });
-      // Delete old chunk files + full narration for fresh generation
       for (const f of frames) { try { fs.unlinkSync(ttsFile(f.frame)); } catch {} }
       for (const f of fs.readdirSync(VIDEO_DIR).filter(f => f.startsWith('narr_chunk_') || f === 'full_narration.mp3')) { try { fs.unlinkSync(path.join(VIDEO_DIR, f)); } catch {} }
       setPhase('narration', 1);
+      if (IS_VERCEL) return runJobOnVercel(res, async () => { await generateFullNarration(frames, body.voice || DEFAULT_VOICE, body.language || DEFAULT_LANGUAGE); job.phase = 'idle'; });
       (async () => {
         try { await generateFullNarration(frames, body.voice || DEFAULT_VOICE, body.language || DEFAULT_LANGUAGE); }
         catch (e) { logLine(`narration crash: ${e.message}`); }
@@ -2476,6 +2490,12 @@ const requestHandler = async (req, res) => {
       if (!profile || !profile.name) return sendJson(res, 400, { error: 'profile.name required' });
       inflSetPhase('infl-expand', 1);
       inflLogLine(`expanding character description for "${profile.name}"`);
+      if (IS_VERCEL) return runJobOnVercel(res, async () => {
+        const description = await expandInfluencerDescription(profile, model || 'gemini-2.5-pro');
+        if (description) { profile.description = description; }
+        if (body.id) { let infl = await findInfluencer(body.id); if (!infl) { infl = { id: body.id, createdAt: Date.now(), refs: [], content: [] }; Object.assign(infl, profile); } infl.description = description; infl.model = model; await saveInfluencer(infl); }
+        inflJob.done = 1; inflJob.ok = 1; inflJob.phase = 'idle';
+      });
       (async () => {
         try {
           const description = await expandInfluencerDescription(profile, model || 'gemini-2.5-pro');
@@ -2505,6 +2525,7 @@ const requestHandler = async (req, res) => {
       if (!infl) return sendJson(res, 404, { error: 'not found' });
       if (!infl.description) return sendJson(res, 400, { error: 'no description — expand profile first' });
       if (body.force) { for (let i = 1; i <= 4; i++) { try { fs.unlinkSync(inflRefFile(body.id, i)); } catch {} } infl.refs = []; }
+      if (IS_VERCEL) return runJobOnVercel(res, async () => { await generateInfluencerRefs(infl); inflJob.phase = 'idle'; });
       generateInfluencerRefs(infl).catch(e => { inflLogLine(`infl-refs crash: ${e.message}`); inflJob.phase = 'idle'; });
       return sendJson(res, 202, { started: true });
     }
@@ -2549,9 +2570,12 @@ const requestHandler = async (req, res) => {
       const infl = await findInfluencer(body.id);
       if (!infl) return sendJson(res, 404, { error: 'not found' });
       if (!infl.description) return sendJson(res, 400, { error: 'no description' });
-
-      // Auto-upgrade to img2img when reference images exist — anchors face/likeness
       const refUrl = body.refUrl || await resolveInfluencerRefUrl(infl);
+      if (IS_VERCEL) return runJobOnVercel(res, async () => {
+        if (refUrl) { await generateInfluencerContentImg2Img(infl, refUrl, body.prompt, body.style || 'realistic', body.ratio || '1:1', body.imageModel || IMAGE_MODELS[0]); }
+        else { await generateInfluencerContent(infl, body.prompt, body.style || 'realistic', body.ratio || '1:1', body.imageModel || IMAGE_MODELS[0]); }
+        inflJob.phase = 'idle';
+      });
       if (refUrl) {
         inflLogLine(`image: auto-upgrading to img2img (ref found: ${refUrl.slice(0, 60)})`);
         generateInfluencerContentImg2Img(infl, refUrl, body.prompt, body.style || 'realistic', body.ratio || '1:1', body.imageModel || IMAGE_MODELS[0]).catch(e => { inflLogLine(`infl-img2img crash: ${e.message}`); inflJob.phase = 'idle'; });
@@ -2569,13 +2593,13 @@ const requestHandler = async (req, res) => {
       if (!body.id || !body.prompt) return sendJson(res, 400, { error: 'id and prompt required' });
       const infl = await findInfluencer(body.id);
       if (!infl) return sendJson(res, 404, { error: 'not found' });
-      
-      // Get reference URL for img2img (uploaded photo on uguu.se)
       let refUrl = body.refUrl;
-      if (!refUrl) {
-        refUrl = await resolveInfluencerRefUrl(infl);
-      }
-      
+      if (!refUrl) { refUrl = await resolveInfluencerRefUrl(infl); }
+      if (IS_VERCEL) return runJobOnVercel(res, async () => {
+        if (refUrl) { await generateInfluencerContentImg2Img(infl, refUrl, body.prompt, body.style || 'realistic', body.ratio || '1:1', body.imageModel || IMAGE_MODELS[0]); }
+        else { await generateInfluencerContent(infl, body.prompt, body.style || 'realistic', body.ratio || '1:1', body.imageModel || IMAGE_MODELS[0]); }
+        inflJob.phase = 'idle';
+      });
       if (refUrl) {
         // img2img with the uploaded photo's public URL (uguu.se)
         inflLogLine(`img2img using reference: ${refUrl.slice(0, 60)}`);
@@ -2594,6 +2618,7 @@ const requestHandler = async (req, res) => {
       if (!body.id || !body.contentId) return sendJson(res, 400, { error: 'id and contentId required' });
       const infl = await findInfluencer(body.id);
       if (!infl) return sendJson(res, 404, { error: 'not found' });
+      if (IS_VERCEL) return runJobOnVercel(res, async () => { await generateInfluencerVideo(infl, body.contentId, body.ratio || '1:1', 6, body.videoPrompt || ''); inflJob.phase = 'idle'; });
       generateInfluencerVideo(infl, body.contentId, body.ratio || '1:1', 6, body.videoPrompt || '').catch(e => { inflLogLine(`infl-video crash: ${e.message}`); inflJob.phase = 'idle'; });
       return sendJson(res, 202, { started: true });
     }
@@ -3698,6 +3723,42 @@ Return ONLY valid JSON: {"imgPrompt":"...","vidPrompt":"..."}
       const customVidPrompt = body.customVidPrompt || '';
       const fallbackModels = ['kimi-2.7-code', 'glm-5.2', 'mimo-v2.5', 'gemini-2.5-pro'];
       function nextModel(prev) { return fallbackModels.find(m => m !== prev) || fallbackModels[0]; }
+
+      if (IS_VERCEL) {
+        inflSetPhase('trend-create', 3);
+        return runJobOnVercel(res, async () => {
+          try {
+            if (!infl.description) {
+              const profile = { name: infl.name, age: infl.age, gender: infl.gender, ethnicity: infl.ethnicity, hair: infl.hair, eyes: infl.eyes, bodyType: infl.bodyType, defaultWardrobe: infl.defaultWardrobe, signatureTrait: infl.signatureTrait, vibe: infl.vibe };
+              let model = 'gemini-3.1-pro'; let desc = '';
+              for (let i = 0; i < 3; i++) { try { desc = await expandInfluencerDescription(profile, model); if (desc && desc.length > 100) break; } catch { model = nextModel(model); } }
+              if (!desc) throw new Error('could not generate locked influencer description');
+              infl.description = desc; await saveInfluencer(infl);
+            }
+            if (!trendCaption && !trendCover) {
+              if (TAVILY_API_KEY) { try { const terms = await tavilyTrendTerms('TikTok trending', 20); if (terms.length) trendCaption = terms[Math.floor(Math.random() * terms.length)]; } catch {} }
+              if (!trendCaption) throw new Error('could not fetch a fresh live trend');
+              trendPlatform = 'tiktok';
+            }
+            const analyzePrompt = `Create a matching scene for an AI influencer. Platform: ${trendPlatform}. Caption: "${trendCaption}". Return ONLY JSON: {"scene_prompt":"60-120 words photorealistic scene","animation_prompt":"one sentence motion","caption":"Instagram caption"}. CHARACTER:\n${infl.description}`;
+            const sceneMsgs = [{ role: 'system', content: analyzePrompt }, { role: 'user', content: 'Return ONLY the JSON.' }];
+            let sceneContent = '', sceneModel = 'gemini-3.1-pro';
+            for (let attempt = 0; attempt < 3; attempt++) { try { sceneContent = await chatCompletion(sceneModel, sceneMsgs, 3000); if (sceneContent) break; } catch { sceneModel = nextModel(sceneModel); } }
+            if (!sceneContent) throw new Error('LLM returned no scene');
+            let scene; try { const s = sceneContent.indexOf('{'); const e = sceneContent.lastIndexOf('}'); scene = JSON.parse(sceneContent.slice(s, e + 1)); } catch { throw new Error('failed to parse scene JSON'); }
+            let cid = null;
+            const resolvedRefUrl = await resolveInfluencerRefUrl(infl);
+            if (resolvedRefUrl) { cid = await generateInfluencerContentImg2Img(infl, resolvedRefUrl, scene.scene_prompt, style, ratio, imageModel); }
+            if (!cid) { cid = await generateInfluencerContent(infl, scene.scene_prompt, style, ratio, imageModel); }
+            if (!cid) throw new Error('image generation failed');
+            const animItem = infl.content.find(c => c.id === cid);
+            if (animItem) { animItem.animation_prompt = scene.animation_prompt; if (scene.caption) animItem.caption = scene.caption; await saveInfluencer(infl); }
+            await generateInfluencerVideo(infl, cid, ratio, 6);
+            inflJob.done = 3; inflJob.ok = 3;
+          } catch (e) { inflLogLine(`trend generation FAILED: ${e.message}`); throw e; }
+          inflJob.phase = 'idle';
+        });
+      }
 
       inflSetPhase('trend-create', 3);
       (async () => {
