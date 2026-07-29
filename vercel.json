@@ -1,4 +1,7 @@
 {
   "version": 2,
-  "cleanUrls": true
+  "cleanUrls": true,
+  "rewrites": [
+    { "source": "/effects/:slug", "destination": "/flashloop-studio.html" }
+  ]
 }
