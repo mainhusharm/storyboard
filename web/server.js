@@ -172,27 +172,36 @@ async function ytSearch(query, limit = 5) {
 async function ttSearch(query, limit = 5) {
   try {
     const url = `https://www.tikwm.com/api/feed/search?keywords=${encodeURIComponent(query)}&count=${Math.min(limit * 5, 50)}`;
-    const res = await fetch(url, { signal: AbortSignal.timeout(VERCEL_TIMEOUT) });
+    const res = await fetch(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', Accept: 'application/json' },
+      signal: AbortSignal.timeout(VERCEL_TIMEOUT)
+    });
     const json = await res.json().catch(() => ({}));
-    const videos = (Array.isArray(json.data) ? json.data : json.data?.videos || []);
+    // TikWM shapes: { data: [...] } | { data: { videos: [...] } } | { videos: [...] }
+    let videos = [];
+    if (Array.isArray(json.data)) videos = json.data;
+    else if (Array.isArray(json.data?.videos)) videos = json.data.videos;
+    else if (Array.isArray(json.videos)) videos = json.videos;
+    else if (Array.isArray(json.data?.data)) videos = json.data.data;
     const result = [];
     const seen = new Set();
     for (const v of videos) {
-      const id = v.video_id;
-      const authorId = v.author?.unique_id;
-      const duration = Number(v.duration || 0);
-      if (!id || !authorId || seen.has(id)) continue;
-      if (duration <= 0 || duration > 60) continue; // short-form only
+      const id = v.video_id || v.id || v.aweme_id;
+      const authorId = v.author?.unique_id || v.author?.uniqueId || v.author?.id || 'user';
+      const duration = Number(v.duration || v.video?.duration || 0);
+      if (!id || seen.has(id)) continue;
+      // Accept missing duration (some mirrors omit it); skip only if clearly long-form
+      if (duration > 60) continue;
       seen.add(id);
       result.push({
-        id,
-        title: v.title || '',
-        thumbnail: v.origin_cover || v.cover || '',
-        url: `https://www.tiktok.com/@${authorId}/video/${id}`,
-        views: v.play_count || 0,
-        likes: v.digg_count || 0,
-        duration,
-        author: v.author?.nickname || v.author?.unique_id || '',
+        id: String(id),
+        title: v.title || v.desc || '',
+        thumbnail: v.origin_cover || v.cover || v.video?.cover || v.thumbnail || '',
+        url: v.play || v.wmplay || (authorId !== 'user' ? `https://www.tiktok.com/@${authorId}/video/${id}` : `https://www.tiktok.com/video/${id}`),
+        views: v.play_count || v.playCount || v.stats?.playCount || 0,
+        likes: v.digg_count || v.diggCount || v.stats?.diggCount || 0,
+        duration: duration || 15,
+        author: v.author?.nickname || v.author?.unique_id || v.author?.uniqueId || authorId || '',
         platform: 'tiktok'
       });
       if (result.length >= limit) break;
@@ -563,27 +572,33 @@ STYLE: Cinematic, photorealistic, ${ratio}. Preserve visual style from first-fra
 // TikWM direct trending feed (free, no login). Returns real trending TikTok videos.
 async function ttTrendingFeed(limit = 10) {
   try {
-    const res = await fetch('https://www.tikwm.com/api/feed/list?region=US&count=' + Math.min(limit * 2, 30), { signal: AbortSignal.timeout(VERCEL_TIMEOUT) });
+    const res = await fetch('https://www.tikwm.com/api/feed/list?region=US&count=' + Math.min(limit * 2, 30), {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', Accept: 'application/json' },
+      signal: AbortSignal.timeout(VERCEL_TIMEOUT)
+    });
     const json = await res.json().catch(() => ({}));
-    const videos = (Array.isArray(json.data) ? json.data : json.data?.videos || []);
+    let videos = [];
+    if (Array.isArray(json.data)) videos = json.data;
+    else if (Array.isArray(json.data?.videos)) videos = json.data.videos;
+    else if (Array.isArray(json.videos)) videos = json.videos;
     const result = [];
     const seen = new Set();
     for (const v of videos) {
-      const id = v.video_id;
-      const authorId = v.author?.unique_id;
+      const id = v.video_id || v.id || v.aweme_id;
+      const authorId = v.author?.unique_id || v.author?.uniqueId || 'user';
       const duration = Number(v.duration || 0);
-      if (!id || !authorId || seen.has(id)) continue;
-      if (duration <= 0 || duration > 60) continue;
+      if (!id || seen.has(id)) continue;
+      if (duration > 60) continue;
       seen.add(id);
       result.push({
-        id,
-        title: v.title || '',
+        id: String(id),
+        title: v.title || v.desc || '',
         thumbnail: v.origin_cover || v.cover || '',
-        url: `https://www.tiktok.com/@${authorId}/video/${id}`,
+        url: authorId !== 'user' ? `https://www.tiktok.com/@${authorId}/video/${id}` : `https://www.tiktok.com/video/${id}`,
         views: v.play_count || 0,
         likes: v.digg_count || 0,
-        duration,
-        author: v.author?.nickname || v.author?.unique_id || '',
+        duration: duration || 15,
+        author: v.author?.nickname || v.author?.unique_id || authorId || '',
         platform: 'tiktok'
       });
       if (result.length >= limit) break;
@@ -2253,11 +2268,28 @@ async function saveUploadedRef(infl, dataUrl) {
 }
 
 const requestHandler = async (req, res) => {
-  const u = new URL(req.url, `http://localhost:${PORT}`);
-  const p = u.pathname;
+  // Normalize URL for Vercel (catch-all / rewrites may alter req.url)
+  let rawUrl = req.url || '/';
+  if (IS_VERCEL) {
+    const hdrPath = req.headers['x-invoke-path'] || req.headers['x-matched-path'] || req.headers['x-vercel-original-path'];
+    if (hdrPath && typeof hdrPath === 'string') {
+      const qs = rawUrl.includes('?') ? rawUrl.slice(rawUrl.indexOf('?')) : '';
+      rawUrl = hdrPath.startsWith('/') ? hdrPath + qs : '/' + hdrPath + qs;
+    }
+    // Catch-all sometimes yields /api/[...path] or path without /api prefix
+    if (!rawUrl.startsWith('/api') && !rawUrl.startsWith('/frames') && !rawUrl.startsWith('/video') && !rawUrl.startsWith('/public')) {
+      const bare = rawUrl.startsWith('/') ? rawUrl : '/' + rawUrl;
+      if (bare !== '/' && !bare.startsWith('/?')) rawUrl = '/api' + bare;
+    }
+  }
+  const u = new URL(rawUrl, `http://localhost:${PORT}`);
+  let p = u.pathname;
+  // Strip trailing slash except root
+  if (p.length > 1 && p.endsWith('/')) p = p.slice(0, -1);
   try {
     // --- API ---
     if (p === '/api/status') return sendJson(res, 200, job);
+    if (p === '/api/health' || p === '/api/ping') return sendJson(res, 200, { ok: true, vercel: IS_VERCEL, path: p, url: rawUrl, hasKey: !!API_KEY });
     if (p === '/api/models') return sendJson(res, 200, { chat: MODELS, image: IMAGE_MODELS, video: VIDEO_MODELS, voices: VOICES, languages: LANGUAGES, narrationModes: NARRATION_MODES, styles: STYLE_KEYS.map(k => ({ key: k, label: STYLES[k].label })) });
 
     if (p === '/api/characters') {
@@ -2774,10 +2806,26 @@ Return ONLY a JSON object:
       const max = Math.min(parseInt(u.searchParams.get('max') || '12'), 20);
       try {
         if (IS_VERCEL) {
-          const queries = ['beauty influencer grwm', 'fashion haul ootd', 'lifestyle influencer vlog'];
-          const ttResults = await Promise.all(queries.map(q => ttSearch(q, Math.ceil(max / 3))));
-          const all = ttResults.flat();
-          return sendJson(res, 200, { source: 'tiktok', videos: all.slice(0, max).map(v => ({ id: v.id, platform: 'tiktok', caption: v.title, title: v.title, author: v.author, authorName: v.author, views: v.views, likes: v.likes, duration: v.duration, cover: v.thumbnail, videoUrl: v.url, fresh: true, fetchedAt: Date.now() })) });
+          const queries = ['beauty influencer grwm', 'fashion haul ootd', 'lifestyle influencer vlog', 'get ready with me'];
+          const [searchResults, feed] = await Promise.all([
+            Promise.all(queries.map(q => ttSearch(q, Math.ceil(max / 4) + 1))).then(r => r.flat()).catch(() => []),
+            ttTrendingFeed(max).catch(() => [])
+          ]);
+          const seen = new Set();
+          const all = [];
+          for (const v of [...searchResults, ...feed]) {
+            if (!v || !v.id || seen.has(v.id)) continue;
+            seen.add(v.id);
+            all.push(v);
+          }
+          return sendJson(res, 200, {
+            source: 'tiktok',
+            videos: all.slice(0, max).map(v => ({
+              id: v.id, platform: v.platform || 'tiktok', caption: v.title, title: v.title,
+              author: v.author, authorName: v.author, views: v.views, likes: v.likes,
+              duration: v.duration, cover: v.thumbnail, videoUrl: v.url, fresh: true, fetchedAt: Date.now()
+            }))
+          });
         }
         // 1) Get LIVE trending topics from Tavily to build search queries
         let liveTerms = [];
@@ -2939,13 +2987,63 @@ Return ONLY a JSON object:
       const searchQuery = (u.searchParams.get('q') || '').trim();
 
       if (IS_VERCEL) {
-        const queries = searchQuery ? [searchQuery] : [category, category + ' trending', category + ' viral'];
+        // Trend Loop (flashloop category): scrape Flashloop formats — not TikTok search
+        if (category === 'flashloop' || category === 'ai-formats') {
+          let flashloopFormats = [];
+          try { flashloopFormats = await scrapeFlashloop(); } catch (e) { logLine('vercel flashloop: ' + e.message); }
+          if (!flashloopFormats.length) {
+            // Minimal fallback so UI is never empty if scrape is blocked
+            flashloopFormats = [
+              { slug: 'crystal-fruit-cv', name: 'Crystal Fruit', thumbnail: '', tagline: 'ASMR crystal fruit cut' },
+              { slug: 'claymation-cv', name: 'Claymation', thumbnail: '', tagline: '3D clay viral style' },
+              { slug: 'anime-edit-cv', name: 'Anime Edit', thumbnail: '', tagline: 'Viral anime edit format' },
+              { slug: 'product-reveal-cv', name: 'Product Reveal', thumbnail: '', tagline: 'Cinematic product unbox' },
+              { slug: 'face-morph-cv', name: 'Face Morph', thumbnail: '', tagline: 'Identity morph trend' },
+              { slug: 'mini-world-cv', name: 'Mini World', thumbnail: '', tagline: 'Tiny world diorama' },
+              { slug: 'food-asmr-cv', name: 'Food ASMR', thumbnail: '', tagline: 'Macro food ASMR' },
+              { slug: 'outfit-transform-cv', name: 'Outfit Transform', thumbnail: '', tagline: 'Wardrobe change viral' }
+            ];
+          }
+          return sendJson(res, 200, {
+            source: 'flashloop',
+            category,
+            as_of_ts: new Date().toISOString(),
+            liveTerms: [],
+            videos: flashloopFormats.slice(0, max).map(flashloopAsVideo),
+            flashloopFormats: flashloopFormats.slice(0, 30),
+            tavilyConnected: !!TAVILY_API_KEY,
+            flashloopConnected: flashloopFormats.length > 0
+          });
+        }
+        // Regular trends: TikWM search + trending feed in parallel (short timeout)
+        const queries = searchQuery
+          ? [searchQuery]
+          : (category === 'trending'
+            ? ['viral', 'fyp', 'trending']
+            : [category, category + ' shorts', category + ' viral']);
         let ttVideos = [];
         try {
-          const ttResults = await Promise.all(queries.slice(0, 3).map(q => ttSearch(q, Math.ceil(max / 3))));
-          ttVideos = ttResults.flat();
-        } catch (e) {}
-        return sendJson(res, 200, { source: 'tiktok', category, videos: ttVideos.slice(0, max), liveTerms: [], flashloopFormats: [], tavilyConnected: false, flashloopConnected: false });
+          const [searchResults, feed] = await Promise.all([
+            Promise.all(queries.slice(0, 3).map(q => ttSearch(q, Math.ceil(max / 2) + 1))).then(r => r.flat()).catch(() => []),
+            ttTrendingFeed(max).catch(() => [])
+          ]);
+          const seen = new Set();
+          for (const v of [...searchResults, ...feed]) {
+            if (!v || !v.id || seen.has(v.id)) continue;
+            seen.add(v.id);
+            ttVideos.push(v);
+          }
+        } catch (e) { logLine('vercel trends: ' + e.message); }
+        return sendJson(res, 200, {
+          source: 'tiktok',
+          category,
+          as_of_ts: new Date().toISOString(),
+          videos: ttVideos.slice(0, max),
+          liveTerms: [],
+          flashloopFormats: [],
+          tavilyConnected: !!TAVILY_API_KEY,
+          flashloopConnected: false
+        });
       }
 
       // Category-specific search queries tuned for yt-dlp + Tavily

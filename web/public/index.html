@@ -285,7 +285,7 @@ const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&g
 const pad=n=>String(n).padStart(2,'0');
 let FRAMES=[],CHARS=[];
 
-async function api(p,opts){const r=await fetch('/api'+p,opts);return r.json()}
+async function api(p,opts){const r=await fetch('/api'+p,opts);const t=await r.text();try{return JSON.parse(t)}catch(e){throw new Error('API '+r.status+': '+(t||'').slice(0,120))}}
 
 async function init(){
   const m=await api('/models');

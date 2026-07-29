@@ -380,14 +380,25 @@ const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&g
 let CUR=null; // current influencer object
 let pollTimer=null;
 
-async function api(p,opts){const sep=p.includes('?')?'&':'?';const r=await fetch('/api'+p+sep+'_'+Date.now(),opts);return r.json()}
+async function api(p,opts){
+  const sep=p.includes('?')?'&':'?';
+  const r=await fetch('/api'+p+sep+'_'+Date.now(),opts);
+  const t=await r.text();
+  try{return JSON.parse(t)}catch(e){throw new Error('API '+r.status+': '+(t||'').slice(0,120))}
+}
 
 async function init(){
-  const m=await api('/models');
-  $('style').innerHTML=(m.styles||[{key:'realistic',label:'Realistic'}]).map(s=>`<option value="${s.key}">${s.label}</option>`).join('');
-  $('imageModel').innerHTML=m.image.map(x=>`<option>${x}</option>`).join('');
-  await loadInfluencerList();
-  poll();pollTimer=setInterval(poll,2500);
+  try{
+    const m=await api('/models');
+    $('style').innerHTML=(m.styles||[{key:'realistic',label:'Realistic'}]).map(s=>`<option value="${s.key}">${s.label}</option>`).join('');
+    $('imageModel').innerHTML=(m.image||[]).map(x=>`<option>${x}</option>`).join('');
+    await loadInfluencerList();
+    poll();pollTimer=setInterval(poll,2500);
+  }catch(e){
+    console.error(e);
+    const g=$('gallery');
+    if(g)g.innerHTML='<div class="empty"><div class="big">⚠️</div><h3>API ERROR</h3><p>'+esc(e.message)+'</p><p style="font-size:11px;color:var(--faint)">Check /api/health on this domain</p></div>';
+  }
 }
 
 async function loadInfluencerList(){

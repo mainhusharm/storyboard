@@ -173,7 +173,8 @@ async function loadTrends(force=false){
   try{
     const url='/api/trends?category='+encodeURIComponent(CURR_CAT)+'&max=20'+(force?'&refresh=1':'')+'&_='+Date.now();
     const r=await fetch(url, {cache:'no-store'});
-    const j=await r.json();
+    const t=await r.text();
+    let j; try{j=JSON.parse(t)}catch(e){throw new Error('API '+r.status+': '+(t||'').slice(0,120))}
     TREND_VIDEOS=j.videos||[];
     $('lastUpdate').textContent=(j.tavilyConnected?'🔵 Tavily · ':'')+(j.cached?'cached':'live · just now');
     if(j.liveTerms&&j.liveTerms.length){
