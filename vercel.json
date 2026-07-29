@@ -1,10 +1,7 @@
 {
   "version": 2,
+  "cleanUrls": true,
   "rewrites": [
-    { "source": "/api/:path*", "destination": "/api/index.js" },
-    { "source": "/influencer", "destination": "/public/influencer.html" },
-    { "source": "/trends", "destination": "/public/trends.html" },
-    { "source": "/flashloop-studio", "destination": "/public/flashloop-studio.html" },
-    { "source": "/effects/:slug", "destination": "/public/flashloop-studio.html" }
+    { "source": "/api/:path*", "destination": "/api/index.js" }
   ]
 }
