@@ -48,6 +48,8 @@
   .platform-badge{position:absolute;top:6px;left:6px;padding:3px 8px;background:rgba(0,0,0,.7);border-radius:4px;font-size:10px;font-weight:700;z-index:2;text-transform:uppercase}
   .platform-badge.youtube{background:rgba(255,0,0,.85)}
   .platform-badge.tiktok{background:rgba(0,0,0,.85)}
+  .dl-btn{position:absolute;bottom:8px;right:8px;width:32px;height:32px;border-radius:50%;background:rgba(0,0,0,.7);color:#fff;display:flex;align-items:center;justify-content:center;font-size:16px;text-decoration:none;z-index:3;transition:background .2s}
+  .dl-btn:hover{background:rgba(251,146,60,.9)}
   .platform-badge.flashloop{background:linear-gradient(135deg,#fb923c,#ec4899);font-weight:700}
   .card-body{padding:10px 12px;flex:1;display:flex;flex-direction:column;gap:6px}
   .card-title{font-size:12px;line-height:1.35;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;color:var(--txt);min-height:33px}
@@ -66,6 +68,8 @@
   <div><h1>TRENDS <b>NOW</b></h1></div>
   <span class="sub">LIVE · TIKTOK · YOUTUBE · AI-GENERATED · ANIME</span>
   <div class="right">
+    <a href="/trends?source=flashloop" class="back-btn" style="border-color:rgba(139,124,246,.4);color:var(--violet)">⚡ Trend Loop</a>
+    <a href="/trends" class="back-btn">🔥 Trends</a>
     <a href="/" class="back-btn">← Storyboard</a>
     <a href="/influencer" class="back-btn">✨ AI Influencer</a>
   </div>
@@ -110,6 +114,8 @@ const CATEGORIES=[
 ];
 let CURR_CAT='trending';
 let TREND_VIDEOS=[];
+const urlParams=new URLSearchParams(location.search);
+const sourceFilter=urlParams.get('source');
 
 function fmtNum(n){if(!n&&n!==0)return'—';if(n>=1e6)return(n/1e6).toFixed(1)+'M';if(n>=1e3)return(n/1e3).toFixed(1)+'K';return String(n);}
 
@@ -122,8 +128,9 @@ function renderCats(){
 
 function renderVideos(){
   const g=$('grid');
-  if(!TREND_VIDEOS.length){g.innerHTML='<div class="empty"><div class="big">📡</div><p>No trending content found for this category right now. Try another category or refresh.</p></div>';return;}
-  g.innerHTML=TREND_VIDEOS.map((v,i)=>{
+  const vids=sourceFilter==='flashloop'?TREND_VIDEOS.filter(v=>(v.platform||'').toLowerCase()==='flashloop'):TREND_VIDEOS;
+  if(!vids.length){g.innerHTML='<div class="empty"><div class="big">📡</div><p>No trending content found for this category right now. Try another category or refresh.</p></div>';return;}
+  g.innerHTML=vids.map((v,i)=>{
     const platform=(v.platform||'youtube').toLowerCase();
     const badgeClass=platform==='youtube'?'youtube':platform==='tiktok'?'tiktok':platform==='flashloop'?'flashloop':'';
     const platformLabel=platform==='flashloop'?'AI FORMAT':platform.toUpperCase();
@@ -134,13 +141,17 @@ function renderVideos(){
       ? `style="background-image:url('${v.thumbnail||v.cover}')"`
       : (isFlashloop ? 'style="background:linear-gradient(135deg,rgba(251,146,60,.5),rgba(236,72,153,.5));display:flex;align-items:center;justify-content:center;font-size:54px;color:rgba(0,0,0,.55)"' : '');
     const clickAction = isFlashloop
-      ? `location.href='/effects/${encodeURIComponent(v.slug||'')}?name=${encodeURIComponent(v.name||title)}&tagline=${encodeURIComponent(v.tagline||'')}'`
+      ? `location.href='/effects/${encodeURIComponent(v.slug||'')}?name=${encodeURIComponent(v.name||title)}&tagline=${encodeURIComponent(v.tagline||'')}&thumbnail=${encodeURIComponent(v.thumbnail||v.cover||'')}'`
       : `window.open('${v.url||v.videoUrl||'#'}','_blank')`;
+    const dlBtn = (isFlashloop && (v.thumbnail || v.cover))
+      ? `<a class="dl-btn" href="/api/proxy-image?url=${encodeURIComponent(v.thumbnail||v.cover)}" download="${(v.slug||'flashloop')}_ref.jpg" onclick="event.stopPropagation()" title="Download reference image">⬇</a>`
+      : '';
     return `<div class="card" onclick="${clickAction}">
       <div class="thumb" ${thumbStyle}>
         ${isFlashloop ? '⚡' : ''}
         <span class="platform-badge ${badgeClass}">${platformLabel}</span>
         ${v.duration?`<span class="duration">${Math.floor(v.duration)}s</span>`:isFlashloop?'<span class="duration">🔥 Hot now</span>':''}
+        ${dlBtn}
       </div>
       <div class="card-body">
         <div class="card-title">${escapeHtml(title)}</div>
@@ -208,7 +219,15 @@ $('searchInput').addEventListener('keypress',e=>{if(e.key==='Enter')$('btnSearch
 $('btnRefresh').onclick=()=>loadTrends(true);
 
 renderCats();
-loadTrends();
+if(sourceFilter==='flashloop'){
+  document.querySelector('.hero h2').textContent='⚡ TREND LOOP';
+  document.querySelector('.hero p').innerHTML='AI-powered viral formats from Flashloop. Click ⬇ to download reference images.<small>Powered by Flashloop API</small>';
+  CURR_CAT='flashloop';
+  renderCats();
+  loadTrends(true);
+}else{
+  loadTrends();
+}
 setInterval(()=>{$('lastUpdate').textContent='live · refreshed';},30000);
 </script>
 </body>

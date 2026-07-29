@@ -77,6 +77,15 @@
     <h2 id="effectTitle">Loading effect…</h2>
     <p id="effectTagline">Build a detailed, effect-aware prompt that you can paste into any AI video generator.</p>
     <span id="effectBadge" class="badge" style="display:none">Flashloop AI Format</span>
+    <div id="trendPreview" style="display:none;margin-top:16px">
+      <div style="font-size:12px;color:var(--dim);margin-bottom:8px;font-weight:600">📐 TREND REFERENCE IMAGE — used as i2i anchor for style consistency</div>
+      <div style="display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap">
+        <img id="trendThumb" src="" alt="Trend reference" style="max-width:240px;max-height:180px;border-radius:12px;border:2px solid var(--orange);object-fit:cover">
+        <div style="flex:1;min-width:200px">
+          <div id="trendStyleInfo" style="font-size:13px;color:var(--dim);line-height:1.5"></div>
+        </div>
+      </div>
+    </div>
   </div>
 
   <div class="panel">
@@ -121,7 +130,10 @@
       <button type="button" id="btnAddRef" style="width:auto;padding:8px 14px;font-size:12px">+ Add @Reference</button>
       <div class="hint">Add characters like @Kairo and @Silas. Their descriptions are injected into both img2img and img2video prompts.</div>
     </div>
-    <button id="btnGenerate" class="generate-btn">✨ Generate Prompts</button>
+    <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center">
+      <button id="btnGenerate" class="generate-btn">✨ Generate Prompts</button>
+      <button id="btnGenerateImage" class="generate-btn" style="background:linear-gradient(135deg,rgba(139,124,246,.25),rgba(34,211,238,.25));border-color:var(--violet);display:none">🖼 Generate Image (i2i)</button>
+    </div>
     <div id="loading" class="loading"><div class="spinner"></div> GPT is writing your production-ready prompts…</div>
     <div id="error" class="error"></div>
   </div>
@@ -145,6 +157,32 @@
       <button id="btnUseVideo" disabled style="background:linear-gradient(135deg,rgba(52,211,153,.2),rgba(34,211,238,.2));border-color:var(--cyan)">🎬 Use img2video Prompt as Script</button>
       <a href="/trends" class="back-btn">← Pick another effect</a>
     </div>
+
+    <div id="i2iSection" style="display:none;margin-top:24px;border-top:1px solid var(--line2);padding-top:20px">
+      <div class="prompt-label">🖼 Generated Image (i2i — anchored to trend reference)</div>
+      <div class="field" style="margin-bottom:14px">
+        <label for="i2iModel">i2i Model</label>
+        <select id="i2iModel">
+          <option value="seedream-5" selected>Seedream 5 (recommended)</option>
+          <option value="seedream-4">Seedream 4</option>
+          <option value="seedream-4.5">Seedream 4.5</option>
+          <option value="nano-banana-2">Nano Banana 2</option>
+          <option value="nano-banana-pro">Nano Banana Pro</option>
+          <option value="nano-banana">Nano Banana</option>
+          <option value="gpt-image-2">GPT Image 2</option>
+        </select>
+        <div class="hint">Choose which PaxSenix img2img model to use. Seedream 5 is most reliable. Nano Banana models may be slower.</div>
+      </div>
+      <div id="i2iLoading" style="display:none;align-items:center;gap:10px;color:var(--dim);font-size:13px;margin:12px 0"><div class="spinner"></div> Generating image via PaxSenix i2i… This may take 1-3 minutes.</div>
+      <div id="i2iError" style="display:none;background:rgba(248,113,113,.12);border:1px solid rgba(248,113,113,.3);color:var(--red);padding:12px 14px;border-radius:10px;font-size:13px;margin:12px 0"></div>
+      <div id="i2iResult" style="display:none">
+        <img id="i2iImage" src="" alt="Generated image" style="max-width:420px;max-height:500px;border-radius:12px;border:1px solid var(--line2);object-fit:contain">
+        <div style="margin-top:10px;display:flex;gap:10px;flex-wrap:wrap">
+          <a id="i2iDownload" href="" download="" class="back-btn" style="background:var(--panel2);border-color:var(--green);color:var(--green)">⬇ Download Image</a>
+          <button id="i2iUseAsRef" style="background:var(--panel2);border-color:var(--cyan);color:var(--cyan)">🎬 Use as Video Reference</button>
+        </div>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -156,7 +194,7 @@ const params = new URLSearchParams(location.search);
 
 // Support both /effects/<slug> and /flashloop-studio?slug=... routes
 const pathMatch = location.pathname.match(/^\/effects\/([^/]+)$/);
-let slug = '', name = '', tagline = '';
+let slug = '', name = '', tagline = '', trendThumbnail = '';
 if (pathMatch) {
   slug = decodeURIComponent(pathMatch[1]);
   name = params.get('name') || slug;
@@ -166,12 +204,20 @@ if (pathMatch) {
   name = params.get('name') || slug;
   tagline = params.get('tagline') || '';
 }
+trendThumbnail = params.get('thumbnail') || params.get('thumb') || '';
 
 function escapeHtml(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 
 $('effectTitle').textContent = name ? escapeHtml(name) : (slug ? escapeHtml(slug) : 'Flashloop Effect');
 $('effectTagline').textContent = tagline ? escapeHtml(tagline) : 'Select an effect from Trends and describe the scene you want.';
 $('effectBadge').style.display = 'inline-block';
+
+// Show trend reference image if available
+if (trendThumbnail) {
+  $('trendPreview').style.display = 'block';
+  $('trendThumb').src = trendThumbnail;
+  $('trendStyleInfo').innerHTML = `The generated prompts will be tuned to match <b>${escapeHtml(name)}</b> visual style. When you click <b>Generate Image</b>, this reference image will be used as the i2i anchor to lock the exact art style, color palette, and composition.`;
+}
 
 let currentImagePrompt = '';
 let currentVideoPrompt = '';
@@ -208,11 +254,12 @@ $('btnGenerate').onclick = async () => {
   $('outputPanel').classList.remove('visible');
   $('btnGenerate').disabled = true;
   $('loading').classList.add('visible');
+  $('btnGenerateImage').style.display = 'none';
   try {
     const res = await fetch('/api/flashloop/generate-prompt', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ slug, name, tagline, idea, duration: Number(duration), ratio, model: $('model').value, references: getRefs() })
+      body: JSON.stringify({ slug, name, tagline, idea, duration: Number(duration), ratio, model: $('model').value, references: getRefs(), trendThumbnail })
     });
     const j = await res.json().catch(() => ({ error: 'Invalid response from server' }));
     if (!res.ok || j.error) throw new Error(j.error || 'Failed to generate prompt');
@@ -225,6 +272,11 @@ $('btnGenerate').onclick = async () => {
     $('btnUseVideo').disabled = !currentVideoPrompt;
     $('outputPanel').classList.add('visible');
     if (j.title) $('effectTitle').textContent = j.title;
+    // Show i2i generation button if we have a trend thumbnail and an image prompt
+    if (trendThumbnail && currentImagePrompt) {
+      $('btnGenerateImage').style.display = 'inline-flex';
+      $('i2iSection').style.display = 'block';
+    }
   } catch (e) {
     $('error').textContent = 'Error: ' + e.message;
     $('error').classList.add('visible');
@@ -253,6 +305,64 @@ $('btnUseVideo').onclick = () => {
   localStorage.setItem('flashloop_prompt', currentVideoPrompt);
   location.href = '/?prefill=flashloop_prompt';
 };
+
+// ---- i2i Image Generation ----
+$('btnGenerateImage').onclick = async () => {
+  if (!trendThumbnail || !currentImagePrompt) return;
+  $('btnGenerateImage').disabled = true;
+  $('i2iLoading').style.display = 'flex';
+  $('i2iError').style.display = 'none';
+  $('i2iResult').style.display = 'none';
+  try {
+    const res = await fetch('/api/flashloop/generate-i2i', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        prompt: currentImagePrompt,
+        refImageUrl: trendThumbnail,
+        ratio: $('ratio').value,
+        model: $('i2iModel').value,
+        trendName: name,
+        tagline: tagline
+      })
+    });
+    const j = await res.json().catch(() => ({ error: 'Invalid response from server' }));
+    if (!res.ok || j.error) throw new Error(j.error || 'Failed to start i2i generation');
+    if (!j.taskUrl) throw new Error('No task URL returned from server');
+    // Poll for the result
+    const imageUrl = await pollTask(j.taskUrl);
+    if (!imageUrl) throw new Error('Image generation timed out or failed');
+    $('i2iImage').src = imageUrl;
+    $('i2iDownload').href = imageUrl;
+    $('i2iDownload').download = `${slug || 'flashloop'}_i2i.png`;
+    $('i2iResult').style.display = 'block';
+  } catch (e) {
+    $('i2iError').textContent = 'Error: ' + e.message;
+    $('i2iError').style.display = 'block';
+  } finally {
+    $('btnGenerateImage').disabled = false;
+    $('i2iLoading').style.display = 'none';
+  }
+};
+
+async function pollTask(taskUrl) {
+  const deadline = Date.now() + 5 * 60 * 1000; // 5 min max
+  let networkErrors = 0;
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(taskUrl);
+      const j = await res.json().catch(() => ({}));
+      networkErrors = 0;
+      if (j.status === 'done' && j.ok) return j.url || (j.urls && j.urls[0]) || null;
+      if (/fail|error/i.test(j.status || '')) throw new Error(j.error || 'Task failed');
+    } catch (e) {
+      networkErrors++;
+      if (networkErrors >= 6) throw new Error('Too many network errors polling task');
+    }
+    await new Promise(r => setTimeout(r, 5000));
+  }
+  throw new Error('Image generation timed out (5 min)');
+}
 </script>
 </body>
 </html>

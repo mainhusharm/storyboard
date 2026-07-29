@@ -15,14 +15,16 @@ const STORYBOARD_DIR = path.join(ROOT, 'storyboard');
 const FRAMES_JSON = path.join(STORYBOARD_DIR, 'frames.json');
 const CHARS_JSON = path.join(STORYBOARD_DIR, 'characters.json');
 const INFLUENCERS_JSON = path.join(STORYBOARD_DIR, 'influencers.json');
-const API_KEY = fs.readFileSync(path.join(ROOT, 'pipeline', 'apikey.txt'), 'utf8').trim();
-const AQUA_API_KEY = fs.readFileSync(path.join(ROOT, 'pipeline', 'aqua_apikey.txt'), 'utf8').trim();
+let API_KEY = process.env.PAXSENIX_API_KEY || '';
+try { API_KEY = API_KEY || fs.readFileSync(path.join(ROOT, 'pipeline', 'apikey.txt'), 'utf8').trim(); } catch {}
+let AQUA_API_KEY = process.env.AQUA_API_KEY || '';
+try { AQUA_API_KEY = AQUA_API_KEY || fs.readFileSync(path.join(ROOT, 'pipeline', 'aqua_apikey.txt'), 'utf8').trim(); } catch {}
 const API = 'https://api.paxsenix.org';
 const AQUA_API = 'https://api.aquadevs.com';
 const PORT = process.env.PORT || 5173;
 // omkar.cloud trending API (TikTok trending + search)
-let OMKAR_KEY = '';
-try { OMKAR_KEY = fs.readFileSync(path.join(ROOT, 'pipeline', 'omkar-key.txt'), 'utf8').trim(); } catch {}
+let OMKAR_KEY = process.env.OMKAR_KEY || '';
+try { OMKAR_KEY = OMKAR_KEY || fs.readFileSync(path.join(ROOT, 'pipeline', 'omkar-key.txt'), 'utf8').trim(); } catch {}
 const OMKAR_API = 'https://tiktok-scraper.omkar.cloud';
 
 // Tavily API key for live trend term discovery (replaces TrendsMCP).
@@ -32,8 +34,8 @@ try { TAVILY_API_KEY = TAVILY_API_KEY || fs.readFileSync(path.join(ROOT, 'pipeli
 const TAVILY_API = 'https://api.tavily.com';
 
 // Optional YouTube Data API v3 key for reliable YouTube Shorts search
-let YOUTUBE_API_KEY = '';
-try { YOUTUBE_API_KEY = fs.readFileSync(path.join(ROOT, 'pipeline', 'youtube-api-key.txt'), 'utf8').trim(); } catch {}
+let YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY || '';
+try { YOUTUBE_API_KEY = YOUTUBE_API_KEY || fs.readFileSync(path.join(ROOT, 'pipeline', 'youtube-api-key.txt'), 'utf8').trim(); } catch {}
 
 if (TAVILY_API_KEY) console.log('[Tavily] API key loaded — live trend discovery enabled');
 else console.log('[Tavily] no API key found — live trend terms will be skipped (yt-dlp + TikWM fallbacks still serve videos)');
@@ -384,31 +386,43 @@ function formatFlashloopRefs(cleanRefs) {
 }
 
 // Generate only the first-frame / reference image prompt (img2img).
-async function generateFlashloopImagePrompt(effectName, tagline, userIdea, ratio, model = 'gpt-5.5', cleanRefs = []) {
+async function generateFlashloopImagePrompt(effectName, tagline, userIdea, ratio, model = 'gpt-5.5', cleanRefs = [], trendThumbnail = '') {
   const refBlock = formatFlashloopRefs(cleanRefs);
-  const system = `You are an expert prompt engineer for short-form AI video generation. Given an effect name, an optional tagline, and a short user idea, write one extremely detailed first-frame / reference image prompt suitable for text-to-image or img2img generation.
+  const hasImage = !!trendThumbnail;
+  const visionBlock = hasImage
+    ? `\n\nA reference image of the "${effectName}" trend is attached below. YOU MUST STUDY IT CAREFULLY before writing the prompt. Analyze the image and identify:\n- The exact visual style (photorealistic, illustrated, 3D render, cel-shaded, etc.)\n- Color palette and grading (warm/cool, saturated/desaturated, contrast level)\n- Lighting style (natural, studio, dramatic, soft, etc.)\n- Composition and framing patterns\n- Materials, textures, and rendering quality\n- Mood and aesthetic vibe\n\nYour prompt MUST recreate this exact visual style. Describe the scene so that when img2img uses the reference image, the output looks like it belongs in the same trend/series. Include explicit style keywords you observe in the image.`
+    : '';
+  const system = `You are an expert prompt engineer for short-form AI video generation. Given an effect name, an optional tagline, and a short user idea, write a CONCISE first-frame / reference image prompt for img2img generation.
 
 CRITICAL RULES:
 - The prompt MUST be about the EFFECT NAME and TAGLINE provided below. It must NOT be about the glass-fruit example.
-- The example below is ONLY for structure, detail level, and tone. Do NOT copy its subject (crystal-glass fruit, knife, cutting board, etc.).
-- Use the effect name and tagline to decide the subject, mood, style, and composition.
+- The example below is ONLY for structure and tone. Do NOT copy its subject.
+- Keep the prompt CONCISE: 80-150 words max. This is just a single frozen frame anchor — not a full scene description.
+- Focus ONLY on: (1) subject and what they're doing, (2) camera angle and framing, (3) lighting and color palette, (4) key materials/textures, (5) style keywords.
+- Do NOT describe every tiny detail, background objects exhaustively, or negative instructions. The video prompt will handle that.
 - If a user idea is provided, incorporate it naturally.
-- Describe the exact single frozen frame: subject, pose, composition, camera angle, lighting, color palette, materials, and style. This single image will later be used as the strict visual reference for the video.
+${visionBlock}
 
-If any @Name references are provided, keep the @ symbol in the final prompt so the user can still see the references, but expand the full description next to the first mention so the image generation model knows exactly what each reference looks like.
+If any @Name references are provided, keep the @ symbol and expand the description briefly.
 
 Return ONLY a JSON object with "title" and "imagePrompt". Do not output any explanation outside the JSON.`;
-  const user = `Effect: ${effectName}
+
+  const userText = `Effect: ${effectName}
 Tagline: ${tagline || 'No tagline provided.'}${refBlock}
 User idea: ${userIdea || 'Create a visually striking scene matching this effect.'}
 Aspect ratio: ${ratio}
 
-Here is an example of a high-quality "imagePrompt" written for the "Glass ASMR Video" effect. Match its detail level and tone, but DO NOT copy the subject:
+Example image prompt (match its CONCISENESS and tone, NOT its subject — keep yours under 150 words):
 
-${FLASHLOOP_EXAMPLE_IMAGE_PROMPT}
+A photorealistic macro close-up of a crystal-glass fruit on a dark slate cutting board. Translucent teal glass skin, coral veins, six dark crystal seeds. Chef's knife beside it. Soft studio lighting from the left, realistic caustics. Camera 25° above, shallow DOF. No hands. 8K, 16:9, first frame only.
 
-Now generate the JSON object { "title": "...", "imagePrompt": "..." } for the effect above. The subject must be "${effectName}". Do not output any explanation outside the JSON.`;
-  const raw = await chatCompletion(model, [{ role: 'system', content: system }, { role: 'user', content: user }], 12000);
+${hasImage ? 'STUDY THE ATTACHED REFERENCE IMAGE. Recreate its exact visual style for "' + effectName + '".' : 'Generate { "title": "...", "imagePrompt": "..." } for "' + effectName + '".'} Keep imagePrompt under 150 words. Do not output any explanation outside the JSON.`;
+
+  const userContent = hasImage
+    ? [{ type: 'text', text: userText }, { type: 'image_url', image_url: { url: trendThumbnail } }]
+    : userText;
+
+  const raw = await chatCompletion(model, [{ role: 'system', content: system }, { role: 'user', content: userContent }], 4000);
   let parsed = {};
   try { parsed = parseJsonLenient(raw); } catch (e) { parsed = {}; }
   const imagePrompt = enforceEffectRelevance(parsed.imagePrompt || raw, effectName, tagline, userIdea, 0, ratio, 'image');
@@ -419,35 +433,47 @@ Now generate the JSON object { "title": "...", "imagePrompt": "..." } for the ef
 }
 
 // Generate only the motion / video prompt (img2video), using the generated image prompt as context.
-async function generateFlashloopVideoPrompt(effectName, tagline, userIdea, duration, ratio, model = 'gpt-5.5', cleanRefs = [], imagePrompt = '') {
+async function generateFlashloopVideoPrompt(effectName, tagline, userIdea, duration, ratio, model = 'gpt-5.5', cleanRefs = [], imagePrompt = '', trendThumbnail = '') {
   const refBlock = formatFlashloopRefs(cleanRefs);
-  const system = `You are an expert prompt engineer for short-form AI video generation. Given an effect name, an optional tagline, a short user idea, and a first-frame image prompt, write one extremely detailed img2video / image-to-video prompt.
+  const hasImage = !!trendThumbnail;
+  const visionBlock = hasImage
+    ? `\n\nA reference image of the "${effectName}" trend is attached below. YOU MUST STUDY IT CAREFULLY. The video must maintain the exact visual style you see in this image — same color palette, lighting mood, textures, rendering quality, and aesthetic. Camera movements and pacing should match the trend's typical cinematography. Audio description should complement the trend's vibe.`
+    : '';
+  const system = `You are an expert prompt engineer for short-form AI video generation. Given an effect name, an optional tagline, a short user idea, and a first-frame image prompt, write an EXTREMELY DETAILED img2video / image-to-video prompt. THIS IS THE MAIN PROMPT that drives the entire video — it must be comprehensive and thorough.
 
 CRITICAL RULES:
 - The prompt MUST be about the EFFECT NAME and TAGLINE provided below. It must NOT be about the glass-fruit example.
 - The example below is ONLY for structure, detail level, and tone. Do NOT copy its subject.
-- Use the effect name and tagline to decide the subject, mood, style, and motion.
-- This prompt assumes the generated first-frame image (described below) is used as the reference. Include camera continuity, exact action timeline (second-by-second), audio description, strict negative instructions, and style/technical specs. Instruct the AI to preserve the exact subject, position, colors, lighting, and composition of the supplied first-frame image while animating.
+- This is the MOST IMPORTANT prompt — it controls the video. Make it long and detailed (400-800 words).
+- MUST include: (1) second-by-second action timeline for the full ${duration || 15} seconds, (2) exact camera movements and continuity instructions, (3) detailed audio/sound description, (4) strict negative instructions (what must NOT happen), (5) style/technical specs.
+- Instruct the AI to preserve the exact subject, position, colors, lighting, and composition of the supplied first-frame image while animating.
+${visionBlock}
 
 If any @Name references are provided, keep the @ symbol in the final prompt so the user can still see the references, but expand the full description next to the first mention so the video generation model knows exactly what each reference looks like.
 
 Return ONLY a JSON object with "title" and "videoPrompt". Do not output any explanation outside the JSON.`;
-  const user = `Effect: ${effectName}
+
+  const userText = `Effect: ${effectName}
 Tagline: ${tagline || 'No tagline provided.'}${refBlock}
 User idea: ${userIdea || 'Create a visually striking scene matching this effect.'}
 Duration: ${duration} seconds
 Aspect ratio: ${ratio}
 
-Here is the first-frame image prompt this motion prompt must be anchored to. Preserve its exact subject, style, lighting, and composition while describing motion:
+First-frame image prompt (your video prompt must describe motion anchored to this exact frame):
 
 ${imagePrompt || 'No image prompt provided.'}
 
-Here is an example of a high-quality "videoPrompt" written for the "Glass ASMR Video" effect. Match its structure, detail level, and tone, but DO NOT copy the subject:
+Example video prompt (match its DETAIL LEVEL, STRUCTURE, and LENGTH — especially the second-by-second timeline, camera section, audio section, and negative instructions. Do NOT copy its subject):
 
 ${FLASHLOOP_EXAMPLE_VIDEO_PROMPT}
 
-Now generate the JSON object { "title": "...", "videoPrompt": "..." } for the effect above. The subject must be "${effectName}". Do not output any explanation outside the JSON.`;
-  const raw = await chatCompletion(model, [{ role: 'system', content: system }, { role: 'user', content: user }], 16000);
+${hasImage ? 'STUDY THE ATTACHED REFERENCE IMAGE. Your video prompt must describe motion that maintains the exact visual style you observe in the image.' : 'Generate { "title": "...", "videoPrompt": "..." } for "' + effectName + '".'} The videoPrompt MUST be detailed (400-800 words) with a full second-by-second timeline. Do not output any explanation outside the JSON.`;
+
+  const userContent = hasImage
+    ? [{ type: 'text', text: userText }, { type: 'image_url', image_url: { url: trendThumbnail } }]
+    : userText;
+
+  const raw = await chatCompletion(model, [{ role: 'system', content: system }, { role: 'user', content: userContent }], 16000);
   let parsed = {};
   try { parsed = parseJsonLenient(raw); } catch (e) { parsed = {}; }
   const videoPrompt = enforceEffectRelevance(parsed.videoPrompt || raw, effectName, tagline, userIdea, duration, ratio, 'video');
@@ -460,9 +486,9 @@ Now generate the JSON object { "title": "...", "videoPrompt": "..." } for the ef
 // Build a production-ready AI scene for a Flashloop-style effect using GPT-5.5.
 // Returns both a first-frame/reference image prompt (img2img) and a motion
 // prompt for image-to-video (img2video) that preserves the generated frame.
-async function generateFlashloopScene(effectName, tagline, userIdea, duration, ratio, model = 'gpt-5.5', references = []) {
+async function generateFlashloopScene(effectName, tagline, userIdea, duration, ratio, model = 'gpt-5.5', references = [], trendThumbnail = '') {
   const cleanRefs = cleanFlashloopRefs(references);
-  const imageResult = await generateFlashloopImagePrompt(effectName, tagline, userIdea, ratio, model, cleanRefs);
+  const imageResult = await generateFlashloopImagePrompt(effectName, tagline, userIdea, ratio, model, cleanRefs, trendThumbnail);
 
   // Ensure the image prompt is never empty; if the LLM returned nothing useful, build a minimal anchor.
   if (!imageResult.imagePrompt || !imageResult.imagePrompt.trim()) {
@@ -471,12 +497,24 @@ async function generateFlashloopScene(effectName, tagline, userIdea, duration, r
 
   let videoResult = {};
   try {
-    videoResult = await generateFlashloopVideoPrompt(effectName, tagline, userIdea, duration, ratio, model, cleanRefs, imageResult.imagePrompt);
+    videoResult = await generateFlashloopVideoPrompt(effectName, tagline, userIdea, duration, ratio, model, cleanRefs, imageResult.imagePrompt, trendThumbnail);
   } catch (e) { logLine('flashloop video prompt failed: ' + e.message); }
 
-  // Ensure the video prompt is never empty.
+  // Ensure the video prompt is never empty — build a detailed fallback.
   if (!videoResult.videoPrompt || !videoResult.videoPrompt.trim()) {
-    videoResult.videoPrompt = `Create an exactly ${duration}-second photorealistic video for "${effectName}"${tagline ? ' — ' + tagline : ''}.${userIdea ? ' User intent: ' + userIdea : ''} Use the supplied first-frame image as the strict visual reference. Preserve the exact subject, style, lighting, and composition. Include smooth, continuous motion, camera continuity, clear audio description, and strict negative instructions. Style: cinematic, photorealistic, ${ratio}.`;
+    videoResult.videoPrompt = `Create an exactly ${duration}-second video for "${effectName}"${tagline ? ' — ' + tagline : ''}. Use the supplied first-frame image as the strict visual reference.
+
+CAMERA AND CONTINUITY: One continuous shot with no cuts. Preserve the exact subject, position, colors, lighting, and composition from the first-frame image throughout.
+
+EXACT ACTION TIMELINE:
+0.0–${Math.floor(duration * 0.2)}s: Hold on the first-frame composition. Subtle ambient motion (steam, dust motes, light shifts).
+${Math.floor(duration * 0.2)}–${Math.floor(duration * 0.6)}s: Primary action unfolds — describe the main motion relevant to "${effectName}". Smooth, natural movement with clear cause-and-effect.
+${Math.floor(duration * 0.6)}–${Math.floor(duration * 0.85)}s: Action reaches its peak or turning point. Camera may subtly adjust framing.
+${Math.floor(duration * 0.85)}–${duration}s: Settle into the final pose. Gentle deceleration. Hold on the concluding frame.
+
+AUDIO: Close, realistic audio synced to the action. Ambient room tone. No music or voiceover unless the effect requires it.
+
+STYLE: Cinematic, photorealistic, ${ratio}. Preserve the exact visual style, color palette, and lighting from the first-frame image. No text, logos, or UI overlays.`;
   }
 
   return {
@@ -1969,7 +2007,8 @@ async function generateInfluencerContent(infl, userPrompt, style, ratio, imageMo
   inflLogLine(`generating content image for "${infl.name}"`);
   const styled = applyStyle(userPrompt, style);
   const hasDesc = userPrompt.includes(infl.description.slice(0, 50));
-  const rawPrompt = hasDesc ? `${styled}, ultra realistic photorealistic 8K, natural skin texture` : `${infl.description} ${styled}, ultra realistic photorealistic 8K, natural skin texture`;
+  const imgQuality = ' Photorealistic smartphone photo quality. Natural lighting and shadows. Realistic human anatomy and hand interactions. No beauty filters. No artificial effects. No AI artifacts. Unpolished home phone recording aesthetics. Indistinguishable from a genuine smartphone photo taken by a real lifestyle influencer.';
+  const rawPrompt = hasDesc ? `${styled}, ultra realistic photorealistic 8K, natural skin texture${imgQuality}` : `${infl.description} ${styled}, ultra realistic photorealistic 8K, natural skin texture${imgQuality}`;
   const fullPrompt = sanitizePrompt(rawPrompt);
   inflLogLine(`prompt length: ${fullPrompt.length} chars`);
   const q = `${imageEndpoint(imageModel)}?prompt=${encodeURIComponent(fullPrompt)}&model=${encodeURIComponent(imageModel)}&ratio=${encodeURIComponent(ratio)}`;
@@ -2009,7 +2048,11 @@ async function generateInfluencerContentImg2Img(infl, refUrl, userPrompt, style,
   inflSetPhase('infl-img2img', 1);
   inflLogLine(`generating img2img content for "${infl.name}"`);
   const styled = applyStyle(userPrompt, style);
-  const fullPrompt = sanitizePrompt(styled);
+  const imgQuality = ' Photorealistic smartphone photo quality. Natural lighting and shadows. Realistic human anatomy. No beauty filters. No artificial effects. No AI artifacts. Unpolished home phone recording aesthetics.';
+  const hasDesc = userPrompt.includes((infl.description || '').slice(0, 50));
+  const rawPrompt = hasDesc ? `${styled}${imgQuality}` : `${infl.description} ${styled}${imgQuality}`;
+  const fullPrompt = sanitizePrompt(rawPrompt);
+  inflLogLine(`prompt length: ${fullPrompt.length} chars`);
 
   let url = null;
   // Try seedream-5 up to 3 times — it works but "All providers failed" is intermittent
@@ -2031,7 +2074,7 @@ async function generateInfluencerContentImg2Img(infl, refUrl, userPrompt, style,
 
     if (task) {
       inflLogLine(`img2img: rendering...`);
-      url = await waitTask(task, 5, inflLogLine);
+      url = await waitTask(task, 15, inflLogLine);
       if (url) { inflLogLine(`img2img: SUCCESS`); break; }
       inflLogLine(`img2img: render failed`);
     }
@@ -2056,7 +2099,7 @@ async function generateInfluencerContentImg2Img(infl, refUrl, userPrompt, style,
 }
 
 // Animate an existing influencer content image into video via Grok Video
-async function generateInfluencerVideo(infl, contentId, ratio, videoDuration = 6) {
+async function generateInfluencerVideo(infl, contentId, ratio, videoDuration = 6, customVideoPrompt = '') {
   const item = (infl.content || []).find(c => c.id === contentId);
   if (!item) { inflLogLine('video: content not found'); return; }
   fs.mkdirSync(influencerDir(infl.id), { recursive: true });
@@ -2078,7 +2121,10 @@ async function generateInfluencerVideo(infl, contentId, ratio, videoDuration = 6
   const mode = videoImageUrl ? 'image-to-video' : 'text-to-video';
   const imgParam = videoImageUrl ? `&imageUrls=${encodeURIComponent(videoImageUrl)}` : '';
   // Keep the same person — emphasize identity preservation in animation
-  const animPrompt = sanitizePrompt(`animate this exact person with natural subtle movement. Keep the same face, hair, skin, and clothing exactly as shown. ${item.prompt}. Smooth ${videoDuration}-second camera movement, natural animation, maintain visual consistency.`);
+  const mandatoryStyle = ` VISUAL STYLE: Natural smartphone video quality. Slight realistic handheld shake. Smooth normal frame-rate motion. Authentic casual interactions and physics. Realistic sunlight and exposure adaptation. Stable main character consistency. Unpolished home phone recording aesthetics. No professional stabilization. No cinematic color grading. No beauty filters. No artificial effects. No AI artifacts or glitches. IMPORTANT GENERATION REQUIREMENTS: Consistent identity throughout the video. Realistic human anatomy and hand interactions. Natural walking and body movement. Physically correct lighting and shadows. Rapid memory-style jump cuts every 1-2 seconds. No duplicated people or objects. No facial distortions. No impossible movements. Preserve the casual smartphone home-video feeling from beginning to end.`;
+  // Use custom video prompt if provided, otherwise build from item prompt
+  const basePrompt = customVideoPrompt || `animate this exact person with natural subtle movement. Keep the same face, hair, skin, and clothing exactly as shown. ${item.prompt}. Smooth ${videoDuration}-second camera movement, natural animation, maintain visual consistency.`;
+  const animPrompt = sanitizePrompt(basePrompt + mandatoryStyle);
   const q = `/ai-video/grok-video?prompt=${encodeURIComponent(animPrompt)}&ratio=${encodeURIComponent(ratio)}&type=${mode}${imgParam}`;
   let url = null;
   for (let attempt = 1; attempt <= 3; attempt++) {
@@ -2435,7 +2481,16 @@ const server = http.createServer(async (req, res) => {
       const infl = await findInfluencer(body.id);
       if (!infl) return sendJson(res, 404, { error: 'not found' });
       if (!infl.description) return sendJson(res, 400, { error: 'no description' });
-      generateInfluencerContent(infl, body.prompt, body.style || 'realistic', body.ratio || '1:1', body.imageModel || IMAGE_MODELS[0]).catch(e => { inflLogLine(`infl-image crash: ${e.message}`); inflJob.phase = 'idle'; });
+
+      // Auto-upgrade to img2img when reference images exist — anchors face/likeness
+      const refUrl = body.refUrl || await resolveInfluencerRefUrl(infl);
+      if (refUrl) {
+        inflLogLine(`image: auto-upgrading to img2img (ref found: ${refUrl.slice(0, 60)})`);
+        generateInfluencerContentImg2Img(infl, refUrl, body.prompt, body.style || 'realistic', body.ratio || '1:1', body.imageModel || IMAGE_MODELS[0]).catch(e => { inflLogLine(`infl-img2img crash: ${e.message}`); inflJob.phase = 'idle'; });
+      } else {
+        inflLogLine('image: no reference available — using text-to-image');
+        generateInfluencerContent(infl, body.prompt, body.style || 'realistic', body.ratio || '1:1', body.imageModel || IMAGE_MODELS[0]).catch(e => { inflLogLine(`infl-image crash: ${e.message}`); inflJob.phase = 'idle'; });
+      }
       return sendJson(res, 202, { started: true });
     }
 
@@ -2471,7 +2526,7 @@ const server = http.createServer(async (req, res) => {
       if (!body.id || !body.contentId) return sendJson(res, 400, { error: 'id and contentId required' });
       const infl = await findInfluencer(body.id);
       if (!infl) return sendJson(res, 404, { error: 'not found' });
-      generateInfluencerVideo(infl, body.contentId, body.ratio || '1:1').catch(e => { inflLogLine(`infl-video crash: ${e.message}`); inflJob.phase = 'idle'; });
+      generateInfluencerVideo(infl, body.contentId, body.ratio || '1:1', 6, body.videoPrompt || '').catch(e => { inflLogLine(`infl-video crash: ${e.message}`); inflJob.phase = 'idle'; });
       return sendJson(res, 202, { started: true });
     }
 
@@ -2948,14 +3003,54 @@ Return ONLY a JSON object:
     if (p === '/api/flashloop/generate-prompt' && req.method === 'POST') {
       try {
         const body = await readBody(req);
-        const { slug = '', name = '', tagline = '', idea = '', duration = 15, ratio = '9:16', model = 'gpt-5.5', references = [] } = body || {};
+        const { slug = '', name = '', tagline = '', idea = '', duration = 15, ratio = '9:16', model = 'gpt-5.5', references = [], trendThumbnail = '' } = body || {};
         const effectName = String(name || slug).trim();
         if (!effectName) return sendJson(res, 400, { error: 'effect name or slug required' });
         const selectedModel = MODELS.includes(model) ? model : 'gpt-5.5';
         const refs = Array.isArray(references) ? references.filter(r => r && String(r.name || '').trim()) : [];
-        const scene = await generateFlashloopScene(effectName, String(tagline || ''), String(idea || ''), Number(duration), String(ratio), selectedModel, refs);
+        const scene = await generateFlashloopScene(effectName, String(tagline || ''), String(idea || ''), Number(duration), String(ratio), selectedModel, refs, String(trendThumbnail || ''));
         return sendJson(res, 200, { ok: true, slug, name: effectName, duration, ratio, model: selectedModel, ...scene });
       } catch (e) { logLine('flashloop prompt: ' + e.message); return sendJson(res, 500, { error: e.message }); }
+    }
+
+    // Generate i2i image anchored to a trend reference image
+    if (p === '/api/flashloop/generate-i2i' && req.method === 'POST') {
+      try {
+        const body = await readBody(req);
+        const { prompt = '', refImageUrl = '', ratio = '9:16', model = 'seedream-5', trendName = '', tagline = '' } = body || {};
+        if (!prompt) return sendJson(res, 400, { error: 'prompt required' });
+        if (!refImageUrl) return sendJson(res, 400, { error: 'refImageUrl required (trend reference image)' });
+
+        const selectedModel = IMAGE_MODELS.includes(model) ? model : 'seedream-5';
+        const endpoint = img2ImgEndpoint(selectedModel);
+
+        // Build a style-anchored prompt so the i2i model matches the trend reference image
+        // instead of just generating the scene described in the text literally.
+        let stylePrefix = '';
+        if (trendName) {
+          stylePrefix = `MATCH THE REFERENCE IMAGE STYLE EXACTLY. The reference image shows the "${trendName}" trend${tagline ? ' — ' + tagline : ''}. Replicate its exact visual style: color palette, lighting, texture, rendering technique, materials, mood, and aesthetic. `;
+        }
+        const anchoredPrompt = stylePrefix + prompt;
+        const sanitized = sanitizePrompt(anchoredPrompt);
+        const postBody = JSON.stringify({ prompt: sanitized, model: selectedModel, ratio: String(ratio), image_urls: [refImageUrl] });
+        logLine(`flashloop i2i: submitting ${selectedModel}${trendName ? ' for "' + trendName + '"' : ''} with ref ${refImageUrl.slice(0, 80)}…`);
+
+        let taskUrl = null;
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          try {
+            const res2 = await paxFetch(`${API}${endpoint}`, {
+              method: 'POST', headers: { 'Content-Type': 'application/json' }, body: postBody
+            }, 120000);
+            const j2 = await res2.json().catch(() => ({}));
+            if (res2.ok && j2.ok && j2.task_url) { taskUrl = j2.task_url; break; }
+            logLine(`flashloop i2i ${selectedModel} attempt ${attempt}: HTTP ${res2.status} ${JSON.stringify(j2).slice(0, 120)}`);
+          } catch (e2) { logLine(`flashloop i2i ${selectedModel} attempt ${attempt}: ${e2.message}`); }
+          await new Promise(r => setTimeout(r, 3000 * attempt));
+        }
+
+        if (!taskUrl) return sendJson(res, 500, { error: `Failed to submit i2i task with ${selectedModel} after 3 attempts` });
+        return sendJson(res, 200, { ok: true, taskUrl, model: selectedModel });
+      } catch (e) { logLine('flashloop i2i: ' + e.message); return sendJson(res, 500, { error: e.message }); }
     }
 
     // Instagram reel fetch — uses parth-dl Python module (no login required)
@@ -3123,6 +3218,230 @@ Return ONLY a JSON object:
       return { transcription, visualAnalysis };
     }
 
+    // Generate img2img + img2video prompts for an AI influencer activity (random if none given)
+    if (p === '/api/influencer/generate-prompt' && req.method === 'POST') {
+      const body = await readBody(req);
+      const { id, activity = '', idea = '', ratio = '1:1', model = 'gemini-2.5-pro' } = body || {};
+      if (!id) return sendJson(res, 400, { error: 'influencer id required' });
+
+      const randomActivities = [
+        'morning skincare routine in bathroom mirror — applying moisturizer and serum, natural window light, messy bun hair, cozy robe',
+        'poolside selfie at luxury resort — lying on pool lounger, sunglasses, summer vibes, turquoise water background',
+        'GRWM makeup routine — sitting at vanity mirror, applying foundation and lip gloss, ring light glow',
+        'coffee shop laptop session — sitting by window with iced latte, typing on MacBook, cozy cafe interior',
+        'gym mirror selfie after workout — sweaty post-exercise glow, sports bra and leggings, gym equipment background',
+        'cooking pasta in kitchen — stirring pot, tasting sauce, casual home clothes, warm kitchen lighting',
+        'outfit of the day full body mirror — standing in bedroom, showing full outfit, natural daylight from window',
+        'beach sunset walk — walking along shoreline, barefoot on sand, golden hour backlight, summer dress',
+        'car singing selfie — driving with window down, singing to camera, golden hour sunlight through windshield',
+        'reading on cozy couch — curled up with book, blanket, rainy window, warm lamp light, hot tea',
+        'travel airport selfie — pulling suitcase, terminal background, excited expression, travel outfit',
+        'night skincare routine — face mask on, bathroom counter, candles lit, cozy pajamas, self-care energy',
+        'grocery store haul reaction — unpacking bags on kitchen counter, excited face showing products',
+        'study with me desk setup — notebooks open, coffee cup, desk lamp, focused concentration face',
+        'dancing in bedroom — moving to music, phone propped on desk, fun energy, casual clothes',
+        'smoothie making tutorial — blending fruits, kitchen counter, pouring into glass, healthy lifestyle',
+        'trying on thrift finds — bedroom mirror, holding up vintage clothes, excited reaction faces',
+        'plant watering morning — tending to indoor plants, apartment window, natural sunlight, peaceful vibes',
+        'getting ready for date night — doing hair in mirror, applying perfume, jewelry, excited energy',
+        'sunset balcony moment — sitting on apartment balcony, golden hour, city skyline, peaceful expression',
+        'flat lay product organizing — top-down view on bed, arranging skincare or makeup products aesthetically',
+        'pet cuddle time — sitting on couch with dog or cat, cozy living room, genuine smile',
+        'rainy day window aesthetic — watching rain, holding hot chocolate, blanket wrapped, cozy indoor vibes',
+        'after gym protein shake — gym bathroom mirror selfie, proud post-workout energy, water bottle',
+        'breakfast making morning — scrambling eggs or making pancakes, kitchen morning sunlight, casual clothes',
+        'bookstore browsing — walking between shelves, picking up books, cozy aesthetic, tote bag',
+        'flower market shopping — carrying bouquet, exploring stalls, natural daylight, happy expression',
+        'packing for vacation — bed covered with clothes, open suitcase, deciding outfits, excited energy',
+        'late night fridge raid — kitchen at midnight, fridge light illuminating face, guilty pleasure snack',
+        'yoga stretching on mat — living room floor, morning sunlight through window, peaceful mindfulness',
+        'hair styling tutorial — bathroom mirror, blow drying or curling, before and after energy',
+        'car trunk grocery unload — carrying bags, driveway, casual errand run outfit',
+        'selfie with morning coffee — holding mug, kitchen counter, just woke up look, natural light',
+        'mirror outfit check — turning to check back of outfit, hallway mirror, confident energy',
+        'applying sunscreen at beach — pool or beach, summer vibes, casual swimwear, vacation mood',
+        'desk snack break — eating chips or fruit at desk, laptop in background, casual work-from-home',
+        'walking dog neighborhood — sidewalk, autumn leaves or sunny day, casual athleisure, leash in hand',
+        'trying viral recipe — following phone tutorial in kitchen, reaction to taste, authentic excitement',
+        'nail painting close-up — focused expression, nail polish, desk with products, detail shot',
+        'sunset rooftop moment — standing on rooftop, city skyline, wind in hair, golden hour glow'
+      ];
+
+      let actInput = (activity || idea || '').trim();
+      if (!actInput) {
+        actInput = randomActivities[Math.floor(Math.random() * randomActivities.length)];
+        inflLogLine('random activity picked: ' + actInput.slice(0, 60));
+      }
+
+      try {
+        const infl = await findInfluencer(id);
+        if (!infl) return sendJson(res, 404, { error: 'influencer not found' });
+
+        const charDesc = infl.description || '';
+        const charName = infl.name || 'the person';
+        const wardrobe = infl.defaultWardrobe || '';
+        const vibe = infl.vibe || '';
+        const profileBlock = `Name: ${charName}${charDesc ? '\nDescription:\n' + charDesc : ''}${wardrobe ? '\nDefault Wardrobe: ' + wardrobe : ''}${vibe ? '\nVibe: ' + vibe : ''}`;
+
+        // ---- STEP 1: Generate IMAGE prompt (first frame) ----
+        inflLogLine('generating image prompt for: ' + actInput.slice(0, 50));
+        const imgSystem = `You are an expert prompt engineer for AI influencer content. Write one detailed first-frame image prompt for img2img generation.
+
+THE PERSON IS THE MAIN SUBJECT. The prompt must describe a REAL PERSON (the influencer) doing the activity. This is a selfie or phone recording OF the person — NOT a still life or object shot. The person MUST be visible in the frame.
+
+CHARACTER PROFILE:
+${profileBlock}
+
+ACTIVITY: ${actInput}
+ASPECT RATIO: ${ratio}
+
+Write the prompt using EXACTLY this structure:
+
+Identity Consistency:
+Use the provided reference image as the exact identity reference. Preserve exact facial features, hairstyle, skin tone, body proportions, and overall appearance. Do not beautify or stylize the face.
+
+Scene:
+[Where is the person? What environment are they in? What's visible behind them?]
+
+Pose:
+[What is the person DOING? Their exact body position. What are they holding? How are they sitting/standing? Be very specific about their physical action.]
+
+Expression:
+[What facial expression do they have? Smile, focused, relaxed, excited, laughing?]
+
+Camera:
+[Is this a selfie front-camera shot? Mirror selfie? Phone propped up? Describe the camera angle relative to the person.]
+
+Lighting:
+[What kind of light hits the person? Natural sunlight, indoor warm light, golden hour? How do shadows fall on their face/body?]
+
+Hair:
+[How does their hair look? Natural, loose, tied up, wind-blown?]
+
+Outfit:
+[What are they wearing? Describe the clothing style — casual, athleisure, dress, etc. Keep it general, no brands.]
+
+Environment:
+[What's in the background? Furniture, nature, architecture? Secondary to the person.]
+
+Photography:
+Smartphone photo quality. Ultra-realistic. Natural skin texture. Visible pores. No beauty filter. No CGI. No AI look. Shot on iPhone front camera.
+
+Negative Prompt:
+cartoon, CGI, painting, anime, overprocessed skin, beauty filter, doll face, plastic skin, extra fingers, deformed hands, warped anatomy, low quality, blurry, watermark, text, logo, unrealistic lighting, still life, no people, empty scene, object-only shot`;
+
+        let imgPrompt = '';
+        const selectedModel = MODELS.includes(model) ? model : 'gemini-2.5-pro';
+        for (const m of [selectedModel, 'gemini-2.5-pro', 'gemini-3.1-pro']) {
+          try {
+            const raw = await chatCompletion(m, [{ role: 'user', content: imgSystem }], 12000);
+            imgPrompt = raw.trim();
+            if (imgPrompt.length > 50) break;
+          } catch (e) { inflLogLine('img prompt gen ' + m + ' failed: ' + e.message); }
+        }
+
+        if (!imgPrompt) {
+          imgPrompt = `Use the provided reference image as the exact identity reference. Preserve exact facial features, hairstyle, skin tone, body proportions.\n\nScene:\n${actInput} — the person is the main subject, visible in frame.\n\nPose:\nThe person is performing the activity in a natural candid moment, holding phone in selfie mode.\n\nExpression:\nRelaxed, genuine, natural smile.\n\nCamera:\nReal iPhone front-camera perspective. Close-up selfie framing from chest upward. Slight handheld angle.\n\nLighting:\nNatural lighting. Warm realistic skin highlights. Soft shadows.\n\nOutfit:\nCasual everyday clothing appropriate for the activity.\n\nPhotography:\nSmartphone photo quality. Ultra-realistic. Natural skin texture. No beauty filter. No CGI. No AI look.\n\nNegative Prompt:\ncartoon, CGI, painting, anime, beauty filter, doll face, plastic skin, extra fingers, deformed hands, warped anatomy, low quality, blurry, still life, no people`;
+        }
+
+        // ---- STEP 2: Generate VIDEO prompt (second-by-second timeline) ----
+        inflLogLine('generating video prompt...');
+        const vidSystem = `You are an expert prompt engineer for AI influencer content. Write one detailed img2video prompt with a second-by-second action timeline.
+
+THE PERSON IS THE MAIN SUBJECT. The video must show a REAL PERSON (the influencer) doing the activity. This is a phone video OF the person — NOT a scenery or object video. The person MUST be visible and active throughout.
+
+CHARACTER PROFILE:
+${profileBlock}
+
+ACTIVITY: ${actInput}
+ASPECT RATIO: ${ratio}
+DURATION: 5-6 seconds
+
+FIRST FRAME CONTEXT:
+${imgPrompt.slice(0, 600)}
+
+Write the prompt using EXACTLY this structure:
+
+Use the provided reference image as the exact identity reference.
+Maintain identical facial features, hairstyle, skin tone, body proportions, and appearance throughout. Do not change identity.
+
+Duration:
+5-6 seconds
+
+Style:
+Ultra-photorealistic lifestyle influencer vlog. ${ratio}. 4K.
+
+Scene:
+[What is the person doing? Full description of their activity. They are the main focus.]
+
+Action Sequence:
+
+00:00-00:01
+[What is the person doing RIGHT NOW? Body position, expression, action, what they say/do.]
+
+00:01-00:02
+[What movement do they make? A gesture, glance, shift. Be very specific about body mechanics.]
+
+00:02-00:03
+[Next action. Real people blink, breathe, shift weight. Describe it.]
+
+00:03-00:04
+[Continuation of activity. Any natural gesture — tucking hair, adjusting position, speaking.]
+
+00:04-00:05
+[Activity continues. Expression change? Reaction?]
+
+00:05-00:06
+[Final moment — natural conclusion. Smile, look away, stop recording, put something down.]
+
+Facial Animation:
+[Lip movement if speaking, blinking pattern, micro-expressions, cheek movement, eyebrow motion.]
+
+Camera Motion:
+Handheld iPhone selfie. Tiny wrist corrections. Natural breathing movement. Small vertical bobbing. No robotic stabilization.
+
+Hair Physics:
+[How does hair move naturally? Breeze? When they move their head?]
+
+Body Motion:
+Natural breathing. Shoulder movement. Arm movement. Small posture adjustments. Realistic finger movement.
+
+Lighting:
+[Consistent lighting on the person. Realistic highlights on skin.]
+
+Environment:
+[Same environment as first frame. Background visible but secondary to person.]
+
+Quality:
+Looks like authentic Instagram Story footage shot on an iPhone by a real lifestyle influencer.
+
+Negative Prompt:
+AI motion, robotic movement, jitter, morphing face, frozen smile, bad lip-sync, extra fingers, deformed hands, flickering, warped anatomy, unrealistic physics, low quality, beauty filter, CGI appearance, still life, no people, object-only shot, empty scene`;
+
+        let vidPrompt = '';
+        for (const m of [selectedModel, 'gemini-2.5-pro', 'gemini-3.1-pro']) {
+          try {
+            const raw = await chatCompletion(m, [{ role: 'user', content: vidSystem }], 16000);
+            vidPrompt = raw.trim();
+            if (vidPrompt.length > 50) break;
+          } catch (e) { inflLogLine('vid prompt gen ' + m + ' failed: ' + e.message); }
+        }
+
+        if (!vidPrompt) {
+          vidPrompt = `Use the provided reference image as the exact identity reference. Maintain identical identity throughout.\n\nDuration: 5-6 seconds\nStyle: Ultra-photorealistic lifestyle influencer vlog. ${ratio}.\n\nScene:\n${actInput} — captured casually on phone.\n\n00:00-00:01: Person is at the start of the activity, natural relaxed position, looking at camera, begins speaking naturally.\n00:01-00:02: Begins the activity, slight movement, natural expression change, blinks once.\n00:02-00:03: Mid-action, body shifting naturally, genuine expression, hair moves slightly.\n00:03-00:04: Continuing activity, small gesture like tucking hair or adjusting position.\n00:04-00:05: Activity peak moment, authentic reaction, slight smile.\n00:05-00:06: Final moment, natural laugh or look away, reaching to stop recording.\n\nCamera: Handheld iPhone selfie. Tiny wrist corrections. Natural breathing movement.\nHair: Natural movement from breeze or motion.\nBody: Natural breathing. Shoulder movement. Small posture adjustments.\n\nQuality: Looks like authentic Instagram Story footage.\n\nNegative Prompt: AI motion, robotic movement, jitter, morphing face, frozen smile, bad lip-sync, extra fingers, deformed hands, flickering, warped anatomy, low quality, beauty filter, CGI appearance`;
+        }
+
+        // Enforce mandatory blocks if LLM skipped them
+        const mandatoryBlock = `\n\nVISUAL STYLE:\nNatural smartphone video quality. Slight realistic handheld shake. Smooth normal frame-rate motion. Authentic casual interactions and physics. Realistic sunlight and exposure adaptation. Stable main character consistency. Unpolished home phone recording aesthetics. No professional stabilization. No cinematic color grading. No beauty filters. No artificial effects. No AI artifacts or glitches.\n\nIMPORTANT GENERATION REQUIREMENTS:\nConsistent identity throughout the video. Realistic human anatomy and hand interactions. Natural walking and body movement. Physically correct lighting and shadows. No duplicated people or objects. No facial distortions. No impossible movements. Preserve the casual smartphone home-video feeling from beginning to end. Photorealistic. Indistinguishable from a genuine smartphone selfie video recorded by a real lifestyle influencer.`;
+
+        if (imgPrompt && !imgPrompt.includes('VISUAL STYLE')) imgPrompt += mandatoryBlock;
+        if (vidPrompt && !vidPrompt.includes('VISUAL STYLE')) vidPrompt += mandatoryBlock;
+
+        inflLogLine('prompts generated OK — img: ' + imgPrompt.length + ' chars, vid: ' + vidPrompt.length + ' chars');
+        return sendJson(res, 200, { ok: true, imgPrompt, vidPrompt, activity: actInput });
+      } catch (e) { inflLogLine('influencer generate-prompt: ' + e.message); return sendJson(res, 500, { error: e.message }); }
+    }
+
     // Generate img2img + img2video prompts for a trend video (user can edit before generating)
     // Generate img2img + img2video prompts for a trend video (user can edit before generating)
     // Generate img2img + img2video prompts — analyzes actual video content (transcription + visuals)
@@ -3214,11 +3533,11 @@ Camera Motion:
 Hair Physics:
 [Describe hair movement if visible]
 
-VISUAL STYLE (MANDATORY - include this entire section verbatim in the img2video prompt):
+VISUAL STYLE (MANDATORY - include this ENTIRE section VERBATIM in BOTH prompts):
 Natural smartphone video quality. Slight realistic handheld shake. Smooth normal frame-rate motion. Authentic casual interactions and physics. Realistic sunlight and exposure adaptation. Stable main character consistency. Unpolished home phone recording aesthetics. No professional stabilization. No cinematic color grading. No beauty filters. No artificial effects. No AI artifacts or glitches.
 
-IMPORTANT GENERATION REQUIREMENTS:
-Consistent identity throughout the video. Realistic human anatomy and hand interactions. Natural body movement. Physically correct lighting and shadows. No duplicated people or objects. No facial distortions. No impossible movements. Preserve the casual smartphone home-video feeling from beginning to end. Photorealistic. Indistinguishable from a genuine smartphone selfie video recorded by a real lifestyle influencer.
+IMPORTANT GENERATION REQUIREMENTS (MANDATORY - include this ENTIRE section VERBATIM in BOTH prompts):
+Consistent identity throughout the video. Realistic human anatomy and hand interactions. Natural walking and body movement. Physically correct lighting and shadows. Rapid memory-style jump cuts every 1-2 seconds. No duplicated people or objects. No facial distortions. No impossible movements. Preserve the casual smartphone home-video feeling from beginning to end. Photorealistic. Indistinguishable from a genuine smartphone selfie video recorded by a real lifestyle influencer.
 
 Quality:
 Looks exactly like a real Instagram Story recorded by a lifestyle influencer. No robotic movement. No AI artifacts.
@@ -3256,6 +3575,13 @@ Return ONLY valid JSON: {"imgPrompt":"...","vidPrompt":"..."}
           imgPrompt = 'Use the provided reference image as the exact identity reference.\nMaintain identical facial features, hairstyle, skin tone, body proportions. Preserve identity perfectly.\n\nScene:\nA stylish urban cafe with warm ambient lighting, exposed brick walls, and lush green plants.\n\nPose:\nSitting comfortably at a table, holding phone in selfie mode, body relaxed.\n\nExpression:\nConfident. Friendly. Relaxed. Natural genuine smile.\n\nLighting:\nWarm natural sunlight through large windows. Soft golden tones.\n\nPhotography:\nUltra realistic. Lifestyle influencer. Natural iPhone selfie. No studio lighting.';
           vidPrompt = 'Use the provided reference image as the exact identity reference.\nMaintain identical identity throughout.\n\nDuration: 5-6 seconds\nStyle: Ultra-realistic lifestyle influencer vlog. Vertical 9:16.\n\n00:00-00:01: Begins speaking naturally while smiling at camera.\n00:01-00:02: Lightly laughs. Shoulders relax naturally.\n00:02-00:03: Glances away briefly then looks back.\n00:03-00:04: Tucks loose strand of hair behind ear.\n00:04-00:05: Nods naturally. Smile becomes bigger.\n00:05-00:06: Gives playful wink and ends recording.\n\nCamera Motion: Handheld selfie. Small wrist adjustments.\nQuality: Looks like a real Instagram Story.';
         }
+
+        // Enforce mandatory VISUAL STYLE + GENERATION REQUIREMENTS blocks in both prompts
+        const mandatoryBlock = `\n\nVISUAL STYLE:\nNatural smartphone video quality. Slight realistic handheld shake. Smooth normal frame-rate motion. Authentic casual interactions and physics. Realistic sunlight and exposure adaptation. Stable main character consistency. Unpolished home phone recording aesthetics. No professional stabilization. No cinematic color grading. No beauty filters. No artificial effects. No AI artifacts or glitches.\n\nIMPORTANT GENERATION REQUIREMENTS:\nConsistent identity throughout the video. Realistic human anatomy and hand interactions. Natural walking and body movement. Physically correct lighting and shadows. Rapid memory-style jump cuts every 1-2 seconds. No duplicated people or objects. No facial distortions. No impossible movements. Preserve the casual smartphone home-video feeling from beginning to end. Photorealistic. Indistinguishable from a genuine smartphone selfie video recorded by a real lifestyle influencer.`;
+
+        if (imgPrompt && !imgPrompt.includes('VISUAL STYLE')) imgPrompt += mandatoryBlock;
+        if (vidPrompt && !vidPrompt.includes('VISUAL STYLE')) vidPrompt += mandatoryBlock;
+
         return sendJson(res, 200, { imgPrompt, vidPrompt, hasTranscription: !!transcription, hasVisualAnalysis: !!frameDescs });
       } catch (e) { return sendJson(res, 500, { error: e.message }); }
     }
@@ -3399,6 +3725,19 @@ ${infl.description || '(no description - describe a beautiful confident influenc
         inflJob.phase = 'idle';
       })();
       return sendJson(res, 202, { started: true });
+    }
+
+    if (p === '/api/proxy-image') {
+      const imgUrl = u.searchParams.get('url');
+      if (!imgUrl) return sendJson(res, 400, { error: 'missing url param' });
+      try {
+        const imgRes = await fetch(imgUrl, { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(15000) });
+        if (!imgRes.ok) return sendJson(res, 502, { error: 'upstream ' + imgRes.status });
+        const buf = Buffer.from(await imgRes.arrayBuffer());
+        const ct = imgRes.headers.get('content-type') || 'image/jpeg';
+        res.writeHead(200, { 'Content-Type': ct, 'Content-Disposition': 'attachment; filename="reference.jpg"', 'Cache-Control': 'public, max-age=86400' });
+        return res.end(buf);
+      } catch (e) { return sendJson(res, 502, { error: e.message }); }
     }
 
     // --- static files (supports subdirectories for influencer assets) ---
