@@ -390,7 +390,7 @@ async function generateFlashloopImagePrompt(effectName, tagline, userIdea, ratio
   const refBlock = formatFlashloopRefs(cleanRefs);
   const hasImage = !!trendThumbnail;
   const visionBlock = hasImage
-    ? `\n\nA reference image of the "${effectName}" trend is attached below. YOU MUST STUDY IT CAREFULLY before writing the prompt. Analyze the image and identify:\n- The exact visual style (photorealistic, illustrated, 3D render, cel-shaded, etc.)\n- Color palette and grading (warm/cool, saturated/desaturated, contrast level)\n- Lighting style (natural, studio, dramatic, soft, etc.)\n- Composition and framing patterns\n- Materials, textures, and rendering quality\n- Mood and aesthetic vibe\n\nYour prompt MUST recreate this exact visual style. Describe the scene so that when img2img uses the reference image, the output looks like it belongs in the same trend/series. Include explicit style keywords you observe in the image.`
+    ? `\n\nA reference image of the "${effectName}" trend is attached below. YOU MUST STUDY IT CAREFULLY before writing the prompt. Analyze the image and identify:\n- The exact visual style (photorealistic, illustrated, 3D render, cel-shaded, etc.)\n- Color palette and grading (warm/cool, saturated/desaturated, contrast level)\n- Lighting style (natural, studio, dramatic, soft, etc.)\n- Composition and framing patterns\n- Materials, textures, and rendering quality\n- Mood and aesthetic vibe\n\nYour prompt MUST recreate this exact visual style. Describe the scene so that when img2img uses the reference image, the output looks like it belongs in the same trend/series. Include explicit style keywords you observe in the image.\n\n⚠️ IMPORTANT: The reference image is for STYLE ONLY. Do NOT copy the subjects, characters, objects, or scene from the reference image. The SUBJECT must come from the effect name "${effectName}" and the user's idea. The reference image only tells you HOW to render it (style, colors, textures, lighting, mood) — not WHAT to render.`
     : '';
   const system = `You are an expert prompt engineer for short-form AI video generation. Given an effect name, an optional tagline, and a short user idea, write a CONCISE first-frame / reference image prompt for img2img generation.
 
@@ -416,7 +416,7 @@ Example image prompt (match its CONCISENESS and tone, NOT its subject — keep y
 
 A photorealistic macro close-up of a crystal-glass fruit on a dark slate cutting board. Translucent teal glass skin, coral veins, six dark crystal seeds. Chef's knife beside it. Soft studio lighting from the left, realistic caustics. Camera 25° above, shallow DOF. No hands. 8K, 16:9, first frame only.
 
-${hasImage ? 'STUDY THE ATTACHED REFERENCE IMAGE. Recreate its exact visual style for "' + effectName + '".' : 'Generate { "title": "...", "imagePrompt": "..." } for "' + effectName + '".'} Keep imagePrompt under 150 words. Do not output any explanation outside the JSON.`;
+${hasImage ? 'STUDY THE ATTACHED REFERENCE IMAGE for its VISUAL STYLE ONLY (colors, textures, lighting, rendering technique, mood). Do NOT copy its subject or scene. Your subject is "' + effectName + '" based on the user idea above. Render it in the style you observe in the image.' : 'Generate { "title": "...", "imagePrompt": "..." } for "' + effectName + '".'} Keep imagePrompt under 150 words. Do not output any explanation outside the JSON.`;
 
   const userContent = hasImage
     ? [{ type: 'text', text: userText }, { type: 'image_url', image_url: { url: trendThumbnail } }]
@@ -437,7 +437,7 @@ async function generateFlashloopVideoPrompt(effectName, tagline, userIdea, durat
   const refBlock = formatFlashloopRefs(cleanRefs);
   const hasImage = !!trendThumbnail;
   const visionBlock = hasImage
-    ? `\n\nA reference image of the "${effectName}" trend is attached below. YOU MUST STUDY IT CAREFULLY. The video must maintain the exact visual style you see in this image — same color palette, lighting mood, textures, rendering quality, and aesthetic. Camera movements and pacing should match the trend's typical cinematography. Audio description should complement the trend's vibe.`
+    ? `\n\nA reference image of the "${effectName}" trend is attached below. YOU MUST STUDY IT CAREFULLY. The video must maintain the exact visual style you see in this image — same color palette, lighting mood, textures, rendering quality, and aesthetic. Camera movements and pacing should match the trend's typical cinematography. Audio description should complement the trend's vibe.\n\n⚠️ IMPORTANT: The reference image is for STYLE ONLY. Do NOT copy the subjects, characters, objects, or scene from the reference image. The SUBJECT must come from the effect name "${effectName}" and the user's idea. The reference image only tells you HOW to render it — not WHAT to render.`
     : '';
   const system = `You are an expert prompt engineer for short-form AI video generation. Given an effect name, an optional tagline, a short user idea, and a first-frame image prompt, write an EXTREMELY DETAILED img2video / image-to-video prompt. THIS IS THE MAIN PROMPT that drives the entire video — it must be comprehensive and thorough.
 
@@ -467,7 +467,7 @@ Example video prompt (match its DETAIL LEVEL, STRUCTURE, and LENGTH — especial
 
 ${FLASHLOOP_EXAMPLE_VIDEO_PROMPT}
 
-${hasImage ? 'STUDY THE ATTACHED REFERENCE IMAGE. Your video prompt must describe motion that maintains the exact visual style you observe in the image.' : 'Generate { "title": "...", "videoPrompt": "..." } for "' + effectName + '".'} The videoPrompt MUST be detailed (400-800 words) with a full second-by-second timeline. Do not output any explanation outside the JSON.`;
+${hasImage ? 'STUDY THE ATTACHED REFERENCE IMAGE for its VISUAL STYLE ONLY (colors, textures, lighting, rendering technique, mood). Do NOT copy its subject or scene. Your subject is "' + effectName + '" based on the user idea above. The video must maintain this visual style throughout all frames.' : 'Generate { "title": "...", "videoPrompt": "..." } for "' + effectName + '".'} The videoPrompt MUST be detailed (400-800 words) with a full second-by-second timeline. Do not output any explanation outside the JSON.`;
 
   const userContent = hasImage
     ? [{ type: 'text', text: userText }, { type: 'image_url', image_url: { url: trendThumbnail } }]
