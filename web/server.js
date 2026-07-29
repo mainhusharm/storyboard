@@ -358,12 +358,18 @@ function enforceEffectRelevance(text, effectName, tagline, userIdea, duration = 
   // Prompt is on-topic only if it matches the effect AND does not copy the example.
   if (hasMatch && !copiedExample) return cleanText;
 
-  // Prompt drifted or copied the example: return a clean, effect-aware fallback.
-  const base = `Scene for the "${effectName}" effect${tagline ? ' — ' + tagline : ''}.${userIdea ? ' User intent: ' + userIdea + '.' : ''}`;
+  // If the prompt doesn't copy the example, trust it even if keywords don't match exactly.
+  // The LLM was told to write about this effect — keyword matching is too aggressive for
+  // creative prompts (e.g. "cozy family breakfast" is about "Everyday Life" but doesn't
+  // contain the literal word "everyday").
+  if (!copiedExample) return cleanText;
+
+  // Prompt copied the example: return a clean, effect-aware fallback.
+  const base = `A visually striking "${effectName}" scene${tagline ? ' — ' + tagline : ''}.${userIdea ? ' ' + userIdea : ''}`;
   if (type === 'video') {
-    return `${base} Create an exactly ${duration}-second photorealistic video anchored to the supplied first-frame image. Preserve the exact subject, style, lighting, and composition. Include smooth continuous motion, camera continuity, clear audio description, and strict negative instructions. Cinematic, photorealistic, ${ratio}.`;
+    return `${base} Create an exactly ${duration}-second video anchored to the supplied first-frame image. Preserve the exact subject, style, lighting, and composition. Smooth continuous motion, camera continuity. Cinematic, photorealistic, ${ratio}.`;
   }
-  return `${base} First-frame reference image, cinematic, photorealistic, highly detailed, ${ratio}, first frame only. The scene is clearly about "${effectName}" and visually matches the described style.`;
+  return `${base} First-frame reference image, cinematic, photorealistic, highly detailed, ${ratio}, first frame only.`;
 }
 
 // Build a production-ready AI scene for a Flashloop-style effect using GPT-5.5.
@@ -421,28 +427,27 @@ async function generateFlashloopImagePrompt(effectName, tagline, userIdea, ratio
   const system = `You are an expert prompt engineer for short-form AI video generation. Given an effect name, an optional tagline, and a short user idea, write a CONCISE first-frame / reference image prompt for img2img generation.
 
 CRITICAL RULES:
-- The prompt MUST be about the EFFECT NAME and TAGLINE provided below. It must NOT be about the glass-fruit example.
-- The example below is ONLY for structure and tone. Do NOT copy its subject.
-- Keep the prompt CONCISE: 80-150 words max. This is just a single frozen frame anchor — not a full scene description.
-- Focus ONLY on: (1) subject and what they're doing, (2) camera angle and framing, (3) lighting and color palette, (4) key materials/textures, (5) style keywords.
-- Do NOT describe every tiny detail, background objects exhaustively, or negative instructions. The video prompt will handle that.
-- If a user idea is provided, incorporate it naturally.
+- The EFFECT NAME is the core concept of the scene. "Everyday Life" means depict a relatable human everyday moment — family, morning routine, cooking, reading, etc. "Old Cartoon Style" means depict a scene in retro cartoon aesthetic. ALWAYS interpret the effect name as the scene's THEME and subject matter.
+- You MUST generate a SPECIFIC scene with specific subjects, actions, and setting. Do NOT write generic descriptions like "a scene matching this effect." Instead write something like "A family of four sitting around a breakfast table, mother pouring coffee, children reaching for toast."
+- The example below is ONLY for structure and tone. Do NOT copy its subject (crystal-glass fruit).
+- Keep the prompt CONCISE: 80-150 words max. This is just a single frozen frame anchor.
+- Focus ONLY on: (1) WHO is in the scene and WHAT they're doing, (2) camera angle and framing, (3) lighting and color palette, (4) key materials/textures, (5) style keywords.
+- If a user idea is provided, incorporate it naturally. If no user idea, invent a specific compelling scene that represents the effect name as a viral trend.
 ${visionBlock}
-
-If any @Name references are provided, keep the @ symbol and expand the description briefly.
 
 Return ONLY a JSON object with "title" and "imagePrompt". Do not output any explanation outside the JSON.`;
 
-  const userText = `Effect: ${effectName}
-Tagline: ${tagline || 'No tagline provided.'}${refBlock}
-User idea: ${userIdea || 'Create a visually striking scene matching this effect.'}
+  const userText = `Effect: ${effectName}${tagline ? ' — ' + tagline : ''}
+The effect "${effectName}" is a viral trend — your scene MUST depict a concept that matches this name. For "Everyday Life", show a cozy relatable daily moment (family, morning routine, cooking together). For "Old Cartoon Style", show a scene in retro cartoon aesthetic.
+${refBlock}
+User idea: ${userIdea || 'Invent a specific compelling scene that represents "' + effectName + '" as a viral trend — pick specific subjects, a specific setting, and a specific action.'}
 Aspect ratio: ${ratio}
 
-Example image prompt (match its CONCISENESS and tone, NOT its subject — keep yours under 150 words):
+Example (match its CONCISENESS, NOT its subject):
 
 A photorealistic macro close-up of a crystal-glass fruit on a dark slate cutting board. Translucent teal glass skin, coral veins, six dark crystal seeds. Chef's knife beside it. Soft studio lighting from the left, realistic caustics. Camera 25° above, shallow DOF. No hands. 8K, 16:9, first frame only.
 
-${hasStyle ? 'Render your scene in the exact visual style described in the VISUAL STYLE REFERENCE above. Your SUBJECT is "' + effectName + '" based on the user idea — do NOT recreate any scene implied by the style description.' : 'Generate { "title": "...", "imagePrompt": "..." } for "' + effectName + '".'} Keep imagePrompt under 150 words. Do not output any explanation outside the JSON.`;
+${hasStyle ? 'Render your scene in the exact visual style described in the VISUAL STYLE REFERENCE above. Your SUBJECT must be "' + effectName + '" — depict a scene that matches this trend name.' : 'Generate { "title": "...", "imagePrompt": "..." } for "' + effectName + '".'} Keep imagePrompt under 150 words. Do not output any explanation outside the JSON.`;
 
   const raw = await chatCompletion(model, [{ role: 'system', content: system }, { role: 'user', content: userText }], 4000);
   let parsed = {};
@@ -464,18 +469,20 @@ async function generateFlashloopVideoPrompt(effectName, tagline, userIdea, durat
   const system = `You are an expert prompt engineer for short-form AI video generation. Given an effect name, an optional tagline, a short user idea, and a first-frame image prompt, write a detailed img2video / image-to-video prompt.
 
 CRITICAL RULES:
-- The prompt MUST be about the EFFECT NAME and TAGLINE provided below. It must NOT be about the glass-fruit example.
-- The example below is ONLY for structure, detail level, and tone. Do NOT copy its subject.
-- Keep the prompt CONCISE: 200-400 words. Do NOT include negative instructions (what must NOT happen) — only describe what SHOULD happen.
-- MUST include: (1) second-by-second action timeline, (2) camera setup and continuity, (3) brief audio description, (4) style/technical specs.
+- The EFFECT NAME is the core concept. "Everyday Life" means animate a relatable human everyday moment. "Old Cartoon Style" means animate in retro cartoon aesthetic. ALWAYS interpret the effect name as the scene's THEME and subject matter.
+- You MUST describe specific actions, movements, and interactions. Do NOT write generic descriptions. The timeline must have concrete actions like "the mother lifts the coffee pot and pours" not "motion occurs."
+- The example below is ONLY for structure and tone. Do NOT copy its subject.
+- Keep the prompt 200-400 words. Do NOT include negative instructions — only describe what SHOULD happen.
+- MUST include: (1) second-by-second action timeline with specific movements, (2) camera setup and continuity, (3) brief audio description, (4) style/technical specs.
 - Preserve the exact subject, position, colors, lighting, and composition of the supplied first-frame image while animating.
 ${visionBlock}
 
 Return ONLY a JSON object with "title" and "videoPrompt". Do not output any explanation outside the JSON.`;
 
-  const userText = `Effect: ${effectName}
-Tagline: ${tagline || 'No tagline provided.'}${refBlock}
-User idea: ${userIdea || 'Create a visually striking scene matching this effect.'}
+  const userText = `Effect: ${effectName}${tagline ? ' — ' + tagline : ''}
+The effect "${effectName}" is a viral trend — your scene MUST depict a concept that matches this name. For "Everyday Life", animate a cozy relatable daily moment. For "Old Cartoon Style", animate in retro cartoon aesthetic.
+${refBlock}
+User idea: ${userIdea || 'Invent a specific compelling scene that represents "' + effectName + '" as a viral trend — pick specific subjects, a specific setting, and a specific action.'}
 Duration: ${duration} seconds
 Aspect ratio: ${ratio}
 
@@ -483,11 +490,11 @@ First-frame image prompt (your video prompt must describe motion anchored to thi
 
 ${imagePrompt || 'No image prompt provided.'}
 
-Example video prompt (match its STRUCTURE and TONE. Do NOT copy its subject. Keep yours 200-400 words, NO negative instructions):
+Example (match its STRUCTURE and TONE, NOT its subject. 200-400 words, no negative instructions):
 
 ${FLASHLOOP_EXAMPLE_VIDEO_PROMPT}
 
-${hasStyle ? 'Render in the exact visual style described in the VISUAL STYLE REFERENCE above. Your SUBJECT is "' + effectName + '" based on the user idea — do NOT recreate any scene implied by the style description. The video must maintain this style throughout all frames.' : 'Generate { "title": "...", "videoPrompt": "..." } for "' + effectName + '".'} Keep videoPrompt 200-400 words. No negative instructions. Do not output any explanation outside the JSON.`;
+${hasStyle ? 'Render in the exact visual style described in the VISUAL STYLE REFERENCE above. Your SUBJECT must be "' + effectName + '" — animate a scene that matches this trend name.' : 'Generate { "title": "...", "videoPrompt": "..." } for "' + effectName + '".'} Keep videoPrompt 200-400 words. No negative instructions. Do not output any explanation outside the JSON.`;
 
   const raw = await chatCompletion(model, [{ role: 'system', content: system }, { role: 'user', content: userText }], 16000);
   let parsed = {};
@@ -793,35 +800,56 @@ async function uploadToImageHost(filePath, logFn = inflLogLine) {
   const buf = await fsp.readFile(filePath);
   const ext = path.extname(filePath).toLowerCase() === '.jpg' ? 'jpg' : 'png';
   const mime = ext === 'jpg' ? 'image/jpeg' : 'image/png';
-  const form = new FormData();
-  form.append('files[]', new Blob([buf], { type: mime }), `image.${ext}`);
-  const res = await fetch('https://uguu.se/upload', { method: 'POST', body: form, signal: AbortSignal.timeout(120000) });
-  const j = await res.json().catch(() => ({}));
-  if (j.files && j.files[0] && j.files[0].url) {
-    const url = j.files[0].url;
-    logFn(`uploaded to uguu: ${url}`);
-    return url;
-  }
-  throw new Error(`uguu upload failed: ${JSON.stringify(j).slice(0, 200)}`);
+
+  // Try catbox.moe first — permanent direct links (no expiration)
+  try {
+    const form = new FormData();
+    form.append('reqtype', 'fileupload');
+    form.append('fileToUpload', new Blob([buf], { type: mime }), `image.${ext}`);
+    const res = await fetch('https://catbox.moe/user/api.php', { method: 'POST', body: form, signal: AbortSignal.timeout(120000) });
+    const text = await res.text();
+    if (res.ok && text && text.startsWith('https://')) {
+      logFn(`uploaded to catbox: ${text}`);
+      return text.trim();
+    }
+  } catch (e) { logFn(`catbox upload failed: ${e.message}`); }
+
+  // Fallback to uguu.se (temporary, expires ~1hr) if catbox fails
+  try {
+    const form = new FormData();
+    form.append('files[]', new Blob([buf], { type: mime }), `image.${ext}`);
+    const res = await fetch('https://uguu.se/upload', { method: 'POST', body: form, signal: AbortSignal.timeout(120000) });
+    const j = await res.json().catch(() => ({}));
+    if (j.files && j.files[0] && j.files[0].url) {
+      const url = j.files[0].url;
+      logFn(`uploaded to uguu: ${url}`);
+      return url;
+    }
+  } catch (e) { logFn(`uguu fallback upload failed: ${e.message}`); }
+
+  throw new Error('image upload failed: catbox and uguu both failed');
 }
 // Keep old name as alias for backwards compat
 const uploadToCatbox = uploadToImageHost;
 
 // PaxSenix img2img accepts only publicly accessible HTTP image URLs. Uploaded
-// refs are local files uploaded by the user; we prefer them over AI-generated
-// refs. Migrate any uploaded ref missing a public URL by uploading to uguu.se.
-// Resolve a public URL for the influencer's reference image.
-// Simple: use the uploaded photo's public URL (uguu.se). If missing, re-upload.
+// refs are local files uploaded by the user. Catbox URLs are permanent.
+// Resolve a public URL for the influencer's reference image, verifying it is
+// still reachable; if the stored URL is dead, re-upload the local file.
 async function resolveInfluencerRefUrl(infl) {
   infl.refs = infl.refs || [];
 
-  // Use the uploaded ref's public URL directly
+  // Verify stored URL is alive before using it
   for (const ref of infl.refs.filter(r => r?.url)) {
-    inflLogLine(`using reference: ${ref.path} → ${ref.url.slice(0, 60)}`);
-    return ref.url;
+    const alive = await isAccessibleImageUrl(ref.url);
+    if (alive) {
+      inflLogLine(`using verified reference: ${ref.path} → ${ref.url.slice(0, 60)}`);
+      return ref.url;
+    }
+    inflLogLine(`stored reference URL is dead, re-uploading: ${ref.path}`);
   }
 
-  // No URL — re-upload the local file to uguu.se
+  // No usable URL — re-upload the local file to catbox.moe
   for (const ref of infl.refs.filter(r => r?.path)) {
     const localPath = path.join(influencerDir(infl.id), ref.path);
     if (!fs.existsSync(localPath)) continue;
@@ -2066,24 +2094,35 @@ async function generateInfluencerContent(infl, userPrompt, style, ratio, imageMo
 }
 
 // Generate content using img2img (transform a reference image based on prompt)
-// Generate content using img2img. seedream-5 works (~70s). nano-banana gets stuck — skip it.
-// Reference MUST be on PaxSenix servers (tmpfiles.paxsenix.org).
+// The reference IMAGE is the ground truth for appearance. The text prompt must
+// ONLY describe the scene/action — NEVER the person's face/body, or the text
+// overrides the image and breaks likeness preservation.
 async function generateInfluencerContentImg2Img(infl, refUrl, userPrompt, style, ratio, imageModel) {
   fs.mkdirSync(influencerDir(infl.id), { recursive: true });
   inflSetPhase('infl-img2img', 1);
   inflLogLine(`generating img2img content for "${infl.name}"`);
-  const styled = applyStyle(userPrompt, style);
-  const imgQuality = ' Photorealistic smartphone photo quality. Natural lighting and shadows. Realistic human anatomy. No beauty filters. No artificial effects. No AI artifacts. Unpolished home phone recording aesthetics.';
-  const hasDesc = userPrompt.includes((infl.description || '').slice(0, 50));
-  const rawPrompt = hasDesc ? `${styled}${imgQuality}` : `${infl.description} ${styled}${imgQuality}`;
-  const fullPrompt = sanitizePrompt(rawPrompt);
-  inflLogLine(`prompt length: ${fullPrompt.length} chars`);
+  inflLogLine(`reference image: ${refUrl.slice(0, 80)}`);
+
+  // The reference IMAGE is the identity. Strip any "Identity Consistency" blocks
+  // (which often contain detailed text descriptions that override the photo)
+  // and keep only scene/camera/lighting/outfit/photography instructions.
+  let sceneOnly = userPrompt
+    .replace(/Identity Consistency:?[\s\S]*?(?=\n\n[A-Z][a-zA-Z ]*:|$)/i, '')
+    .replace(/Negative Prompt:?[\s\S]*?(?=\n\n[A-Z][a-zA-Z ]*:|$)/i, '')
+    .trim();
+  // Also remove hardcoded facial-feature paragraphs the LLM sometimes injects
+  sceneOnly = sceneOnly.replace(/A woman in her (late twenties|twenties|.*?) with[\s\S]*?(?=\n\n|Scene:|Pose:|Camera:|Lighting:|Outfit:|Environment:|Photography:)/gi, '');
+  sceneOnly = applyStyle(sceneOnly || 'doing an everyday lifestyle activity', style);
+  const identityLock = 'CRITICAL: Preserve the EXACT face, hair, skin tone, and identity from the provided reference image. Do not alter or beautify facial features. ';
+  const imgQuality = 'Photorealistic smartphone photo. Natural lighting. Realistic anatomy. No beauty filters. No AI artifacts.';
+  const fullPrompt = sanitizePrompt(identityLock + sceneOnly + ' ' + imgQuality);
+  inflLogLine(`cleaned scene prompt length: ${fullPrompt.length} chars`);
 
   let url = null;
-  // Try seedream-5 up to 3 times — it works but "All providers failed" is intermittent
+  // Try seedream-5 up to 3 times. Add image_strength to keep output close to ref.
   for (let attempt = 1; attempt <= 3; attempt++) {
     inflLogLine(`img2img: seedream-5 attempt ${attempt}/3...`);
-    const postBody = JSON.stringify({ prompt: fullPrompt, model: 'seedream-5', ratio, image_urls: [refUrl] });
+    const postBody = JSON.stringify({ prompt: fullPrompt, model: 'seedream-5', ratio, image_urls: [refUrl], strength: 0.35, image_strength: 0.35 });
     let task = null;
     try {
       const ac = new AbortController();
@@ -2178,7 +2217,7 @@ function sendJson(res, code, obj) { res.writeHead(code, { 'Content-Type': 'appli
 function readBody(req) { return new Promise((resolve, reject) => { let s = ''; req.on('data', c => { s += c; if (s.length > 15e6) req.destroy(); }); req.on('end', () => { try { resolve(s ? JSON.parse(s) : {}); } catch (e) { reject(e); } }); req.on('error', reject); }); }
 
 // Save uploaded base64 image as a reference photo.
-// Uploads to uguu.se for a public URL that PaxSenix img2img can use directly.
+// Uploads to catbox.moe for a permanent public URL that PaxSenix img2img can use directly.
 async function saveUploadedRef(infl, dataUrl) {
   const match = dataUrl.match(/^data:image\/(\w+);base64,(.+)/);
   if (!match) throw new Error('invalid image data URL');
@@ -2190,13 +2229,13 @@ async function saveUploadedRef(infl, dataUrl) {
   await fsp.writeFile(outPath, buf);
   inflLogLine(`photo saved: ${filename} (${(buf.length / 1024).toFixed(0)}KB)`);
 
-  // Upload to uguu.se for a public URL
+  // Upload to catbox.moe for a permanent public URL
   let publicUrl = null;
   try {
     publicUrl = await uploadToImageHost(outPath);
-    inflLogLine(`uploaded to uguu.se: ${publicUrl}`);
+    inflLogLine(`uploaded to catbox: ${publicUrl}`);
   } catch (e) {
-    inflLogLine(`uguu.se upload failed: ${e.message}`);
+    inflLogLine(`catbox upload failed: ${e.message}`);
   }
 
   // Clear ALL old refs — replace with this one uploaded photo + its public URL
@@ -3306,10 +3345,18 @@ Return ONLY a JSON object:
         const charName = infl.name || 'the person';
         const wardrobe = infl.defaultWardrobe || '';
         const vibe = infl.vibe || '';
-        const profileBlock = `Name: ${charName}${charDesc ? '\nDescription:\n' + charDesc : ''}${wardrobe ? '\nDefault Wardrobe: ' + wardrobe : ''}${vibe ? '\nVibe: ' + vibe : ''}`;
+        const hasUploadedRef = (infl.refs || []).some(r => r && r.path && r.uploaded);
+        // If the user uploaded a real reference photo, the image IS the identity.
+        // Do NOT inject a text character description — it overrides the reference image.
+        const profileBlock = hasUploadedRef
+          ? `Name: ${charName}\nNOTE: A real reference photo of ${charName} is supplied. The prompt must ONLY describe the scene, pose, camera, lighting and outfit. NEVER describe the face, hair, skin tone or body proportions in text.`
+          : `Name: ${charName}${charDesc ? '\nDescription:\n' + charDesc : ''}${wardrobe ? '\nDefault Wardrobe: ' + wardrobe : ''}${vibe ? '\nVibe: ' + vibe : ''}`;
 
         // ---- STEP 1: Generate IMAGE prompt (first frame) ----
         inflLogLine('generating image prompt for: ' + actInput.slice(0, 50));
+        const identityBlock = hasUploadedRef
+          ? `Identity Consistency:\nA real reference photo of the influencer is supplied. Preserve the EXACT face, hair, skin tone and identity from that reference image. Do not describe or change facial features in the prompt text. Do not beautify or stylize.\n`
+          : `Identity Consistency:\nUse the provided reference image as the exact identity reference. Preserve exact facial features, hairstyle, skin tone, body proportions, and overall appearance. Do not beautify or stylize the face.\n`;
         const imgSystem = `You are an expert prompt engineer for AI influencer content. Write one detailed first-frame image prompt for img2img generation.
 
 THE PERSON IS THE MAIN SUBJECT. The prompt must describe a REAL PERSON (the influencer) doing the activity. This is a selfie or phone recording OF the person — NOT a still life or object shot. The person MUST be visible in the frame.
@@ -3322,9 +3369,7 @@ ASPECT RATIO: ${ratio}
 
 Write the prompt using EXACTLY this structure:
 
-Identity Consistency:
-Use the provided reference image as the exact identity reference. Preserve exact facial features, hairstyle, skin tone, body proportions, and overall appearance. Do not beautify or stylize the face.
-
+${identityBlock}
 Scene:
 [Where is the person? What environment are they in? What's visible behind them?]
 

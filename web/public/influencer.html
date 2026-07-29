@@ -99,6 +99,19 @@
 
   .create-box{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:16px}
   .create-box .step{margin-bottom:10px}
+  .prompt-gen{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:12px;margin-bottom:10px}
+  .prompt-gen .gen-prompt-row{display:flex;gap:6px;align-items:center}
+  .prompt-gen .gen-prompt-row select{width:auto;flex:none}
+  .prompt-gen .gen-prompt-row button{flex:none;white-space:nowrap}
+  .prompt-gen .ref-preview{display:flex;align-items:center;gap:8px;margin-bottom:8px;padding:6px 8px;background:var(--panel3);border:1px solid var(--line);border-radius:6px}
+  .prompt-gen .ref-preview img{width:40px;height:40px;border-radius:6px;object-fit:cover;border:1px solid var(--line)}
+  .prompt-gen .ref-preview span{font-size:10px;color:var(--faint)}
+  .prompt-output{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:10px;margin-top:8px;display:none}
+  .prompt-output.show{display:block}
+  .prompt-output label{display:block;font-size:9px;letter-spacing:1.5px;text-transform:uppercase;color:var(--faint);margin-bottom:4px}
+  .prompt-output textarea{width:100%;min-height:60px;background:#05070a;color:var(--dim);border:1px solid var(--line);border-radius:6px;padding:8px;font:11px/1.5 "JetBrains Mono",monospace;resize:vertical;margin-bottom:6px}
+  .prompt-output .prompt-actions{display:flex;gap:6px;flex-wrap:wrap}
+  .prompt-output .prompt-actions button{padding:5px 10px;font-size:10px}
   .prompt-area{min-height:100px !important;font:13px/1.6 Inter !important;background:var(--panel2)}
   .opts{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:8px}
   .gen-row{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
@@ -231,6 +244,43 @@
         <label class="f">Source reference image</label>
         <div id="refSelector" class="ref-selector" style="display:flex;gap:6px;overflow-x:auto;padding:4px 0"></div>
         <p style="font-size:10px;color:var(--faint);margin-top:4px">💡 Select any reference photo — uploaded photos (📷) are auto-hosted by the server.</p>
+      </div>
+      <!-- Generate Prompt section -->
+      <div class="prompt-gen" id="promptGenSection">
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px">
+          <span style="font-size:11px;font-weight:600;color:var(--pink)">✨ Generate Prompts</span>
+          <span style="font-size:9px;color:var(--faint)">One-click random real-life influencer activity</span>
+        </div>
+        <!-- Ref image preview -->
+        <div class="ref-preview" id="promptRefPreview" style="display:none">
+          <img id="promptRefImg" src="" alt="ref">
+          <span>Using this reference photo for i2i generation</span>
+        </div>
+        <div class="gen-prompt-row">
+          <select id="promptModel" style="width:100px;font-size:10px">
+            <option value="gemini-2.5-pro">Gemini 2.5</option>
+            <option value="gemini-3.1-pro">Gemini 3.1</option>
+            <option value="gpt-5.5">GPT 5.5</option>
+          </select>
+          <button id="btnGenPrompt" style="background:linear-gradient(135deg,var(--pink),var(--violet));border:none;color:#fff;font-size:11px;flex:1">✨ Generate Random Activity Prompts</button>
+        </div>
+        <!-- Output -->
+        <div class="prompt-output" id="promptOutput">
+          <label>🖼 Image Prompt (i2i / img2img)</label>
+          <textarea id="genImgPrompt" readonly></textarea>
+          <label>🎬 Video Prompt (i2v / img2video) — with second-by-second timeline</label>
+          <textarea id="genVidPrompt" readonly style="min-height:100px"></textarea>
+          <div class="prompt-actions">
+            <button id="btnUseImgPrompt" style="background:var(--panel3);color:var(--pink);border-color:rgba(244,114,182,.4)">📋 Use Image Prompt</button>
+            <button id="btnCopyImgPrompt" style="background:var(--panel3);color:var(--dim);border-color:var(--line)">Copy Image</button>
+            <button id="btnCopyVidPrompt" style="background:var(--panel3);color:var(--dim);border-color:var(--line)">Copy Video</button>
+          </div>
+          <div style="display:flex;gap:6px;margin-top:8px">
+            <button id="btnGenI2I" style="flex:1;padding:9px;background:linear-gradient(135deg,var(--pink),var(--violet));border:none;color:#fff;font-size:11px;font-weight:600">🖼 Generate i2i Image</button>
+            <button id="btnGenI2V" style="flex:1;padding:9px;background:linear-gradient(135deg,var(--teal),#0d9488);border:none;color:#fff;font-size:11px;font-weight:600">🎬 Generate i2v Video</button>
+          </div>
+          <button id="btnGenBoth" class="cta" style="margin-top:6px;font-size:11px;background:linear-gradient(135deg,#10b981,#059669)">🚀 Generate Both (Image → Video)</button>
+        </div>
       </div>
       <textarea id="contentPrompt" class="prompt-area" placeholder="Describe the scene: e.g., 'posing by a rooftop pool at sunset wearing a black silk slip dress, golden hour backlight, confident smile, city skyline behind'"></textarea>
       <div class="opts">
@@ -392,6 +442,7 @@ async function loadInfluencer(id){
   renderRefs();
   renderGallery();
   updateLock();
+  updatePromptRefPreview();
 }
 
 function updateLock(){
@@ -564,6 +615,135 @@ let SEL_REF_URL=null; // selected ref URL for img2img
 $('modeT2I').onclick=()=>{CUR_MODE='t2i';$('modeT2I').classList.add('active');$('modeI2I').classList.remove('active');$('i2iPanel').style.display='none';$('btnGenImage').textContent='📸 Generate Image'};
 $('modeI2I').onclick=()=>{CUR_MODE='i2i';$('modeI2I').classList.add('active');$('modeT2I').classList.remove('active');$('i2iPanel').style.display='block';$('btnGenImage').textContent='🔄 Transform Image';renderRefSelector()};
 
+// ============ GENERATE PROMPT ============
+
+// Update ref preview when influencer loads
+function updatePromptRefPreview(){
+  const prev=$('promptRefPreview');
+  const img=$('promptRefImg');
+  if(CUR && CUR.refs && CUR.refs.length){
+    const first=CUR.refs.find(r=>r&&r.path);
+    if(first){
+      img.src=`/frames/${CUR.id}/${first.path}?v=${Date.now()}`;
+      prev.style.display='flex';
+      return;
+    }
+  }
+  prev.style.display='none';
+}
+
+$('btnGenPrompt').onclick=async()=>{
+  if(!CUR)return alert('No influencer loaded');
+  if(!CUR.description)return alert('Generate the locked description first');
+  $('btnGenPrompt').disabled=true;
+  $('btnGenPrompt').textContent='⏳ Generating random activity...';
+  $('promptOutput').classList.remove('show');
+  try{
+    const r=await api('/influencer/generate-prompt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:CUR.id,ratio:$('ratio').value,model:$('promptModel').value})});
+    if(r.error)throw new Error(r.error);
+    $('genImgPrompt').value=r.imgPrompt||'';
+    $('genVidPrompt').value=r.vidPrompt||'';
+    $('promptOutput').classList.add('show');
+    log('✨ random activity prompts generated'+(r.activity?': '+r.activity:''));
+  }catch(e){
+    alert('Error: '+e.message);
+    log('❌ prompt generation failed: '+e.message);
+  }finally{
+    $('btnGenPrompt').disabled=false;
+    $('btnGenPrompt').textContent='✨ Generate Random Activity Prompts';
+  }
+};
+
+$('btnUseImgPrompt').onclick=()=>{
+  const p=$('genImgPrompt').value;if(!p)return;
+  $('contentPrompt').value=p;
+  log('📋 image prompt applied to content prompt');
+};
+
+$('btnCopyImgPrompt').onclick=()=>{
+  const p=$('genImgPrompt').value;if(!p)return;
+  navigator.clipboard.writeText(p).then(()=>{log('📋 image prompt copied');});
+};
+
+$('btnCopyVidPrompt').onclick=()=>{
+  const p=$('genVidPrompt').value;if(!p)return;
+  navigator.clipboard.writeText(p).then(()=>{log('📋 video prompt copied');});
+};
+
+// Generate i2i image using the character's uploaded ref
+$('btnGenI2I').onclick=async()=>{
+  const imgP=$('genImgPrompt').value.trim();
+  if(!imgP)return alert('Generate prompts first');
+  if(!CUR)return alert('No influencer loaded');
+  if(!CUR.refs||!CUR.refs.filter(r=>r&&r.path).length)return alert('Upload reference photos first');
+  // Auto-select first uploaded ref, or first available
+  const ref=(CUR.refs.find(r=>r&&r.path&&r.uploaded)||CUR.refs.find(r=>r&&r.path));
+  const refUrl=ref?(ref.url||''):'';
+  $('btnGenI2I').disabled=true;
+  $('btnGenI2I').textContent='⏳ Generating...';
+  try{
+    log('🖼 generating i2i image with character ref...');
+    const r=await api('/influencer/img2img',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:CUR.id,prompt:imgP,refUrl:refUrl||undefined,style:$('style').value,ratio:$('ratio').value,imageModel:$('imageModel').value})});
+    if(r.error)throw new Error(r.error);
+    log('🖼 i2i image generation started');
+  }catch(e){
+    alert('Error: '+e.message);
+    log('❌ i2i failed: '+e.message);
+  }finally{
+    $('btnGenI2I').disabled=false;
+    $('btnGenI2I').textContent='🖼 Generate i2i Image';
+  }
+};
+
+// Generate i2v video from latest image
+$('btnGenI2V').onclick=async()=>{
+  if(!CUR||!CUR.content||!CUR.content.length)return alert('Generate an image first, then animate it');
+  const vidP=$('genVidPrompt').value.trim();
+  if(!vidP)return alert('Generate prompts first');
+  $('btnGenI2V').disabled=true;
+  $('btnGenI2V').textContent='⏳ Generating...';
+  try{
+    const latest=CUR.content[0];
+    log('🎬 generating i2v video from latest image...');
+    const r=await api('/influencer/video',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:CUR.id,contentId:latest.id,ratio:$('ratio').value,videoPrompt:vidP})});
+    if(r.error)throw new Error(r.error);
+    log('🎬 i2v video generation started');
+  }catch(e){
+    alert('Error: '+e.message);
+    log('❌ i2v failed: '+e.message);
+  }finally{
+    $('btnGenI2V').disabled=false;
+    $('btnGenI2V').textContent='🎬 Generate i2v Video';
+  }
+};
+
+// Generate Both: i2i image first, then auto-animate
+$('btnGenBoth').onclick=async()=>{
+  const imgP=$('genImgPrompt').value.trim();
+  const vidP=$('genVidPrompt').value.trim();
+  if(!imgP||!vidP)return alert('Generate prompts first');
+  if(!CUR)return alert('No influencer loaded');
+  if(!CUR.refs||!CUR.refs.filter(r=>r&&r.path).length)return alert('Upload reference photos first');
+  const ref=(CUR.refs.find(r=>r&&r.path&&r.uploaded)||CUR.refs.find(r=>r&&r.path));
+  const refUrl=ref?(ref.url||''):'';
+  $('btnGenBoth').disabled=true;
+  $('btnGenBoth').textContent='⏳ Generating...';
+  try{
+    log('🚀 generating both — i2i image first...');
+    const imgR=await api('/influencer/img2img',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:CUR.id,prompt:imgP,refUrl:refUrl||undefined,style:$('style').value,ratio:$('ratio').value,imageModel:$('imageModel').value})});
+    if(imgR.error)throw new Error('Image: '+imgR.error);
+    log('🖼 image generation started — video will follow after render');
+    // Save vid prompt for post-image animation
+    localStorage.setItem('infl_vid_prompt_'+CUR.id,vidP);
+  }catch(e){
+    alert('Error: '+e.message);
+    log('❌ generation failed: '+e.message);
+  }finally{
+    $('btnGenBoth').disabled=false;
+    $('btnGenBoth').textContent='🚀 Generate Both (Image → Video)';
+  }
+};
+
 function renderRefSelector(){
   const c=$('refSelector');
   if(!CUR||!CUR.refs){c.innerHTML='<span style="color:var(--faint);font-size:11px">No references</span>';return;}
@@ -647,7 +827,7 @@ async function poll(){
   $('phasepill').classList.toggle('busy',busy);
   $('phasetxt').textContent=busy?`${s.phase.toUpperCase()} ${s.done}/${s.total||'?'}`:'IDLE';
   $('gprog').firstElementChild.style.width=s.total?Math.round(100*s.done/s.total)+'%':(busy?'12%':'0%');
-  const btns=['btnExpand','btnRefs','btnGenImage','btnGenVideo','btnAutoCreate','btnAutoCreate2','btnTrendingFeed','btnSurpriseTrend','btnTrendSearch','btnFetchIGReel','btnLoadTemplates'];
+  const btns=['btnExpand','btnRefs','btnGenImage','btnGenVideo','btnAutoCreate','btnAutoCreate2','btnTrendingFeed','btnSurpriseTrend','btnTrendSearch','btnFetchIGReel','btnLoadTemplates','btnGenPrompt','btnGenI2I','btnGenI2V','btnGenBoth'];
   btns.forEach(b=>$(b).disabled=busy);
   $('log').innerHTML=s.log.map(l=>{
     const m=l.match(/^(\[[^\]]+\])\s?(.*)$/);
