@@ -385,12 +385,40 @@ function formatFlashloopRefs(cleanRefs) {
     : '';
 }
 
+// Analyze a trend reference image and extract ONLY its visual style as text.
+// Returns a style description that can be injected into prompts WITHOUT attaching
+// the image — this prevents the LLM from copying the subject/scene from the ref.
+async function analyzeTrendStyle(trendThumbnail, effectName, model = 'gpt-5.5') {
+  if (!trendThumbnail) return '';
+  try {
+    const system = `You are a visual style analyst. You will be shown a reference image from a viral AI video trend. Your job is to describe ONLY the visual style, technique, and aesthetic of the image — NOT its subject, characters, objects, or scene content.
+
+OUTPUT RULES:
+- Describe ONLY: rendering technique (photorealistic / 3D claymation / cel-shaded anime / hand-drawn / etc.), color palette (specific colors and grading), lighting style, texture quality, camera/lens feel, mood, and overall aesthetic.
+- DO NOT mention: people, characters, animals, objects, locations, actions, or any scene content.
+- DO NOT say "the image shows..." or describe what is happening in the scene.
+- Output a single dense paragraph of 60-120 words of pure style keywords and descriptions.
+- End with a short "Style tag:" line summarizing the aesthetic in 8-15 keywords.`;
+    const userContent = [
+      { type: 'text', text: `Analyze the visual style of this "${effectName}" trend reference image. Remember: describe ONLY style, colors, lighting, textures, rendering technique, and mood. Do NOT describe the subject or scene content.` },
+      { type: 'image_url', image_url: { url: trendThumbnail } }
+    ];
+    const raw = await chatCompletion(model, [{ role: 'system', content: system }, { role: 'user', content: userContent }], 1500);
+    return (raw || '').trim();
+  } catch (e) {
+    logLine(`trend style analysis failed: ${e.message}`);
+    return '';
+  }
+}
+
 // Generate only the first-frame / reference image prompt (img2img).
-async function generateFlashloopImagePrompt(effectName, tagline, userIdea, ratio, model = 'gpt-5.5', cleanRefs = [], trendThumbnail = '') {
+// styleText is a pre-extracted style description (from analyzeTrendStyle) — the image
+// itself is NOT attached to this call, so the LLM cannot copy the reference's subject.
+async function generateFlashloopImagePrompt(effectName, tagline, userIdea, ratio, model = 'gpt-5.5', cleanRefs = [], styleText = '') {
   const refBlock = formatFlashloopRefs(cleanRefs);
-  const hasImage = !!trendThumbnail;
-  const visionBlock = hasImage
-    ? `\n\nA reference image of the "${effectName}" trend is attached below. YOU MUST STUDY IT CAREFULLY before writing the prompt. Analyze the image and identify:\n- The exact visual style (photorealistic, illustrated, 3D render, cel-shaded, etc.)\n- Color palette and grading (warm/cool, saturated/desaturated, contrast level)\n- Lighting style (natural, studio, dramatic, soft, etc.)\n- Composition and framing patterns\n- Materials, textures, and rendering quality\n- Mood and aesthetic vibe\n\nYour prompt MUST recreate this exact visual style. Describe the scene so that when img2img uses the reference image, the output looks like it belongs in the same trend/series. Include explicit style keywords you observe in the image.\n\n⚠️ IMPORTANT: The reference image is for STYLE ONLY. Do NOT copy the subjects, characters, objects, or scene from the reference image. The SUBJECT must come from the effect name "${effectName}" and the user's idea. The reference image only tells you HOW to render it (style, colors, textures, lighting, mood) — not WHAT to render.`
+  const hasStyle = !!styleText;
+  const visionBlock = hasStyle
+    ? `\n\nVISUAL STYLE REFERENCE (extracted from the "${effectName}" trend reference image):\n${styleText}\n\nYour prompt MUST be rendered in this exact visual style — same rendering technique, color palette, lighting, textures, and mood. The SUBJECT of your prompt must come from the effect name "${effectName}" and the user's idea below — NOT from any scene implied by the style description. The style tells you HOW to render, not WHAT to render.`
     : '';
   const system = `You are an expert prompt engineer for short-form AI video generation. Given an effect name, an optional tagline, and a short user idea, write a CONCISE first-frame / reference image prompt for img2img generation.
 
@@ -416,13 +444,9 @@ Example image prompt (match its CONCISENESS and tone, NOT its subject — keep y
 
 A photorealistic macro close-up of a crystal-glass fruit on a dark slate cutting board. Translucent teal glass skin, coral veins, six dark crystal seeds. Chef's knife beside it. Soft studio lighting from the left, realistic caustics. Camera 25° above, shallow DOF. No hands. 8K, 16:9, first frame only.
 
-${hasImage ? 'STUDY THE ATTACHED REFERENCE IMAGE for its VISUAL STYLE ONLY (colors, textures, lighting, rendering technique, mood). Do NOT copy its subject or scene. Your subject is "' + effectName + '" based on the user idea above. Render it in the style you observe in the image.' : 'Generate { "title": "...", "imagePrompt": "..." } for "' + effectName + '".'} Keep imagePrompt under 150 words. Do not output any explanation outside the JSON.`;
+${hasStyle ? 'Render your scene in the exact visual style described in the VISUAL STYLE REFERENCE above. Your SUBJECT is "' + effectName + '" based on the user idea — do NOT recreate any scene implied by the style description.' : 'Generate { "title": "...", "imagePrompt": "..." } for "' + effectName + '".'} Keep imagePrompt under 150 words. Do not output any explanation outside the JSON.`;
 
-  const userContent = hasImage
-    ? [{ type: 'text', text: userText }, { type: 'image_url', image_url: { url: trendThumbnail } }]
-    : userText;
-
-  const raw = await chatCompletion(model, [{ role: 'system', content: system }, { role: 'user', content: userContent }], 4000);
+  const raw = await chatCompletion(model, [{ role: 'system', content: system }, { role: 'user', content: userText }], 4000);
   let parsed = {};
   try { parsed = parseJsonLenient(raw); } catch (e) { parsed = {}; }
   const imagePrompt = enforceEffectRelevance(parsed.imagePrompt || raw, effectName, tagline, userIdea, 0, ratio, 'image');
@@ -433,11 +457,11 @@ ${hasImage ? 'STUDY THE ATTACHED REFERENCE IMAGE for its VISUAL STYLE ONLY (colo
 }
 
 // Generate only the motion / video prompt (img2video), using the generated image prompt as context.
-async function generateFlashloopVideoPrompt(effectName, tagline, userIdea, duration, ratio, model = 'gpt-5.5', cleanRefs = [], imagePrompt = '', trendThumbnail = '') {
+async function generateFlashloopVideoPrompt(effectName, tagline, userIdea, duration, ratio, model = 'gpt-5.5', cleanRefs = [], imagePrompt = '', styleText = '') {
   const refBlock = formatFlashloopRefs(cleanRefs);
-  const hasImage = !!trendThumbnail;
-  const visionBlock = hasImage
-    ? `\n\nA reference image of the "${effectName}" trend is attached below. YOU MUST STUDY IT CAREFULLY. The video must maintain the exact visual style you see in this image — same color palette, lighting mood, textures, rendering quality, and aesthetic. Camera movements and pacing should match the trend's typical cinematography. Audio description should complement the trend's vibe.\n\n⚠️ IMPORTANT: The reference image is for STYLE ONLY. Do NOT copy the subjects, characters, objects, or scene from the reference image. The SUBJECT must come from the effect name "${effectName}" and the user's idea. The reference image only tells you HOW to render it — not WHAT to render.`
+  const hasStyle = !!styleText;
+  const visionBlock = hasStyle
+    ? `\n\nVISUAL STYLE REFERENCE (extracted from the "${effectName}" trend reference image):\n${styleText}\n\nThe video MUST maintain this exact visual style throughout all frames — same rendering technique, color palette, lighting, textures, and mood. Camera movements and pacing should match this aesthetic. Audio description should complement the vibe. The SUBJECT comes from the effect name and user idea — NOT from any scene implied by the style description.`
     : '';
   const system = `You are an expert prompt engineer for short-form AI video generation. Given an effect name, an optional tagline, a short user idea, and a first-frame image prompt, write an EXTREMELY DETAILED img2video / image-to-video prompt. THIS IS THE MAIN PROMPT that drives the entire video — it must be comprehensive and thorough.
 
@@ -467,13 +491,9 @@ Example video prompt (match its DETAIL LEVEL, STRUCTURE, and LENGTH — especial
 
 ${FLASHLOOP_EXAMPLE_VIDEO_PROMPT}
 
-${hasImage ? 'STUDY THE ATTACHED REFERENCE IMAGE for its VISUAL STYLE ONLY (colors, textures, lighting, rendering technique, mood). Do NOT copy its subject or scene. Your subject is "' + effectName + '" based on the user idea above. The video must maintain this visual style throughout all frames.' : 'Generate { "title": "...", "videoPrompt": "..." } for "' + effectName + '".'} The videoPrompt MUST be detailed (400-800 words) with a full second-by-second timeline. Do not output any explanation outside the JSON.`;
+${hasStyle ? 'Render in the exact visual style described in the VISUAL STYLE REFERENCE above. Your SUBJECT is "' + effectName + '" based on the user idea — do NOT recreate any scene implied by the style description. The video must maintain this style throughout all frames.' : 'Generate { "title": "...", "videoPrompt": "..." } for "' + effectName + '".'} The videoPrompt MUST be detailed (400-800 words) with a full second-by-second timeline. Do not output any explanation outside the JSON.`;
 
-  const userContent = hasImage
-    ? [{ type: 'text', text: userText }, { type: 'image_url', image_url: { url: trendThumbnail } }]
-    : userText;
-
-  const raw = await chatCompletion(model, [{ role: 'system', content: system }, { role: 'user', content: userContent }], 16000);
+  const raw = await chatCompletion(model, [{ role: 'system', content: system }, { role: 'user', content: userText }], 16000);
   let parsed = {};
   try { parsed = parseJsonLenient(raw); } catch (e) { parsed = {}; }
   const videoPrompt = enforceEffectRelevance(parsed.videoPrompt || raw, effectName, tagline, userIdea, duration, ratio, 'video');
@@ -488,7 +508,17 @@ ${hasImage ? 'STUDY THE ATTACHED REFERENCE IMAGE for its VISUAL STYLE ONLY (colo
 // prompt for image-to-video (img2video) that preserves the generated frame.
 async function generateFlashloopScene(effectName, tagline, userIdea, duration, ratio, model = 'gpt-5.5', references = [], trendThumbnail = '') {
   const cleanRefs = cleanFlashloopRefs(references);
-  const imageResult = await generateFlashloopImagePrompt(effectName, tagline, userIdea, ratio, model, cleanRefs, trendThumbnail);
+
+  // STEP 1: If we have a trend reference image, analyze it for STYLE ONLY first.
+  // This extracts style as text so the LLM never sees the image subject.
+  let styleText = '';
+  if (trendThumbnail) {
+    styleText = await analyzeTrendStyle(trendThumbnail, effectName, model);
+    logLine(`trend style extracted for "${effectName}": ${styleText.length} chars`);
+  }
+
+  // STEP 2: Generate prompts using styleText (no image attached — LLM can't copy subject)
+  const imageResult = await generateFlashloopImagePrompt(effectName, tagline, userIdea, ratio, model, cleanRefs, styleText);
 
   // Ensure the image prompt is never empty; if the LLM returned nothing useful, build a minimal anchor.
   if (!imageResult.imagePrompt || !imageResult.imagePrompt.trim()) {
@@ -497,7 +527,7 @@ async function generateFlashloopScene(effectName, tagline, userIdea, duration, r
 
   let videoResult = {};
   try {
-    videoResult = await generateFlashloopVideoPrompt(effectName, tagline, userIdea, duration, ratio, model, cleanRefs, imageResult.imagePrompt, trendThumbnail);
+    videoResult = await generateFlashloopVideoPrompt(effectName, tagline, userIdea, duration, ratio, model, cleanRefs, imageResult.imagePrompt, styleText);
   } catch (e) { logLine('flashloop video prompt failed: ' + e.message); }
 
   // Ensure the video prompt is never empty — build a detailed fallback.
