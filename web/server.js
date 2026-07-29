@@ -8,6 +8,7 @@ const { execFile } = require('child_process');
 const { URL } = require('url');
 
 const IS_VERCEL = !!process.env.VERCEL;
+const VERCEL_TIMEOUT = IS_VERCEL ? 5000 : 25000;
 const ROOT = IS_VERCEL ? '/tmp' : path.resolve(__dirname, '..');
 const PUBLIC = path.join(__dirname, 'public');
 const FRAMES_DIR = path.join(ROOT, 'frames');
@@ -60,7 +61,7 @@ async function tavilySearch(query, limit = 5) {
         include_answer: true,
         max_results: limit
       }),
-      signal: AbortSignal.timeout(20000)
+      signal: AbortSignal.timeout(VERCEL_TIMEOUT)
     });
     const j = await res.json().catch(() => ({}));
     if (!res.ok) { console.log('[Tavily] HTTP error:', res.status, j); logLine('Tavily error: ' + (j.error || res.status)); return { answer: '', results: [] }; }
@@ -116,6 +117,7 @@ async function tavilyTrendTerms(category, limit = 5) {
 // yt-dlp search: get real SHORT-FORM video data for trending content (<= 60s)
 // Search YouTube Shorts for short-form videos only (<= 60s).
 async function ytSearch(query, limit = 5) {
+  if (IS_VERCEL) return [];
   return new Promise((resolve) => {
     const { execFile } = require('child_process');
     const q = `${query} shorts #shorts`.trim();
@@ -126,7 +128,7 @@ async function ytSearch(query, limit = 5) {
       '--match-filter', 'duration <= 60',
       'ytsearch' + (limit * 3) + ':' + q
     ];
-    execFile('python3', args, { timeout: 25000 }, (err, stdout) => {
+    execFile('python3', args, { timeout: VERCEL_TIMEOUT }, (err, stdout) => {
       if (err) return resolve([]);
       const lines = stdout.trim().split('\n').filter(Boolean);
       const videos = [];
@@ -170,7 +172,7 @@ async function ytSearch(query, limit = 5) {
 async function ttSearch(query, limit = 5) {
   try {
     const url = `https://www.tikwm.com/api/feed/search?keywords=${encodeURIComponent(query)}&count=${Math.min(limit * 5, 50)}`;
-    const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
+    const res = await fetch(url, { signal: AbortSignal.timeout(VERCEL_TIMEOUT) });
     const json = await res.json().catch(() => ({}));
     const videos = (Array.isArray(json.data) ? json.data : json.data?.videos || []);
     const result = [];
@@ -246,7 +248,7 @@ async function scrapeFlashloop() {
   try {
     const res = await fetch('https://www.flashloop.app/effects', {
       headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36' },
-      signal: AbortSignal.timeout(15000)
+      signal: AbortSignal.timeout(VERCEL_TIMEOUT)
     });
     if (!res.ok) { logLine('flashloop scrape: HTTP ' + res.status); return []; }
     const html = await res.text();
@@ -787,7 +789,7 @@ async function saveInfluencer(infl) {
 async function isAccessibleImageUrl(url) {
   if (!/^https?:\/\//i.test(url || '')) return false;
   try {
-    const res = await fetch(url, { method: 'GET', signal: AbortSignal.timeout(20000) });
+    const res = await fetch(url, { method: 'GET', signal: AbortSignal.timeout(VERCEL_TIMEOUT) });
     const type = res.headers.get('content-type') || '';
     if (!res.ok || !type.startsWith('image/')) return false;
     await res.body?.cancel().catch(() => {});
@@ -2786,7 +2788,7 @@ Return ONLY a JSON object:
         if (OMKAR_KEY) {
           try {
             const omkarResults = await Promise.allSettled(topQueries.map(async (q) => {
-              const r = await fetch(`${OMKAR_API}/tiktok/videos/search?search_query=${encodeURIComponent(q)}&market=us&max_results=${perQ + 2}&sort_by=most_liked`, { headers: { 'API-Key': OMKAR_KEY }, signal: AbortSignal.timeout(20000) });
+              const r = await fetch(`${OMKAR_API}/tiktok/videos/search?search_query=${encodeURIComponent(q)}&market=us&max_results=${perQ + 2}&sort_by=most_liked`, { headers: { 'API-Key': OMKAR_KEY }, signal: AbortSignal.timeout(VERCEL_TIMEOUT) });
               const j = await r.json().catch(() => ({}));
               return (j.videos || []).filter(v => (v.duration_seconds || 0) <= 60).map(v => ({
                 id: v.video_id, platform: 'tiktok',
@@ -3004,7 +3006,7 @@ Return ONLY a JSON object:
       if (OMKAR_KEY) {
         try {
           const omkarResults = await Promise.allSettled(finalQueries.slice(0, 5).map(async (q) => {
-            const r = await fetch(`${OMKAR_API}/tiktok/videos/search?search_query=${encodeURIComponent(q)}&market=us&max_results=${perQ + 2}&sort_by=most_liked`, { headers: { 'API-Key': OMKAR_KEY }, signal: AbortSignal.timeout(20000) });
+            const r = await fetch(`${OMKAR_API}/tiktok/videos/search?search_query=${encodeURIComponent(q)}&market=us&max_results=${perQ + 2}&sort_by=most_liked`, { headers: { 'API-Key': OMKAR_KEY }, signal: AbortSignal.timeout(VERCEL_TIMEOUT) });
             const j = await r.json().catch(() => ({}));
             if (!j.videos) return [];
             return j.videos.filter(v => (v.duration_seconds || 0) <= 60).map(v => ({
