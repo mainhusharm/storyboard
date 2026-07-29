@@ -563,7 +563,7 @@ STYLE: Cinematic, photorealistic, ${ratio}. Preserve visual style from first-fra
 // TikWM direct trending feed (free, no login). Returns real trending TikTok videos.
 async function ttTrendingFeed(limit = 10) {
   try {
-    const res = await fetch('https://www.tikwm.com/api/feed/list?region=US&count=' + Math.min(limit * 2, 30), { signal: AbortSignal.timeout(15000) });
+    const res = await fetch('https://www.tikwm.com/api/feed/list?region=US&count=' + Math.min(limit * 2, 30), { signal: AbortSignal.timeout(VERCEL_TIMEOUT) });
     const json = await res.json().catch(() => ({}));
     const videos = (Array.isArray(json.data) ? json.data : json.data?.videos || []);
     const result = [];
@@ -2748,6 +2748,12 @@ Return ONLY a JSON object:
     if (p === '/api/trending/tiktok' && req.method === 'GET') {
       const max = Math.min(parseInt(u.searchParams.get('max') || '12'), 20);
       try {
+        if (IS_VERCEL) {
+          const queries = ['beauty influencer grwm', 'fashion haul ootd', 'lifestyle influencer vlog'];
+          const ttResults = await Promise.all(queries.map(q => ttSearch(q, Math.ceil(max / 3))));
+          const all = ttResults.flat();
+          return sendJson(res, 200, { source: 'tiktok', videos: all.slice(0, max).map(v => ({ id: v.id, platform: 'tiktok', caption: v.title, title: v.title, author: v.author, authorName: v.author, views: v.views, likes: v.likes, duration: v.duration, cover: v.thumbnail, videoUrl: v.url, fresh: true, fetchedAt: Date.now() })) });
+        }
         // 1) Get LIVE trending topics from Tavily to build search queries
         let liveTerms = [];
         let liveAsOf = null;
@@ -2901,10 +2907,21 @@ Return ONLY a JSON object:
     // Pulls LIVE trending terms from Tavily and finds real short-form videos via yt-dlp.
     // Works without login, no rate limits. No server-side cache.
     if (p === '/api/trends' && req.method === 'GET') {
+      try {
       const category = (u.searchParams.get('category') || 'anime').toLowerCase();
       const max = Math.min(parseInt(u.searchParams.get('max') || '20'), 30);
       const forceRefresh = u.searchParams.get('refresh') === '1' || u.searchParams.get('nocache') === '1';
       const searchQuery = (u.searchParams.get('q') || '').trim();
+
+      if (IS_VERCEL) {
+        const queries = searchQuery ? [searchQuery] : [category, category + ' trending', category + ' viral'];
+        let ttVideos = [];
+        try {
+          const ttResults = await Promise.all(queries.slice(0, 3).map(q => ttSearch(q, Math.ceil(max / 3))));
+          ttVideos = ttResults.flat();
+        } catch (e) {}
+        return sendJson(res, 200, { source: 'tiktok', category, videos: ttVideos.slice(0, max), liveTerms: [], flashloopFormats: [], tavilyConnected: false, flashloopConnected: false });
+      }
 
       // Category-specific search queries tuned for yt-dlp + Tavily
       // Short-form queries for both TikTok and YouTube Shorts (<= 60s)
@@ -3065,6 +3082,7 @@ Return ONLY a JSON object:
         flashloopConnected: flashloopFormats.length > 0
       };
       return sendJson(res, 200, result);
+      } catch (trendsErr) { return sendJson(res, 200, { source: 'error', category: (u.searchParams.get('category') || 'anime'), videos: [], liveTerms: [], flashloopFormats: [], error: trendsErr.message }); }
     }
 
     // Generate detailed image + video prompts for a selected Flashloop viral AI format.
@@ -3831,6 +3849,7 @@ ${infl.description || '(no description - describe a beautiful confident influenc
     res.writeHead(200, { 'Content-Type': MIME[path.extname(filePath).toLowerCase()] || 'application/octet-stream', 'Cache-Control': 'no-cache' });
     res.end(data);
   } catch (e) {
+    if (p && p.startsWith('/api/')) return sendJson(res, 500, { error: String(e.message || e) });
     if (e.code === 'ENOENT') { res.writeHead(404); res.end('not found'); }
     else { res.writeHead(500); res.end(String(e.message || e)); }
   }
