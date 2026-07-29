@@ -316,24 +316,22 @@ function flashloopAsVideo(fmt) {
 // NOTE: These examples are ONLY for structure, detail level, and tone. The LLM must NOT copy the crystal-fruit subject.
 const FLASHLOOP_EXAMPLE_IMAGE_PROMPT = `A photorealistic macro close-up of a single original imaginary crystal-glass fruit resting motionless on a dark slate cutting board. The fruit has a rounded teardrop shape with five gently twisted ribs, a short curled stem, translucent teal glass skin, thin coral-colored veins inside, and six dark crystal seeds arranged symmetrically around a small central core. A polished steel chef's knife lies beside it on the same board, and the background is a soft neutral grey. Soft controlled studio lighting from the left creates realistic caustics and reflections inside the glass. Shallow but stable depth of field keeps the entire fruit tack sharp. Camera positioned 25 degrees above the board, looking down at the fruit from the front. No hands are visible. Premium photorealistic macro food cinematography, realistic ray-traced glass, physically accurate reflections and refraction, 8K, 16:9, first frame only.`;
 
-const FLASHLOOP_EXAMPLE_VIDEO_PROMPT = `Create an exactly 15-second photorealistic ASMR video featuring one original imaginary crystal-glass fruit. Use the supplied first-frame image as the strict visual reference. Preserve the fruit's exact shape, proportions, ridges, stem, colors, internal patterns, position, and transparency in every frame.
-The fruit is a strange, biologically believable species with a rounded teardrop shape, five gently twisted ribs, a short curled stem, and translucent teal glass containing thin coral-colored veins and six dark crystal seeds arranged symmetrically around the center.
-CAMERA AND CONTINUITY
-Use one continuous locked macro camera shot with no cuts, angle changes, zooms, reframing, or camera movement. The camera is positioned slightly above the cutting board at approximately a 25-degree downward angle. Keep the entire fruit, knife blade, and working hand visible throughout the cutting action.
-The fruit must stay centered on the same dark stone cutting board. The background, shadows, reflections, lighting, hand, knife, and fruit design must remain completely consistent. Do not regenerate or redesign the fruit after the knife touches it.
-EXACT ACTION TIMELINE
-0.0–2.0 seconds: The untouched glass fruit rests motionless in the center of the cutting board. A realistic left hand enters slowly from the left and places the thumb behind the fruit and the index and middle fingers gently against its front-left side. The hand stabilizes the fruit without lifting, squeezing, rotating, or deforming it.
-2.0–4.0 seconds: A polished steel chef's knife enters slowly from the right. The blade remains straight, level, and perpendicular to the cutting board. Position the cutting edge precisely above the fruit's vertical centerline. The knife must not float, bend, wobble, change size, or pass through the hand.
-4.0–5.0 seconds: The knife edge makes gentle contact with the exact top center of the glass fruit. Pause briefly at the point of contact. Create one delicate, synchronized crystal-tapping sound. The fruit remains solid, stable, and unchanged.
-5.0–10.5 seconds: Perform one single continuous downward cut. The knife moves only downward in a straight vertical line at a slow, constant speed. Do not use sawing, repeated strokes, sideways movement, sudden acceleration, or jump cuts. As the blade advances, create one narrow, clean cut directly beneath the blade. The separation must begin at the top and progress downward at exactly the same speed as the knife. The fruit must never split ahead of the blade. The knife physically displaces the glass material along the cutting path. It must not phase through the fruit. Both sides of the fruit remain aligned and supported during the cut. The outer shape, ribs, colored veins, and internal seeds stay fixed and do not crawl, morph, multiply, disappear, or move. The glass behaves like a firm but cuttable crystal material. Produce a smooth crystal-slicing sound with subtle high-frequency crackling. Do not make the fruit explode, collapse, melt, stretch, liquefy, crumble, or shatter. Allow no more than three tiny crystal particles to fall beside the cut. At the end of the downward motion, the knife edge makes gentle contact with the cutting board. The blade stops completely. It does not pass through the board.
-10.5–12.0 seconds: Lift the knife straight upward along the same cutting path. Do not drag it sideways. The two fruit halves remain upright and touching, separated only by a narrow visible seam.
-12.0–14.0 seconds: The left hand keeps the left half steady. A realistic right hand enters from the right and gently moves the right half exactly 3 centimeters to the right. Both halves remain upright and face the camera. Move the half in one smooth horizontal motion without rotating, flipping, floating, or changing its shape. Reveal a clean symmetrical cross-section containing translucent glass flesh, six identical dark crystal seeds, thin coral veins, and a small central core. The interior must correspond perfectly to the fruit's exterior structure.
-14.0–15.0 seconds: Both hands stop moving. Hold on the two neatly separated halves. Add one soft glass clink as the right half settles onto the cutting board.
-AUDIO
-Use close, crisp, perfectly synchronized binaural ASMR audio: fingertips touching smooth glass, one delicate blade-contact tap, a sustained clean crystal-slicing texture, three extremely subtle particle sounds, the knife touching stone, and one gentle glass clink. No talking, whispering, breathing, music, ambient melody, or exaggerated sound effects.
-STRICT NEGATIVE INSTRUCTIONS
-No AI slop. No extra fingers, missing fingers, fused fingers, warped hands, changing fingernails, duplicated hands, floating knife, bending blade, transparent knife, knife passing through the hand, or hand passing through the fruit. No fruit morphing, resizing, rotating unexpectedly, changing color, changing transparency, changing rib count, changing stem, moving internal seeds, duplicated fruit, regenerated halves, mismatched cross-sections, disappearing details, or inconsistent reflections. No premature splitting, invisible cuts, multiple cuts, crooked cuts, sawing, crushing, smashing, dramatic shattering, exploding glass, excessive fragments, liquid juice, melting material, rubbery deformation, or self-healing seams. No jump cuts, camera cuts, time skips, flickering, focus pulsing, unstable framing, object teleportation, motion blur, blurry frames, lighting changes, background changes, text, subtitles, logos, or watermark.
-Style: premium photorealistic macro food cinematography, realistic ray-traced glass, physically accurate reflections and refraction, soft controlled studio lighting, shallow but stable depth of field, natural hand anatomy, smooth slow motion, 4K, 16:9, exactly 15 seconds.`;
+const FLASHLOOP_EXAMPLE_VIDEO_PROMPT = `Create an exactly 15-second photorealistic ASMR video featuring one crystal-glass fruit. Use the supplied first-frame image as the strict visual reference. Preserve the fruit's exact shape, colors, position, and transparency in every frame.
+
+CAMERA: One continuous locked macro shot, no cuts. Camera 25° above the cutting board. Keep the entire fruit visible throughout.
+
+ACTION TIMELINE:
+0.0–2.0s: Fruit rests motionless. A hand enters from the left and gently stabilizes it.
+2.0–4.0s: A chef's knife enters from the right, positions above the fruit's centerline.
+4.0–5.0s: Knife touches the top center. One crystal-tapping sound.
+5.0–10.5s: Slow continuous downward cut. Clean separation beneath the blade. Crystal-slicing sound with subtle crackling.
+10.5–12.0s: Knife lifts straight up. Two halves remain touching.
+12.0–14.0s: Right hand gently slides the right half 3cm right. Reveals clean cross-section with glass flesh, seeds, and veins.
+14.0–15.0s: Hold on separated halves. One soft glass clink.
+
+AUDIO: Close binaural ASMR — fingertip on glass, blade tap, crystal-slice texture, particle sounds, glass clink. No music or voice.
+
+STYLE: Photorealistic macro food cinematography, ray-traced glass, studio lighting, shallow DOF, 4K, 16:9.`;
 
 // Ensure a generated prompt actually references the requested effect, not the hardcoded example.
 function enforceEffectRelevance(text, effectName, tagline, userIdea, duration = 15, ratio = '9:16', type = 'image') {
@@ -463,17 +461,15 @@ async function generateFlashloopVideoPrompt(effectName, tagline, userIdea, durat
   const visionBlock = hasStyle
     ? `\n\nVISUAL STYLE REFERENCE (extracted from the "${effectName}" trend reference image):\n${styleText}\n\nThe video MUST maintain this exact visual style throughout all frames — same rendering technique, color palette, lighting, textures, and mood. Camera movements and pacing should match this aesthetic. Audio description should complement the vibe. The SUBJECT comes from the effect name and user idea — NOT from any scene implied by the style description.`
     : '';
-  const system = `You are an expert prompt engineer for short-form AI video generation. Given an effect name, an optional tagline, a short user idea, and a first-frame image prompt, write an EXTREMELY DETAILED img2video / image-to-video prompt. THIS IS THE MAIN PROMPT that drives the entire video — it must be comprehensive and thorough.
+  const system = `You are an expert prompt engineer for short-form AI video generation. Given an effect name, an optional tagline, a short user idea, and a first-frame image prompt, write a detailed img2video / image-to-video prompt.
 
 CRITICAL RULES:
 - The prompt MUST be about the EFFECT NAME and TAGLINE provided below. It must NOT be about the glass-fruit example.
 - The example below is ONLY for structure, detail level, and tone. Do NOT copy its subject.
-- This is the MOST IMPORTANT prompt — it controls the video. Make it long and detailed (400-800 words).
-- MUST include: (1) second-by-second action timeline for the full ${duration || 15} seconds, (2) exact camera movements and continuity instructions, (3) detailed audio/sound description, (4) strict negative instructions (what must NOT happen), (5) style/technical specs.
-- Instruct the AI to preserve the exact subject, position, colors, lighting, and composition of the supplied first-frame image while animating.
+- Keep the prompt CONCISE: 200-400 words. Do NOT include negative instructions (what must NOT happen) — only describe what SHOULD happen.
+- MUST include: (1) second-by-second action timeline, (2) camera setup and continuity, (3) brief audio description, (4) style/technical specs.
+- Preserve the exact subject, position, colors, lighting, and composition of the supplied first-frame image while animating.
 ${visionBlock}
-
-If any @Name references are provided, keep the @ symbol in the final prompt so the user can still see the references, but expand the full description next to the first mention so the video generation model knows exactly what each reference looks like.
 
 Return ONLY a JSON object with "title" and "videoPrompt". Do not output any explanation outside the JSON.`;
 
@@ -487,11 +483,11 @@ First-frame image prompt (your video prompt must describe motion anchored to thi
 
 ${imagePrompt || 'No image prompt provided.'}
 
-Example video prompt (match its DETAIL LEVEL, STRUCTURE, and LENGTH — especially the second-by-second timeline, camera section, audio section, and negative instructions. Do NOT copy its subject):
+Example video prompt (match its STRUCTURE and TONE. Do NOT copy its subject. Keep yours 200-400 words, NO negative instructions):
 
 ${FLASHLOOP_EXAMPLE_VIDEO_PROMPT}
 
-${hasStyle ? 'Render in the exact visual style described in the VISUAL STYLE REFERENCE above. Your SUBJECT is "' + effectName + '" based on the user idea — do NOT recreate any scene implied by the style description. The video must maintain this style throughout all frames.' : 'Generate { "title": "...", "videoPrompt": "..." } for "' + effectName + '".'} The videoPrompt MUST be detailed (400-800 words) with a full second-by-second timeline. Do not output any explanation outside the JSON.`;
+${hasStyle ? 'Render in the exact visual style described in the VISUAL STYLE REFERENCE above. Your SUBJECT is "' + effectName + '" based on the user idea — do NOT recreate any scene implied by the style description. The video must maintain this style throughout all frames.' : 'Generate { "title": "...", "videoPrompt": "..." } for "' + effectName + '".'} Keep videoPrompt 200-400 words. No negative instructions. Do not output any explanation outside the JSON.`;
 
   const raw = await chatCompletion(model, [{ role: 'system', content: system }, { role: 'user', content: userText }], 16000);
   let parsed = {};
@@ -534,17 +530,16 @@ async function generateFlashloopScene(effectName, tagline, userIdea, duration, r
   if (!videoResult.videoPrompt || !videoResult.videoPrompt.trim()) {
     videoResult.videoPrompt = `Create an exactly ${duration}-second video for "${effectName}"${tagline ? ' — ' + tagline : ''}. Use the supplied first-frame image as the strict visual reference.
 
-CAMERA AND CONTINUITY: One continuous shot with no cuts. Preserve the exact subject, position, colors, lighting, and composition from the first-frame image throughout.
+CAMERA: One continuous shot, no cuts. Preserve the exact subject, position, colors, lighting, and composition from the first-frame image.
 
-EXACT ACTION TIMELINE:
-0.0–${Math.floor(duration * 0.2)}s: Hold on the first-frame composition. Subtle ambient motion (steam, dust motes, light shifts).
-${Math.floor(duration * 0.2)}–${Math.floor(duration * 0.6)}s: Primary action unfolds — describe the main motion relevant to "${effectName}". Smooth, natural movement with clear cause-and-effect.
-${Math.floor(duration * 0.6)}–${Math.floor(duration * 0.85)}s: Action reaches its peak or turning point. Camera may subtly adjust framing.
-${Math.floor(duration * 0.85)}–${duration}s: Settle into the final pose. Gentle deceleration. Hold on the concluding frame.
+ACTION TIMELINE:
+0.0–${Math.floor(duration * 0.2)}s: Hold on the first-frame composition. Subtle ambient motion.
+${Math.floor(duration * 0.2)}–${Math.floor(duration * 0.6)}s: Primary action unfolds — describe the main motion relevant to "${effectName}". Smooth, natural movement.
+${Math.floor(duration * 0.6)}–${Math.floor(duration * 0.85)}s: Action reaches its peak or turning point.
+${Math.floor(duration * 0.85)}–${duration}s: Settle into the final pose. Gentle deceleration. Hold on concluding frame.
 
-AUDIO: Close, realistic audio synced to the action. Ambient room tone. No music or voiceover unless the effect requires it.
-
-STYLE: Cinematic, photorealistic, ${ratio}. Preserve the exact visual style, color palette, and lighting from the first-frame image. No text, logos, or UI overlays.`;
+AUDIO: Realistic audio synced to the action. Ambient room tone. No music unless required.
+STYLE: Cinematic, photorealistic, ${ratio}. Preserve visual style from first-frame image. No text or logos.`;
   }
 
   return {
