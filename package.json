@@ -1,15 +1,19 @@
 {
   "name": "storyboard",
   "version": "1.0.0",
-  "description": "",
-  "main": "check_foxy.js",
+  "description": "Storyboard Studio — AI-powered cinematic storyboard generator",
+  "main": "web/server.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node web/server.js",
+    "dev": "node web/server.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
+  "engines": {
+    "node": ">=18"
+  },
   "dependencies": {
     "puppeteer-core": "^25.4.0"
   }

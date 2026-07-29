@@ -7,7 +7,8 @@ const path = require('path');
 const { execFile } = require('child_process');
 const { URL } = require('url');
 
-const ROOT = path.resolve(__dirname, '..');
+const IS_VERCEL = !!process.env.VERCEL;
+const ROOT = IS_VERCEL ? '/tmp' : path.resolve(__dirname, '..');
 const PUBLIC = path.join(__dirname, 'public');
 const FRAMES_DIR = path.join(ROOT, 'frames');
 const VIDEO_DIR = path.join(ROOT, 'video');
@@ -15,27 +16,28 @@ const STORYBOARD_DIR = path.join(ROOT, 'storyboard');
 const FRAMES_JSON = path.join(STORYBOARD_DIR, 'frames.json');
 const CHARS_JSON = path.join(STORYBOARD_DIR, 'characters.json');
 const INFLUENCERS_JSON = path.join(STORYBOARD_DIR, 'influencers.json');
+
 let API_KEY = process.env.PAXSENIX_API_KEY || '';
-try { API_KEY = API_KEY || fs.readFileSync(path.join(ROOT, 'pipeline', 'apikey.txt'), 'utf8').trim(); } catch {}
+if (!IS_VERCEL) { try { API_KEY = API_KEY || fs.readFileSync(path.join(ROOT, 'pipeline', 'apikey.txt'), 'utf8').trim(); } catch {} }
 let AQUA_API_KEY = process.env.AQUA_API_KEY || '';
-try { AQUA_API_KEY = AQUA_API_KEY || fs.readFileSync(path.join(ROOT, 'pipeline', 'aqua_apikey.txt'), 'utf8').trim(); } catch {}
+if (!IS_VERCEL) { try { AQUA_API_KEY = AQUA_API_KEY || fs.readFileSync(path.join(ROOT, 'pipeline', 'aqua_apikey.txt'), 'utf8').trim(); } catch {} }
 const API = 'https://api.paxsenix.org';
 const AQUA_API = 'https://api.aquadevs.com';
 const PORT = process.env.PORT || 5173;
 // omkar.cloud trending API (TikTok trending + search)
 let OMKAR_KEY = process.env.OMKAR_KEY || '';
-try { OMKAR_KEY = OMKAR_KEY || fs.readFileSync(path.join(ROOT, 'pipeline', 'omkar-key.txt'), 'utf8').trim(); } catch {}
+if (!IS_VERCEL) { try { OMKAR_KEY = OMKAR_KEY || fs.readFileSync(path.join(ROOT, 'pipeline', 'omkar-key.txt'), 'utf8').trim(); } catch {} }
 const OMKAR_API = 'https://tiktok-scraper.omkar.cloud';
 
 // Tavily API key for live trend term discovery (replaces TrendsMCP).
 // Reads from env first; falls back to pipeline/tavily-key.txt. Either source works.
 let TAVILY_API_KEY = process.env.TAVILY_API_KEY || '';
-try { TAVILY_API_KEY = TAVILY_API_KEY || fs.readFileSync(path.join(ROOT, 'pipeline', 'tavily-key.txt'), 'utf8').trim(); } catch {}
+if (!IS_VERCEL) { try { TAVILY_API_KEY = TAVILY_API_KEY || fs.readFileSync(path.join(ROOT, 'pipeline', 'tavily-key.txt'), 'utf8').trim(); } catch {} }
 const TAVILY_API = 'https://api.tavily.com';
 
 // Optional YouTube Data API v3 key for reliable YouTube Shorts search
 let YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY || '';
-try { YOUTUBE_API_KEY = YOUTUBE_API_KEY || fs.readFileSync(path.join(ROOT, 'pipeline', 'youtube-api-key.txt'), 'utf8').trim(); } catch {}
+if (!IS_VERCEL) { try { YOUTUBE_API_KEY = YOUTUBE_API_KEY || fs.readFileSync(path.join(ROOT, 'pipeline', 'youtube-api-key.txt'), 'utf8').trim(); } catch {} }
 
 if (TAVILY_API_KEY) console.log('[Tavily] API key loaded — live trend discovery enabled');
 else console.log('[Tavily] no API key found — live trend terms will be skipped (yt-dlp + TikWM fallbacks still serve videos)');
@@ -2244,7 +2246,7 @@ async function saveUploadedRef(infl, dataUrl) {
   return filename;
 }
 
-const server = http.createServer(async (req, res) => {
+const requestHandler = async (req, res) => {
   const u = new URL(req.url, `http://localhost:${PORT}`);
   const p = u.pathname;
   try {
@@ -3830,22 +3832,25 @@ ${infl.description || '(no description - describe a beautiful confident influenc
     if (e.code === 'ENOENT') { res.writeHead(404); res.end('not found'); }
     else { res.writeHead(500); res.end(String(e.message || e)); }
   }
-});
+};
 
-server.on('error', (err) => {
-  if (err.code === 'EADDRINUSE') {
-    console.error(`\n❌ Port ${PORT} is already in use.`);
-    console.error(`Run one of the following, then try again:`);
-    console.error(`  1. Kill the process on port ${PORT}:  lsof -ti :${PORT} | xargs kill -9`);
-    console.error(`  2. Start on a different port:          PORT=5174 node web/server.js\n`);
-    process.exit(1);
-  } else {
-    console.error('\n❌ Server error:', err);
-    process.exit(1);
-  }
-});
+module.exports = requestHandler;
 
-server.listen(PORT, () => {
-  console.log(`Storyboard Studio → http://localhost:${PORT}`);
-  // TAVILY_API_KEY status already logged at startup (line 38). No additional warning needed here.
-});
+if (!IS_VERCEL) {
+  const server = http.createServer(requestHandler);
+  server.on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+      console.error(`\n❌ Port ${PORT} is already in use.`);
+      console.error(`Run one of the following, then try again:`);
+      console.error(`  1. Kill the process on port ${PORT}:  lsof -ti :${PORT} | xargs kill -9`);
+      console.error(`  2. Start on a different port:          PORT=5174 node web/server.js\n`);
+      process.exit(1);
+    } else {
+      console.error('\n❌ Server error:', err);
+      process.exit(1);
+    }
+  });
+  server.listen(PORT, () => {
+    console.log(`Storyboard Studio → http://localhost:${PORT}`);
+  });
+}

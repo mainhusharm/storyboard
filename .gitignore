@@ -27,6 +27,9 @@ foxy-shots/
 foxy-results.txt
 continue_full.log
 
+# Vercel
+.vercel/
+
 # OS files
 .DS_Store
 Thumbs.db
