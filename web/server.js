@@ -25,43 +25,104 @@ let OMKAR_KEY = '';
 try { OMKAR_KEY = fs.readFileSync(path.join(ROOT, 'pipeline', 'omkar-key.txt'), 'utf8').trim(); } catch {}
 const OMKAR_API = 'https://tiktok-scraper.omkar.cloud';
 
-let TRENDSMCP_KEY = '';
-try { TRENDSMCP_KEY = fs.readFileSync(path.join(ROOT, 'pipeline', 'trendsmcp-key.txt'), 'utf8').trim(); } catch {}
-const TRENDSMCP_API = 'https://api.trendsmcp.ai/api';
+// Tavily API key for live trend term discovery (replaces TrendsMCP).
+// Reads from env first; falls back to pipeline/tavily-key.txt. Either source works.
+let TAVILY_API_KEY = process.env.TAVILY_API_KEY || '';
+try { TAVILY_API_KEY = TAVILY_API_KEY || fs.readFileSync(path.join(ROOT, 'pipeline', 'tavily-key.txt'), 'utf8').trim(); } catch {}
+const TAVILY_API = 'https://api.tavily.com';
 
-// Official REST: POST /api with mode get_top_trends (live feeds only, no hardcoded lists)
-async function trendsMcpTop(type, limit = 25, offset = 0) {
-  if (!TRENDSMCP_KEY) throw new Error('TrendsMCP key missing');
-  const r = await fetch(TRENDSMCP_API, {
-    method: 'POST',
-    headers: { Authorization: 'Bearer ' + TRENDSMCP_KEY, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ mode: 'get_top_trends', type, limit, offset }),
-    signal: AbortSignal.timeout(30000)
-  });
-  const j = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(j.message || j.error || ('HTTP ' + r.status));
-  // API returns { statusCode, body: "<json string>" } or direct payload
-  let payload = j;
-  if (typeof j.body === 'string') {
-    try { payload = JSON.parse(j.body); } catch { throw new Error('TrendsMCP: bad body'); }
+// Optional YouTube Data API v3 key for reliable YouTube Shorts search
+let YOUTUBE_API_KEY = '';
+try { YOUTUBE_API_KEY = fs.readFileSync(path.join(ROOT, 'pipeline', 'youtube-api-key.txt'), 'utf8').trim(); } catch {}
+
+if (TAVILY_API_KEY) console.log('[Tavily] API key loaded — live trend discovery enabled');
+else console.log('[Tavily] no API key found — live trend terms will be skipped (yt-dlp + TikWM fallbacks still serve videos)');
+
+// Tavily search: general web search used for live trend discovery (replaces TrendsMCP).
+async function tavilySearch(query, limit = 5) {
+  if (!TAVILY_API_KEY) {
+    console.log('[Tavily] TAVILY_API_KEY is not set, skipping live trend lookup');
+    return { answer: '', results: [] };
   }
-  if (!payload || !Array.isArray(payload.data)) throw new Error('TrendsMCP: no data for ' + type);
-  return payload; // { as_of_ts, type, limit, offset, count, data: [[rank, name], ...] }
+  console.log('[Tavily] searching:', query);
+  try {
+    const res = await fetch(`${TAVILY_API}/search`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        api_key: TAVILY_API_KEY,
+        query,
+        search_depth: 'basic',
+        include_answer: true,
+        max_results: limit
+      }),
+      signal: AbortSignal.timeout(20000)
+    });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok) { console.log('[Tavily] HTTP error:', res.status, j); logLine('Tavily error: ' + (j.error || res.status)); return { answer: '', results: [] }; }
+    console.log('[Tavily] got response, answer length:', (j.answer || '').length, 'results:', (j.results || []).length);
+    return j || { answer: '', results: [] };
+  } catch (e) { logLine('Tavily search failed: ' + e.message); }
+  return { answer: '', results: [] };
+}
+
+// Use Tavily to discover current trending terms for a category.
+// Returns a list of short trend phrases/hashtags suitable for video search.
+async function tavilyTrendTerms(category, limit = 5) {
+  const query = `top trending ${category} TikTok hashtags and YouTube Shorts trends ${new Date().getFullYear()}`;
+  const data = await tavilySearch(query, 5);
+  const texts = [];
+  if (data.answer) texts.push(data.answer);
+  for (const r of data.results || []) {
+    if (r.title) texts.push(r.title);
+    if (r.content) texts.push(r.content);
+  }
+  const text = texts.join(' ');
+  const candidates = [];
+
+  // 1) Hashtags are strongest signals
+  for (const m of text.matchAll(/#([A-Za-z0-9_]+)/g)) candidates.push(m[1]);
+
+  // 2) Quoted / parenthesized short phrases
+  for (const m of text.matchAll(/["'"]([^"'"]{3,40})["'"]/g)) candidates.push(m[1]);
+
+  // 3) Title-case multi-word phrases that look like trend names
+  for (const m of text.matchAll(/\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,4})\b/g)) candidates.push(m[1]);
+
+  // 4) Fallback: short sentence fragments
+  const phrases = text.split(/[.,;!?]/).map(s => s.trim()).filter(s => s.length > 3 && s.length < 45);
+  for (const p of phrases) candidates.push(p.replace(/[^A-Za-z0-9 _-]/g, '').trim());
+
+  // Deduplicate, normalize, and de-noise
+  const stopWords = new Set(['the', 'and', 'for', 'with', 'you', 'this', 'that', 'from', 'are', 'was', 'were', 'trending', 'trend', 'trends', 'hashtag', 'hashtags', 'youtube', 'tiktok', 'shorts', 'video', 'videos']);
+  const seen = new Set();
+  const result = [];
+  for (const t of candidates) {
+    const key = t.toLowerCase().trim();
+    const words = key.split(/\s+/).filter(Boolean);
+    if (!key || seen.has(key) || words.length > 6 || (words.length === 1 && stopWords.has(key))) continue;
+    seen.add(key);
+    result.push(key);
+    if (result.length >= limit) break;
+  }
+  return result;
 }
 
 
 // yt-dlp search: get real SHORT-FORM video data for trending content (<= 60s)
+// Search YouTube Shorts for short-form videos only (<= 60s).
 async function ytSearch(query, limit = 5) {
   return new Promise((resolve) => {
     const { execFile } = require('child_process');
+    const q = `${query} shorts #shorts`.trim();
     const args = [
       '-m', 'yt_dlp',
       '--dump-json', '--flat-playlist', '--no-download',
-      '--playlist-items', '1:' + (limit * 2),
-      '--match-filter', 'duration < 61',
-      'ytsearch' + (limit * 2) + ':' + query
+      '--playlist-items', '1:' + (limit * 3),
+      '--match-filter', 'duration <= 60',
+      'ytsearch' + (limit * 3) + ':' + q
     ];
-    execFile('python', args, { timeout: 25000 }, (err, stdout) => {
+    execFile('python3', args, { timeout: 25000 }, (err, stdout) => {
       if (err) return resolve([]);
       const lines = stdout.trim().split('\n').filter(Boolean);
       const videos = [];
@@ -71,12 +132,20 @@ async function ytSearch(query, limit = 5) {
           const d = JSON.parse(line);
           const vid = d.id || '';
           if (!vid || seen.has(vid)) continue;
+          let url = d.original_url || d.webpage_url || d.url || '';
+          // Hard short-form guard: must be 0 < duration <= 60s (the query already biases to shorts)
+          if (typeof d.duration !== 'number' || d.duration <= 0 || d.duration > 60) continue;
+          // yt-dlp search returns watch?v= URLs; normalize to /shorts/ for display
+          if (vid && !url.includes('/shorts/')) url = 'https://www.youtube.com/shorts/' + vid;
           seen.add(vid);
+          const thumb = d.thumbnail && d.thumbnail.startsWith('http')
+            ? d.thumbnail
+            : (vid ? 'https://i.ytimg.com/vi/' + vid + '/hqdefault.jpg' : '');
           videos.push({
             id: vid,
             title: d.title || '',
-            thumbnail: vid ? 'https://i.ytimg.com/vi/' + vid + '/hqdefault.jpg' : '',
-            url: d.url || ('https://www.youtube.com/watch?v=' + vid),
+            thumbnail: thumb,
+            url: url,
             views: d.view_count || 0,
             likes: d.like_count || 0,
             duration: d.duration || 0,
@@ -92,18 +161,422 @@ async function ytSearch(query, limit = 5) {
   });
 }
 
-// Back-compat wrapper used by older call sites
-async function trendsMcpCall(toolName, args) {
-  if (toolName === 'trendsMCP___get_top_trends' || args?.type) {
-    return trendsMcpTop(args.type, args.limit || 25, args.offset || 0);
-  }
-  throw new Error('TrendsMCP: unsupported tool ' + toolName);
+// Real TikTok video search via TikWM free public mirror.
+// Filters to short-form videos (<= 60s) and returns real tiktok.com URLs.
+async function ttSearch(query, limit = 5) {
+  try {
+    const url = `https://www.tikwm.com/api/feed/search?keywords=${encodeURIComponent(query)}&count=${Math.min(limit * 5, 50)}`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
+    const json = await res.json().catch(() => ({}));
+    const videos = (Array.isArray(json.data) ? json.data : json.data?.videos || []);
+    const result = [];
+    const seen = new Set();
+    for (const v of videos) {
+      const id = v.video_id;
+      const authorId = v.author?.unique_id;
+      const duration = Number(v.duration || 0);
+      if (!id || !authorId || seen.has(id)) continue;
+      if (duration <= 0 || duration > 60) continue; // short-form only
+      seen.add(id);
+      result.push({
+        id,
+        title: v.title || '',
+        thumbnail: v.origin_cover || v.cover || '',
+        url: `https://www.tiktok.com/@${authorId}/video/${id}`,
+        views: v.play_count || 0,
+        likes: v.digg_count || 0,
+        duration,
+        author: v.author?.nickname || v.author?.unique_id || '',
+        platform: 'tiktok'
+      });
+      if (result.length >= limit) break;
+    }
+    return result;
+  } catch (e) { logLine('TikTok search failed: ' + e.message); }
+  return [];
 }
 
+// Scrape Flashloop.app — viral AI format catalog.
+// The /effects page embeds a JSON payload with format slugs, taglines and poster URLs.
+// We extract that payload, map slugs to human-readable names, and use the first
+// example's posterUrl as the format thumbnail.
+//
+// Cached 10 minutes per process to be polite (no public API exists).
+const flashloopCache = { data: null, until: 0 };
 
+function kebabToTitle(slug) {
+  return slug
+    .replace(/-cv$/, '')
+    .split('-')
+    .map(w => w ? w[0].toUpperCase() + w.slice(1) : '')
+    .join(' ')
+    .replace(/ And /g, ' & ')
+    .replace(/ Asmr /g, ' ASMR ');
+}
+
+function extractTrendContent(raw) {
+  const key = '"trendContent"';
+  const idx = raw.indexOf(key);
+  if (idx === -1) return null;
+  let braceIdx = raw.indexOf('{', idx + key.length);
+  if (braceIdx === -1) return null;
+  let depth = 0, inString = false, escape = false;
+  for (let i = braceIdx; i < raw.length; i++) {
+    const ch = raw[i];
+    if (!inString) {
+      if (ch === '{') depth++;
+      else if (ch === '}') { depth--; if (depth === 0) { return JSON.parse(raw.slice(braceIdx, i + 1)); } }
+      else if (ch === '"') inString = true;
+    } else {
+      if (escape) escape = false;
+      else if (ch === '\\') escape = true;
+      else if (ch === '"') inString = false;
+    }
+  }
+  return null;
+}
+
+async function scrapeFlashloop() {
+  if (flashloopCache.data && Date.now() < flashloopCache.until) return flashloopCache.data;
+  let formats = [];
+  try {
+    const res = await fetch('https://www.flashloop.app/effects', {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36' },
+      signal: AbortSignal.timeout(15000)
+    });
+    if (!res.ok) { logLine('flashloop scrape: HTTP ' + res.status); return []; }
+    const html = await res.text();
+
+    // 1) Try to extract the embedded Next.js payload(s) and locate trendContent.
+    let trendContent = null;
+    // The payload is a JS string literal; we must allow escaped quotes/backslashes.
+    const pushRe = /self\.__next_f\.push\(\[1,\s*"((?:[^"\\]|\\.)*)"\]\)/g;
+    let m;
+    while ((m = pushRe.exec(html)) !== null) {
+      let raw;
+      try {
+        // The captured group is a JS/JSON-escaped string; decode it first.
+        raw = JSON.parse('"' + m[1] + '"');
+      } catch { continue; }
+      trendContent = extractTrendContent(raw);
+      if (trendContent) break;
+    }
+
+    // 2) Fallback: search the raw HTML for poster URLs grouped by slug.
+    if (!trendContent) {
+      const slugRe = /([a-z0-9-]+-cv)[\s\S]{0,1000}?"posterUrl"\s*:\s*"(https:\/\/assets\.flashloop\.app\/[^"]+)"/g;
+      while ((m = slugRe.exec(html)) !== null) {
+        const slug = m[1];
+        const posterUrl = m[2];
+        const name = kebabToTitle(slug);
+        formats.push({ slug, name, thumbnail: posterUrl, tagline: '' });
+      }
+    } else {
+      for (const [slug, data] of Object.entries(trendContent)) {
+        const examples = Array.isArray(data?.examples) ? data.examples : [];
+        const thumbnail = examples.find(e => e?.posterUrl)?.posterUrl || '';
+        const tagline = data?.tagline || '';
+        formats.push({ slug, name: kebabToTitle(slug), thumbnail, tagline });
+      }
+    }
+
+    // Deduplicate by slug, keep first found.
+    const seen = new Set();
+    formats = formats.filter(f => { if (seen.has(f.slug)) return false; seen.add(f.slug); return true; });
+    logLine(`flashloop scrape: ${formats.length} viral formats captured`);
+    flashloopCache.data = formats;
+    flashloopCache.until = Date.now() + 10 * 60 * 1000;
+    return formats;
+  } catch (e) { logLine('flashloop scrape failed: ' + e.message); return []; }
+}
+
+// Build a 'flashloop' video-shaped object suitable for the trends UI
+function flashloopAsVideo(fmt) {
+  return {
+    id: 'flashloop_' + fmt.name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, ''),
+    slug: fmt.slug,
+    name: fmt.name,
+    title: fmt.name + ' — viral AI format',
+    platform: 'flashloop',
+    url: 'https://www.flashloop.app/effects',
+    videoUrl: 'https://www.flashloop.app/effects',
+    views: fmt.views || 0,
+    viewsDisplay: fmt.viewsDisplay || '',
+    likes: 0, duration: 0, author: 'Flashloop',
+    thumbnail: fmt.thumbnail || null,
+    cover: fmt.thumbnail || null,
+    tagline: fmt.tagline || '',
+    flashloop: true, fetchedAt: Date.now()
+  };
+}
+
+// Example prompts for one-shot Flashloop scene generation.
+// NOTE: These examples are ONLY for structure, detail level, and tone. The LLM must NOT copy the crystal-fruit subject.
+const FLASHLOOP_EXAMPLE_IMAGE_PROMPT = `A photorealistic macro close-up of a single original imaginary crystal-glass fruit resting motionless on a dark slate cutting board. The fruit has a rounded teardrop shape with five gently twisted ribs, a short curled stem, translucent teal glass skin, thin coral-colored veins inside, and six dark crystal seeds arranged symmetrically around a small central core. A polished steel chef's knife lies beside it on the same board, and the background is a soft neutral grey. Soft controlled studio lighting from the left creates realistic caustics and reflections inside the glass. Shallow but stable depth of field keeps the entire fruit tack sharp. Camera positioned 25 degrees above the board, looking down at the fruit from the front. No hands are visible. Premium photorealistic macro food cinematography, realistic ray-traced glass, physically accurate reflections and refraction, 8K, 16:9, first frame only.`;
+
+const FLASHLOOP_EXAMPLE_VIDEO_PROMPT = `Create an exactly 15-second photorealistic ASMR video featuring one original imaginary crystal-glass fruit. Use the supplied first-frame image as the strict visual reference. Preserve the fruit's exact shape, proportions, ridges, stem, colors, internal patterns, position, and transparency in every frame.
+The fruit is a strange, biologically believable species with a rounded teardrop shape, five gently twisted ribs, a short curled stem, and translucent teal glass containing thin coral-colored veins and six dark crystal seeds arranged symmetrically around the center.
+CAMERA AND CONTINUITY
+Use one continuous locked macro camera shot with no cuts, angle changes, zooms, reframing, or camera movement. The camera is positioned slightly above the cutting board at approximately a 25-degree downward angle. Keep the entire fruit, knife blade, and working hand visible throughout the cutting action.
+The fruit must stay centered on the same dark stone cutting board. The background, shadows, reflections, lighting, hand, knife, and fruit design must remain completely consistent. Do not regenerate or redesign the fruit after the knife touches it.
+EXACT ACTION TIMELINE
+0.0–2.0 seconds: The untouched glass fruit rests motionless in the center of the cutting board. A realistic left hand enters slowly from the left and places the thumb behind the fruit and the index and middle fingers gently against its front-left side. The hand stabilizes the fruit without lifting, squeezing, rotating, or deforming it.
+2.0–4.0 seconds: A polished steel chef's knife enters slowly from the right. The blade remains straight, level, and perpendicular to the cutting board. Position the cutting edge precisely above the fruit's vertical centerline. The knife must not float, bend, wobble, change size, or pass through the hand.
+4.0–5.0 seconds: The knife edge makes gentle contact with the exact top center of the glass fruit. Pause briefly at the point of contact. Create one delicate, synchronized crystal-tapping sound. The fruit remains solid, stable, and unchanged.
+5.0–10.5 seconds: Perform one single continuous downward cut. The knife moves only downward in a straight vertical line at a slow, constant speed. Do not use sawing, repeated strokes, sideways movement, sudden acceleration, or jump cuts. As the blade advances, create one narrow, clean cut directly beneath the blade. The separation must begin at the top and progress downward at exactly the same speed as the knife. The fruit must never split ahead of the blade. The knife physically displaces the glass material along the cutting path. It must not phase through the fruit. Both sides of the fruit remain aligned and supported during the cut. The outer shape, ribs, colored veins, and internal seeds stay fixed and do not crawl, morph, multiply, disappear, or move. The glass behaves like a firm but cuttable crystal material. Produce a smooth crystal-slicing sound with subtle high-frequency crackling. Do not make the fruit explode, collapse, melt, stretch, liquefy, crumble, or shatter. Allow no more than three tiny crystal particles to fall beside the cut. At the end of the downward motion, the knife edge makes gentle contact with the cutting board. The blade stops completely. It does not pass through the board.
+10.5–12.0 seconds: Lift the knife straight upward along the same cutting path. Do not drag it sideways. The two fruit halves remain upright and touching, separated only by a narrow visible seam.
+12.0–14.0 seconds: The left hand keeps the left half steady. A realistic right hand enters from the right and gently moves the right half exactly 3 centimeters to the right. Both halves remain upright and face the camera. Move the half in one smooth horizontal motion without rotating, flipping, floating, or changing its shape. Reveal a clean symmetrical cross-section containing translucent glass flesh, six identical dark crystal seeds, thin coral veins, and a small central core. The interior must correspond perfectly to the fruit's exterior structure.
+14.0–15.0 seconds: Both hands stop moving. Hold on the two neatly separated halves. Add one soft glass clink as the right half settles onto the cutting board.
+AUDIO
+Use close, crisp, perfectly synchronized binaural ASMR audio: fingertips touching smooth glass, one delicate blade-contact tap, a sustained clean crystal-slicing texture, three extremely subtle particle sounds, the knife touching stone, and one gentle glass clink. No talking, whispering, breathing, music, ambient melody, or exaggerated sound effects.
+STRICT NEGATIVE INSTRUCTIONS
+No AI slop. No extra fingers, missing fingers, fused fingers, warped hands, changing fingernails, duplicated hands, floating knife, bending blade, transparent knife, knife passing through the hand, or hand passing through the fruit. No fruit morphing, resizing, rotating unexpectedly, changing color, changing transparency, changing rib count, changing stem, moving internal seeds, duplicated fruit, regenerated halves, mismatched cross-sections, disappearing details, or inconsistent reflections. No premature splitting, invisible cuts, multiple cuts, crooked cuts, sawing, crushing, smashing, dramatic shattering, exploding glass, excessive fragments, liquid juice, melting material, rubbery deformation, or self-healing seams. No jump cuts, camera cuts, time skips, flickering, focus pulsing, unstable framing, object teleportation, motion blur, blurry frames, lighting changes, background changes, text, subtitles, logos, or watermark.
+Style: premium photorealistic macro food cinematography, realistic ray-traced glass, physically accurate reflections and refraction, soft controlled studio lighting, shallow but stable depth of field, natural hand anatomy, smooth slow motion, 4K, 16:9, exactly 15 seconds.`;
+
+// Ensure a generated prompt actually references the requested effect, not the hardcoded example.
+function enforceEffectRelevance(text, effectName, tagline, userIdea, duration = 15, ratio = '9:16', type = 'image') {
+  if (!text) return text;
+  const normalizedEffect = String(effectName || '').toLowerCase();
+  const normalizedTagline = String(tagline || '').toLowerCase();
+
+  // Strip common markdown fences so the guard inspects the actual prompt content.
+  let cleanText = String(text).replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+
+  // Build keyword set from effect name, tagline, and user idea.
+  const stopWords = new Set(['and', 'the', 'for', 'with', 'you', 'this', 'that', 'from', 'are', 'was', 'were', 'shorts', 'tiktok', 'youtube']);
+  const keywords = [...new Set(
+    [...normalizedEffect.split(/\s+/), ...normalizedTagline.split(/\s+/), ...String(userIdea || '').toLowerCase().split(/\s+/)]
+      .filter(w => w.length > 2 && !stopWords.has(w))
+  )];
+  const textLower = cleanText.toLowerCase();
+  const hasMatch = keywords.some(k => textLower.includes(k));
+
+  // Words that strongly signal the LLM copied the hardcoded glass-fruit example.
+  const exampleSignals = ['crystal-glass', 'crystal glass', 'cutting board', 'cutting-board', 'glass fruit', 'glassfruit', 'chef\'s knife'];
+  const copiedExample = exampleSignals.some(s => textLower.includes(s));
+
+  // Prompt is on-topic only if it matches the effect AND does not copy the example.
+  if (hasMatch && !copiedExample) return cleanText;
+
+  // Prompt drifted or copied the example: return a clean, effect-aware fallback.
+  const base = `Scene for the "${effectName}" effect${tagline ? ' — ' + tagline : ''}.${userIdea ? ' User intent: ' + userIdea + '.' : ''}`;
+  if (type === 'video') {
+    return `${base} Create an exactly ${duration}-second photorealistic video anchored to the supplied first-frame image. Preserve the exact subject, style, lighting, and composition. Include smooth continuous motion, camera continuity, clear audio description, and strict negative instructions. Cinematic, photorealistic, ${ratio}.`;
+  }
+  return `${base} First-frame reference image, cinematic, photorealistic, highly detailed, ${ratio}, first frame only. The scene is clearly about "${effectName}" and visually matches the described style.`;
+}
+
+// Build a production-ready AI scene for a Flashloop-style effect using GPT-5.5.
+// Returns both a first-frame/reference image prompt (img2img) and a motion
+// prompt for image-to-video (img2video) that preserves the generated frame.
+// Shared helper to clean character references for Flashloop prompts.
+function cleanFlashloopRefs(references) {
+  return (references || []).slice(0, 10).map(r => ({
+    name: String(r.name || '').replace(/^@/, '').replace(/[^\w-]/g, '').slice(0, 40),
+    description: String(r.description || '').slice(0, 600)
+  })).filter(r => r.name);
+}
+
+function formatFlashloopRefs(cleanRefs) {
+  return cleanRefs.length
+    ? '\n\nCHARACTER REFERENCES — preserve these identities whenever @Name appears in the prompts. Expand them naturally in both prompts:\n' + cleanRefs.map(r => `- @${r.name}: ${r.description}`).join('\n')
+    : '';
+}
+
+// Generate only the first-frame / reference image prompt (img2img).
+async function generateFlashloopImagePrompt(effectName, tagline, userIdea, ratio, model = 'gpt-5.5', cleanRefs = []) {
+  const refBlock = formatFlashloopRefs(cleanRefs);
+  const system = `You are an expert prompt engineer for short-form AI video generation. Given an effect name, an optional tagline, and a short user idea, write one extremely detailed first-frame / reference image prompt suitable for text-to-image or img2img generation.
+
+CRITICAL RULES:
+- The prompt MUST be about the EFFECT NAME and TAGLINE provided below. It must NOT be about the glass-fruit example.
+- The example below is ONLY for structure, detail level, and tone. Do NOT copy its subject (crystal-glass fruit, knife, cutting board, etc.).
+- Use the effect name and tagline to decide the subject, mood, style, and composition.
+- If a user idea is provided, incorporate it naturally.
+- Describe the exact single frozen frame: subject, pose, composition, camera angle, lighting, color palette, materials, and style. This single image will later be used as the strict visual reference for the video.
+
+If any @Name references are provided, keep the @ symbol in the final prompt so the user can still see the references, but expand the full description next to the first mention so the image generation model knows exactly what each reference looks like.
+
+Return ONLY a JSON object with "title" and "imagePrompt". Do not output any explanation outside the JSON.`;
+  const user = `Effect: ${effectName}
+Tagline: ${tagline || 'No tagline provided.'}${refBlock}
+User idea: ${userIdea || 'Create a visually striking scene matching this effect.'}
+Aspect ratio: ${ratio}
+
+Here is an example of a high-quality "imagePrompt" written for the "Glass ASMR Video" effect. Match its detail level and tone, but DO NOT copy the subject:
+
+${FLASHLOOP_EXAMPLE_IMAGE_PROMPT}
+
+Now generate the JSON object { "title": "...", "imagePrompt": "..." } for the effect above. The subject must be "${effectName}". Do not output any explanation outside the JSON.`;
+  const raw = await chatCompletion(model, [{ role: 'system', content: system }, { role: 'user', content: user }], 12000);
+  let parsed = {};
+  try { parsed = parseJsonLenient(raw); } catch (e) { parsed = {}; }
+  const imagePrompt = enforceEffectRelevance(parsed.imagePrompt || raw, effectName, tagline, userIdea, 0, ratio, 'image');
+  return {
+    title: parsed.title || effectName,
+    imagePrompt
+  };
+}
+
+// Generate only the motion / video prompt (img2video), using the generated image prompt as context.
+async function generateFlashloopVideoPrompt(effectName, tagline, userIdea, duration, ratio, model = 'gpt-5.5', cleanRefs = [], imagePrompt = '') {
+  const refBlock = formatFlashloopRefs(cleanRefs);
+  const system = `You are an expert prompt engineer for short-form AI video generation. Given an effect name, an optional tagline, a short user idea, and a first-frame image prompt, write one extremely detailed img2video / image-to-video prompt.
+
+CRITICAL RULES:
+- The prompt MUST be about the EFFECT NAME and TAGLINE provided below. It must NOT be about the glass-fruit example.
+- The example below is ONLY for structure, detail level, and tone. Do NOT copy its subject.
+- Use the effect name and tagline to decide the subject, mood, style, and motion.
+- This prompt assumes the generated first-frame image (described below) is used as the reference. Include camera continuity, exact action timeline (second-by-second), audio description, strict negative instructions, and style/technical specs. Instruct the AI to preserve the exact subject, position, colors, lighting, and composition of the supplied first-frame image while animating.
+
+If any @Name references are provided, keep the @ symbol in the final prompt so the user can still see the references, but expand the full description next to the first mention so the video generation model knows exactly what each reference looks like.
+
+Return ONLY a JSON object with "title" and "videoPrompt". Do not output any explanation outside the JSON.`;
+  const user = `Effect: ${effectName}
+Tagline: ${tagline || 'No tagline provided.'}${refBlock}
+User idea: ${userIdea || 'Create a visually striking scene matching this effect.'}
+Duration: ${duration} seconds
+Aspect ratio: ${ratio}
+
+Here is the first-frame image prompt this motion prompt must be anchored to. Preserve its exact subject, style, lighting, and composition while describing motion:
+
+${imagePrompt || 'No image prompt provided.'}
+
+Here is an example of a high-quality "videoPrompt" written for the "Glass ASMR Video" effect. Match its structure, detail level, and tone, but DO NOT copy the subject:
+
+${FLASHLOOP_EXAMPLE_VIDEO_PROMPT}
+
+Now generate the JSON object { "title": "...", "videoPrompt": "..." } for the effect above. The subject must be "${effectName}". Do not output any explanation outside the JSON.`;
+  const raw = await chatCompletion(model, [{ role: 'system', content: system }, { role: 'user', content: user }], 16000);
+  let parsed = {};
+  try { parsed = parseJsonLenient(raw); } catch (e) { parsed = {}; }
+  const videoPrompt = enforceEffectRelevance(parsed.videoPrompt || raw, effectName, tagline, userIdea, duration, ratio, 'video');
+  return {
+    title: parsed.title || effectName,
+    videoPrompt
+  };
+}
+
+// Build a production-ready AI scene for a Flashloop-style effect using GPT-5.5.
+// Returns both a first-frame/reference image prompt (img2img) and a motion
+// prompt for image-to-video (img2video) that preserves the generated frame.
+async function generateFlashloopScene(effectName, tagline, userIdea, duration, ratio, model = 'gpt-5.5', references = []) {
+  const cleanRefs = cleanFlashloopRefs(references);
+  const imageResult = await generateFlashloopImagePrompt(effectName, tagline, userIdea, ratio, model, cleanRefs);
+
+  // Ensure the image prompt is never empty; if the LLM returned nothing useful, build a minimal anchor.
+  if (!imageResult.imagePrompt || !imageResult.imagePrompt.trim()) {
+    imageResult.imagePrompt = `First-frame reference image for "${effectName}"${tagline ? ' — ' + tagline : ''}.${userIdea ? ' User intent: ' + userIdea : ''} Cinematic, photorealistic, high detail, ${ratio}, first frame only.`;
+  }
+
+  let videoResult = {};
+  try {
+    videoResult = await generateFlashloopVideoPrompt(effectName, tagline, userIdea, duration, ratio, model, cleanRefs, imageResult.imagePrompt);
+  } catch (e) { logLine('flashloop video prompt failed: ' + e.message); }
+
+  // Ensure the video prompt is never empty.
+  if (!videoResult.videoPrompt || !videoResult.videoPrompt.trim()) {
+    videoResult.videoPrompt = `Create an exactly ${duration}-second photorealistic video for "${effectName}"${tagline ? ' — ' + tagline : ''}.${userIdea ? ' User intent: ' + userIdea : ''} Use the supplied first-frame image as the strict visual reference. Preserve the exact subject, style, lighting, and composition. Include smooth, continuous motion, camera continuity, clear audio description, and strict negative instructions. Style: cinematic, photorealistic, ${ratio}.`;
+  }
+
+  return {
+    title: videoResult.title || imageResult.title || effectName,
+    imagePrompt: imageResult.imagePrompt,
+    videoPrompt: videoResult.videoPrompt
+  };
+}
+
+// TikWM direct trending feed (free, no login). Returns real trending TikTok videos.
+async function ttTrendingFeed(limit = 10) {
+  try {
+    const res = await fetch('https://www.tikwm.com/api/feed/list?region=US&count=' + Math.min(limit * 2, 30), { signal: AbortSignal.timeout(15000) });
+    const json = await res.json().catch(() => ({}));
+    const videos = (Array.isArray(json.data) ? json.data : json.data?.videos || []);
+    const result = [];
+    const seen = new Set();
+    for (const v of videos) {
+      const id = v.video_id;
+      const authorId = v.author?.unique_id;
+      const duration = Number(v.duration || 0);
+      if (!id || !authorId || seen.has(id)) continue;
+      if (duration <= 0 || duration > 60) continue;
+      seen.add(id);
+      result.push({
+        id,
+        title: v.title || '',
+        thumbnail: v.origin_cover || v.cover || '',
+        url: `https://www.tiktok.com/@${authorId}/video/${id}`,
+        views: v.play_count || 0,
+        likes: v.digg_count || 0,
+        duration,
+        author: v.author?.nickname || v.author?.unique_id || '',
+        platform: 'tiktok'
+      });
+      if (result.length >= limit) break;
+    }
+    return result;
+  } catch (e) { logLine('TikTok trending feed failed: ' + e.message); }
+  return [];
+}
+
+// Search YouTube Shorts via the official YouTube Data API v3 (free, stable, no scraping).
+// Requires YOUTUBE_API_KEY. Returns short-form videos (<= 60s) only.
+async function ytApiSearch(query, limit = 5) {
+  const result = [];
+  if (!YOUTUBE_API_KEY) return result;
+  try {
+    const maxResults = Math.min(limit * 3, 50);
+    const searchUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&maxResults=${maxResults}&q=${encodeURIComponent(query)}&type=video&videoDuration=short&key=${YOUTUBE_API_KEY}`;
+    const searchRes = await fetch(searchUrl, { signal: AbortSignal.timeout(15000) });
+    const searchJson = await searchRes.json().catch(() => ({}));
+    if (searchJson.error) { logLine('YouTube API error: ' + (searchJson.error.message || 'unknown')); return result; }
+    const items = searchJson.items || [];
+    if (!items.length) return result;
+    const ids = items.map(i => i.id?.videoId).filter(Boolean).slice(0, 50);
+    if (!ids.length) return result;
+    const detailsUrl = `https://www.googleapis.com/youtube/v3/videos?part=contentDetails,statistics&id=${ids.join(',')}&key=${YOUTUBE_API_KEY}`;
+    const detailsRes = await fetch(detailsUrl, { signal: AbortSignal.timeout(15000) });
+    const detailsJson = await detailsRes.json().catch(() => ({}));
+    if (detailsJson.error) { logLine('YouTube API details error: ' + (detailsJson.error.message || 'unknown')); return result; }
+    const detailsMap = new Map((detailsJson.items || []).map(d => [d.id, d]));      const seen = new Set();
+    for (const item of items) {
+      const id = item.id?.videoId;
+      if (!id || seen.has(id)) continue;
+      const d = detailsMap.get(id);
+      if (!d) continue;
+      const seconds = parseIsoDuration(d.contentDetails?.duration);
+      if (!seconds || seconds > 60) continue;
+      seen.add(id);
+      result.push({
+        id,
+        title: item.snippet?.title || '',
+        thumbnail: item.snippet?.thumbnails?.high?.url || item.snippet?.thumbnails?.default?.url || '',
+        url: 'https://www.youtube.com/shorts/' + id,
+        views: Number(d.statistics?.viewCount || 0),
+        likes: Number(d.statistics?.likeCount || 0),
+        duration: seconds,
+        author: item.snippet?.channelTitle || '',
+        platform: 'youtube'
+      });
+    }
+    result.sort((a, b) => b.views - a.views);
+    return result.slice(0, limit);
+  } catch (e) { logLine('YouTube API search failed'); }
+  return result;
+}
+
+function parseIsoDuration(dur) {
+  if (!dur) return 0;
+  const m = String(dur).toUpperCase().match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
+  if (!m) return 0;
+  const h = Number(m[1] || 0), min = Number(m[2] || 0), s = Number(m[3] || 0);
+  return h * 3600 + min * 60 + s;
+}
+
+// Back-compat wrapper used by older call sites
 for (const d of [FRAMES_DIR, VIDEO_DIR, STORYBOARD_DIR]) fs.mkdirSync(d, { recursive: true });
 
-const MODELS = ['kimi-k3', 'gpt-5.6-sol', 'claude-opus-4-8', 'qwen3.8-max', 'gemini-3.1-pro', 'kimi-2.7-code', 'glm-5.2', 'mimo-v2.5', 'claude-sonnet-4-5', 'deepseek-v3.2', 'gemini-2.5-pro'];
+const MODELS = ['kimi-k3', 'gpt-5.6-sol', 'gpt-5.6-terra', 'claude-opus-4-8', 'qwen3.8-max', 'gemini-3.1-pro', 'kimi-2.7-code', 'glm-5.2', 'mimo-v2.5', 'claude-sonnet-4-5', 'deepseek-v3.2', 'gemini-2.5-pro'];
 const IMAGE_MODELS = ['nano-banana-pro', 'nano-banana', 'nano-banana-2', 'seedream-5', 'seedream-4', 'seedream-4.5', 'gpt-image-2'];
 const VIDEO_MODELS = [
   { id: 'grok-video', label: 'Grok Video (fast, cinematic)' },
@@ -199,6 +672,9 @@ function inflSetPhase(phase, total = 0) {
   inflJob.startedAt = Date.now(); inflJob.log = [];
 }
 function inflJobDone(n = 1) { inflJob.done += n; inflJob.ok += n; }
+
+// ---------------- trends cache ----------------
+// No server-side cache for /api/trends — always fetch fresh results
 
 // ---------------- helpers ----------------
 function stripHtml(t) { return String(t).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim(); }
@@ -2131,7 +2607,7 @@ Return ONLY a JSON object:
     // ================================ TRENDING SYSTEM (TikTok AI Influencer + Instagram) ================================
 
         // Live TikTok trends only — no hardcoded query lists.
-    // Primary: TrendsMCP live feeds. Optional: omkar video search using those live terms.
+    // Primary: Tavily live trend discovery. Optional: omkar video search using those live terms.
     const mapTrendRows = (rows, platform = 'tiktok') => (rows || []).map(([rank, name]) => ({
       id: platform + '_trend_' + rank + '_' + Date.now(),
       platform,
@@ -2149,24 +2625,14 @@ Return ONLY a JSON object:
     if (p === '/api/trending/tiktok' && req.method === 'GET') {
       const max = Math.min(parseInt(u.searchParams.get('max') || '12'), 20);
       try {
-        // 1) Get LIVE trending topics from TrendsMCP to build search queries
+        // 1) Get LIVE trending topics from Tavily to build search queries
         let liveTerms = [];
         let liveAsOf = null;
-        if (TRENDSMCP_KEY) {
+        if (TAVILY_API_KEY) {
           try {
-            const [searches, hashtags] = await Promise.all([
-              trendsMcpTop('TikTok Trending Searches', 20),
-              trendsMcpTop('TikTok Trending Hashtags', 20)
-            ]);
-            liveAsOf = searches.as_of_ts || hashtags.as_of_ts || null;
-            const seen = new Set();
-            for (const row of [...(searches.data || []), ...(hashtags.data || [])]) {
-              const name = String(row[1] || '').trim();
-              if (!name || seen.has(name.toLowerCase())) continue;
-              seen.add(name.toLowerCase());
-              liveTerms.push(name);
-            }
-          } catch (e) { logLine('TrendsMCP: ' + e.message); }
+            liveTerms = await tavilyTrendTerms('TikTok influencer trending', 20);
+            liveAsOf = new Date().toISOString();
+          } catch (e) { logLine('Tavily: ' + e.message); }
         }
 
         // 2) Build influencer-focused queries from LIVE trends
@@ -2186,24 +2652,61 @@ Return ONLY a JSON object:
           }
         }
 
-        // 3) Search YouTube for real videos (yt-dlp, free, no API key)
-        const perQ = Math.ceil(max / Math.min(influencerQueries.length, 5)) + 1;
+        // 3) Search BOTH YouTube Shorts and TikTok-style shorts (via yt-dlp, free, no API key)
+        const perQ = Math.max(2, Math.ceil(max / Math.min(influencerQueries.length, 5)) + 1);
         const topQueries = influencerQueries.slice(0, 5);
-        const results = await Promise.all(topQueries.map(q => ytSearch(q, perQ)));
+        const [ytResults, ttResultsRaw] = await Promise.all([
+          Promise.all(topQueries.map(q => ytSearch(q, perQ))).then(r => r.flat()),
+          Promise.all(topQueries.map(q => ttSearch(q, perQ))).then(r => r.flat())
+        ]);
+        let ttResults = [...ttResultsRaw];
 
-        // 4) Dedupe, sort by views, take top N
+        // Optional: supplement with omkar if a key is configured, but merge instead of replace
+        if (OMKAR_KEY) {
+          try {
+            const omkarResults = await Promise.allSettled(topQueries.map(async (q) => {
+              const r = await fetch(`${OMKAR_API}/tiktok/videos/search?search_query=${encodeURIComponent(q)}&market=us&max_results=${perQ + 2}&sort_by=most_liked`, { headers: { 'API-Key': OMKAR_KEY }, signal: AbortSignal.timeout(20000) });
+              const j = await r.json().catch(() => ({}));
+              return (j.videos || []).filter(v => (v.duration_seconds || 0) <= 60).map(v => ({
+                id: v.video_id, platform: 'tiktok',
+                title: v.caption || '', caption: v.caption,
+                author: v.author?.display_name || v.author?.handle,
+                views: v.stats?.views, likes: v.stats?.likes,
+                duration: v.duration_seconds,
+                thumbnail: v.thumbnails?.cover_url,
+                url: v.media?.video_url,
+                fetchedAt: Date.now()
+              }));
+            }));
+            const omkarVideos = omkarResults.filter(r => r.status === 'fulfilled').flatMap(r => r.value);
+            const seenIds = new Set(ttResults.map(v => v.id));
+            for (const v of omkarVideos) { if (!seenIds.has(v.id)) { seenIds.add(v.id); ttResults.push(v); } }
+          } catch (e) { logLine('omkar /api/trending/tiktok: ' + e.message); }
+        }
+
+        // 4) Interleave YouTube Shorts + TikTok-style shorts, dedupe, sort by views, take top N
         const seen = new Set();
-        const allVideos = results.flat().filter(v => {
-          if (!v.id || seen.has(v.id)) return false;
-          seen.add(v.id); return true;
-        }).sort((a, b) => (b.views || 0) - (a.views || 0)).slice(0, max);
+        const allVideos = [];
+        const ytPool = [...ytResults].sort((a, b) => (b.views || 0) - (a.views || 0));
+        const ttPool = [...ttResults].sort((a, b) => (b.views || 0) - (a.views || 0));
+        while (allVideos.length < max && (ytPool.length || ttPool.length)) {
+          if (ytPool.length) {
+            const v = ytPool.shift();
+            if (!seen.has(v.id)) { seen.add(v.id); allVideos.push(v); }
+          }
+          if (allVideos.length >= max) break;
+          if (ttPool.length) {
+            const v = ttPool.shift();
+            if (!seen.has(v.id)) { seen.add(v.id); allVideos.push(v); }
+          }
+        }
 
         return sendJson(res, 200, {
-          source: 'trendsmcp-live+yt-influencer',
+          source: 'tavily-live+yt-shorts+tiktok-shorts',
           as_of_ts: liveAsOf || null,
           liveTerms: liveTerms.slice(0, 5),
           videos: allVideos.map(v => ({
-            id: v.id, platform: 'tiktok', caption: v.title, title: v.title,
+            id: v.id, platform: v.platform || 'tiktok', caption: v.title, title: v.title,
             author: v.author, authorName: v.author,
             views: v.views, likes: v.likes, comments: null, shares: null,
             duration: v.duration, cover: v.thumbnail, videoUrl: v.url,
@@ -2214,56 +2717,78 @@ Return ONLY a JSON object:
         return sendJson(res, 500, { error: e.message });
       }
     }
-if (p === '/api/trending/tiktok/search' && req.method === 'GET') {
+    if (p === '/api/trending/tiktok/search' && req.method === 'GET') {
       const q = u.searchParams.get('q') || '';
-      const sort = u.searchParams.get('sort') || 'most_liked';
-      const market = u.searchParams.get('market') || 'us';
       const max = Math.min(parseInt(u.searchParams.get('max') || '12'), 30);
       if (!q) return sendJson(res, 400, { error: 'q (query) required' });
+
+      // Try omkar.cloud first if a key is configured; otherwise go straight to yt-dlp short-form fallback.
+      if (OMKAR_KEY) {
+        try {
+          const sort = u.searchParams.get('sort') || 'most_liked';
+          const market = u.searchParams.get('market') || 'us';
+          const r = await fetch(`${OMKAR_API}/tiktok/videos/search?search_query=${encodeURIComponent(q)}&market=${market}&max_results=${max}&sort_by=${sort}`, { headers: { 'API-Key': OMKAR_KEY } });
+          const j = await r.json();
+          if (j.videos && j.videos.length) {
+            return sendJson(res, 200, {
+              videos: (j.videos || []).map(v => ({
+                id: v.video_id, platform: 'tiktok', caption: v.caption,
+                author: v.author?.handle, authorName: v.author?.display_name,
+                views: v.stats?.views, likes: v.stats?.likes, comments: v.stats?.comments, shares: v.stats?.shares,
+                duration: v.duration_seconds, cover: v.thumbnails?.cover_url, videoUrl: v.media?.video_url,
+                audio: v.audio?.title, createdAt: v.created_at
+              })),
+              source: 'omkar'
+            });
+          }
+        } catch (e) { logLine('omkar search failed: ' + e.message); }
+      }
+
+      // Fallback: short-form results from yt-dlp (YouTube Shorts + TikTok-style shorts)
       try {
-        const r = await fetch(`${OMKAR_API}/tiktok/videos/search?search_query=${encodeURIComponent(q)}&market=${market}&max_results=${max}&sort_by=${sort}`, { headers: { 'API-Key': OMKAR_KEY } });
-        const j = await r.json();
-        return sendJson(res, 200, { videos: (j.videos || []).map(v => ({ id: v.video_id, platform: 'tiktok', caption: v.caption, author: v.author?.handle, authorName: v.author?.display_name, views: v.stats?.views, likes: v.stats?.likes, comments: v.stats?.comments, shares: v.stats?.shares, duration: v.duration_seconds, cover: v.thumbnails?.cover_url, videoUrl: v.media?.video_url, audio: v.audio?.title, createdAt: v.created_at })) });
-      } catch (e) {
-        // Fallback: TrendsMCP TikTok Trending Searches
-        if (TRENDSMCP_KEY) {
-          try {
-            const data = await trendsMcpCall('trendsMCP___get_top_trends', { type: 'TikTok Trending Searches', limit: max });
-            const videos = (data.data || []).map(([rank, name]) => ({
-              id: 'trend_' + rank,
-              platform: 'tiktok',
-              caption: name,
-              title: name,
-              author: { handle: 'trending', display_name: 'TikTok Trends' },
-              views: null, likes: null, comments: null,
-              cover: null, videoUrl: null, duration: null
-            }));
-            return sendJson(res, 200, { videos, source: 'trendsmcp' });
-          } catch (e2) { return sendJson(res, 500, { error: 'omkar: ' + e.message + ' | trendsmcp: ' + e2.message }); }
+        const [tt, yt] = await Promise.all([
+          ttSearch(q, Math.ceil(max / 2) + 2),
+          ytSearch(q, Math.ceil(max / 2) + 2)
+        ]);
+        const seen = new Set();
+        const videos = [];
+        const ytPool = [...yt].sort((a, b) => (b.views || 0) - (a.views || 0));
+        const ttPool = [...tt].sort((a, b) => (b.views || 0) - (a.views || 0));
+        while (videos.length < max && (ytPool.length || ttPool.length)) {
+          if (ytPool.length) { const v = ytPool.shift(); if (!seen.has(v.id)) { seen.add(v.id); videos.push(v); } }
+          if (videos.length >= max) break;
+          if (ttPool.length) { const v = ttPool.shift(); if (!seen.has(v.id)) { seen.add(v.id); videos.push(v); } }
         }
+        return sendJson(res, 200, {
+          videos: videos.map(v => ({
+            id: v.id, platform: v.platform || 'youtube', caption: v.title, title: v.title,
+            author: v.author, authorName: v.author,
+            views: v.views, likes: v.likes, comments: null, shares: null,
+            duration: v.duration, cover: v.thumbnail, videoUrl: v.url,
+            audio: null, createdAt: null, fresh: true, fetchedAt: Date.now()
+          })),
+          source: 'yt-dlp-shorts'
+        });
+      } catch (e) {
         return sendJson(res, 500, { error: e.message });
       }
     }
 
     // ================================ TRENDS TAB (anime, AI-generated, lifestyle, etc.) ================================
-    // Pulls LIVE trending terms from TrendsMCP and finds real videos via yt-dlp
-    // Works without login, no rate limits. Cached 5 min per category.
-    const trendsCache = new Map();
+    // Pulls LIVE trending terms from Tavily and finds real short-form videos via yt-dlp.
+    // Works without login, no rate limits. No server-side cache.
     if (p === '/api/trends' && req.method === 'GET') {
       const category = (u.searchParams.get('category') || 'anime').toLowerCase();
       const max = Math.min(parseInt(u.searchParams.get('max') || '20'), 30);
-      const cacheKey = `${category}:${max}`;
-      const cached = trendsCache.get(cacheKey);
-      if (cached && Date.now() - cached.ts < 300000) {
-        return sendJson(res, 200, { ...cached.data, cached: true });
-      }
+      const forceRefresh = u.searchParams.get('refresh') === '1' || u.searchParams.get('nocache') === '1';
+      const searchQuery = (u.searchParams.get('q') || '').trim();
 
-      // Category-specific search queries tuned for yt-dlp + TrendsMCP
+      // Category-specific search queries tuned for yt-dlp + Tavily
       // Short-form queries for both TikTok and YouTube Shorts (<= 60s)
-      // Each query gets passed to BOTH yt-dlp (YouTube Shorts) and omkar (TikTok) in parallel
       const CATEGORY_QUERIES = {
         anime: ['anime edits', 'anime amv', 'anime dance trend', 'anime cosplay', 'anime meme', 'anime opening'],
         'ai-generated': ['ai generated video', 'ai art trend', 'ai animation', 'midjourney animation', 'ai influencer', 'sora ai'],
+        'ai-formats': [], // populated dynamically from flashloop scrape below
         grwm: ['grwm', 'get ready with me', 'morning routine', 'makeup routine', 'grwm viral'],
         ootd: ['ootd', 'outfit of the day', 'fashion haul', 'styling outfit', 'fit check'],
         lifestyle: ['lifestyle influencer', 'aesthetic vlog', 'day in my life', 'morning routine viral', 'soft life'],
@@ -2271,64 +2796,93 @@ if (p === '/api/trending/tiktok/search' && req.method === 'GET') {
         beauty: ['makeup tutorial', 'skincare routine', 'beauty hack', 'glow up', 'get ready with me'],
         food: ['recipe', 'what i eat in a day', 'food aesthetic', 'easy recipe', 'food trend'],
         travel: ['travel vlog', 'travel aesthetic', 'wanderlust', 'weekend trip', 'travel shorts'],
-        dance: ['dance trend', 'tiktok dance', 'dance challenge', 'choreo trend', 'dance viral']
+        dance: ['dance trend', 'tiktok dance', 'dance challenge', 'choreo trend', 'dance viral'],
+        trending: ['trending', 'viral', 'for you page', 'trending now', 'popular']
       };
-      const queries = CATEGORY_QUERIES[category] || CATEGORY_QUERies?.anime || CATEGORY_QUERIES.anime;
 
-      // 1) Try TrendsMCP for live trending terms in this category
+      // 1) Fetch LIVE trending terms from Tavily for this category
       let liveTerms = [];
       let liveAsOf = null;
-      if (TRENDSMCP_KEY) {
+      if (TAVILY_API_KEY) {
         try {
-          const types = ['TikTok Trending Searches', 'TikTok Trending Hashtags', 'YouTube Trending Searches'];
-          const results = await Promise.allSettled(types.map(t => trendsMcpTop(t, 15)));
-          for (const r of results) {
-            if (r.status === 'fulfilled' && r.value.data) {
-              liveAsOf = liveAsOf || r.value.as_of_ts;
-              for (const row of r.value.data) {
-                const name = String(row[1] || '').trim();
-                if (name) liveTerms.push(name);
-              }
-            }
-          }
-          // Dedupe + filter by category keywords
-          const seen = new Set();
-          const categoryKeywords = {
-            anime: ['anime', 'otaku', 'waifu', 'manga', 'naruto', 'goku', 'demon slayer', 'jujutsu', 'one piece', 'titan'],
-            'ai-generated': ['ai', 'midjourney', 'stable diffusion', 'ai art', 'ai video', 'ai influencer', 'sora'],
-            grwm: ['grwm', 'get ready', 'makeup', 'morning routine'],
-            ootd: ['ootd', 'outfit', 'fashion', 'styling', 'fit check'],
-            lifestyle: ['lifestyle', 'aesthetic', 'vlog', 'routine'],
-            fitness: ['gym', 'workout', 'fitness', 'training', 'exercise'],
-            beauty: ['beauty', 'makeup', 'skincare', 'glow'],
-            food: ['recipe', 'food', 'cooking', 'meal'],
-            travel: ['travel', 'trip', 'destination', 'vacation'],
-            dance: ['dance', 'choreo', 'moves']
-          };
-          const keywords = categoryKeywords[category] || [];
-          liveTerms = liveTerms.filter(t => {
-            const lower = t.toLowerCase();
-            if (seen.has(lower)) return false;
-            seen.add(lower);
-            return keywords.length === 0 || keywords.some(k => lower.includes(k));
-          }).slice(0, 5);
-        } catch (e) { logLine('TrendsMCP fetch: ' + e.message); }
+          liveTerms = await tavilyTrendTerms(category, 5);
+          liveAsOf = new Date().toISOString();
+        } catch (e) { logLine('Tavily fetch: ' + e.message); }
       }
 
-      // 2) Build final query list (live terms + base queries)
-      const finalQueries = [...liveTerms, ...queries].slice(0, 5);
+      // For 'flashloop' tab: return the curated Flashloop formats directly.
+      if (category === 'flashloop') {
+        const flashloopFormats = await scrapeFlashloop();
+        return sendJson(res, 200, {
+          source: 'flashloop',
+          category,
+          as_of_ts: liveAsOf || new Date().toISOString(),
+          liveTerms,
+          videos: flashloopFormats.slice(0, max).map(flashloopAsVideo),
+          flashloopFormats: flashloopFormats.slice(0, 30)
+        });
+      }
 
-      // 3) Search YouTube Shorts (yt-dlp) AND TikTok shorts (omkar) in PARALLEL
+      // 3) Search YouTube Shorts (yt-dlp) AND TikTok real shorts in PARALLEL
+      // For 'ai-formats': pull the curated viral format catalog from Flashloop and
+      // use the top format names as the query list for yt-dlp / TikWM. This gives
+      // users both the curated templates AND real matching short-form videos.
+      let flashloopFormats = [];
+      if (category === 'ai-formats' || category === 'ai-generated') {
+        flashloopFormats = await scrapeFlashloop();
+      }
+      // Build the final query list. For 'ai-formats' override CATEGORY_QUERIES so
+      // we search yt-dlp / TikWM with the actual format names from flashloop.
+      let queries;
+      if (category === 'ai-formats') {
+        queries = flashloopFormats.slice(0, Math.min(5, flashloopFormats.length)).map(f => f.name);
+        if (queries.length === 0) queries = CATEGORY_QUERIES['ai-generated'];
+      } else {
+        queries = CATEGORY_QUERIES[category] || CATEGORY_QUERIES.anime;
+      }
+
+      const finalQueries = searchQuery
+        ? [searchQuery, ...queries, ...liveTerms].slice(0, 5).sort(() => Math.random() - 0.5)
+        : [...queries, ...liveTerms].slice(0, 5).sort(() => Math.random() - 0.5);
+
       let ytVideos = [];
       let ttVideos = [];
-      const perQ = Math.max(2, Math.ceil(max / finalQueries.length));
+      const perQ = Math.max(3, Math.ceil(max / finalQueries.length));
       try {
-        const ytResults = await Promise.all(finalQueries.slice(0, 5).map(q => ytSearch(q, perQ)));
-        ytVideos = ytResults.flat();
+        if (YOUTUBE_API_KEY) {
+          const ytResults = await Promise.all(finalQueries.slice(0, 5).map(q => ytApiSearch(q, perQ)));
+          ytVideos = ytResults.flat();
+          // Fallback to yt-dlp if the API key is set but returned no shorts
+          if (ytVideos.length === 0) {
+            const ytResults = await Promise.all(finalQueries.slice(0, 5).map(q => ytSearch(q, perQ)));
+            ytVideos = ytResults.flat();
+          }
+        } else {
+          const ytResults = await Promise.all(finalQueries.slice(0, 5).map(q => ytSearch(q, perQ)));
+          ytVideos = ytResults.flat();
+        }
       } catch (e) { logLine('ytSearch trends: ' + e.message); }
+
+      try {
+        if (category === 'trending') {
+          // Dedicated trending tab: use TikWM's real trending feed
+          ttVideos = await ttTrendingFeed(max);
+        } else {
+          const ttResults = await Promise.all(finalQueries.slice(0, 5).map(q => ttSearch(q, perQ)));
+          ttVideos = ttResults.flat();
+          // Fallback to the real trending feed only if search produced no TikToks
+          if (ttVideos.length === 0) {
+            const feed = await ttTrendingFeed(max * 2);
+            const seen = new Set(ttVideos.map(v => v.id));
+            for (const v of feed) if (!seen.has(v.id)) { seen.add(v.id); ttVideos.push(v); }
+          }
+        }
+      } catch (e) { logLine('ttSearch trends: ' + e.message); }
+
+      // Optional: also try omkar if a key is configured, but merge with the yt-dlp fallback
       if (OMKAR_KEY) {
         try {
-          const ttResults = await Promise.allSettled(finalQueries.slice(0, 5).map(async (q) => {
+          const omkarResults = await Promise.allSettled(finalQueries.slice(0, 5).map(async (q) => {
             const r = await fetch(`${OMKAR_API}/tiktok/videos/search?search_query=${encodeURIComponent(q)}&market=us&max_results=${perQ + 2}&sort_by=most_liked`, { headers: { 'API-Key': OMKAR_KEY }, signal: AbortSignal.timeout(20000) });
             const j = await r.json().catch(() => ({}));
             if (!j.videos) return [];
@@ -2343,58 +2897,65 @@ if (p === '/api/trending/tiktok/search' && req.method === 'GET') {
               fetchedAt: Date.now()
             }));
           }));
-          ttVideos = ttResults.filter(r => r.status === 'fulfilled').flatMap(r => r.value);
+          const omkarVideos = omkarResults.filter(r => r.status === 'fulfilled').flatMap(r => r.value);
+          const seenIds = new Set(ttVideos.map(v => v.id));
+          for (const v of omkarVideos) { if (!seenIds.has(v.id)) { seenIds.add(v.id); ttVideos.push(v); } }
         } catch (e) { logLine('omkar trends: ' + e.message); }
-
-        // If omkar rate-limited or empty, try trending feed instead
-        if (ttVideos.length === 0) {
-          try {
-            const r = await fetch(`${OMKAR_API}/tiktok/videos/trending?market=us&max_results=${max}`, { headers: { 'API-Key': OMKAR_KEY }, signal: AbortSignal.timeout(20000) });
-            const j = await r.json().catch(() => ({}));
-            ttVideos = (j.videos || []).filter(v => (v.duration_seconds || 0) <= 60).map(v => ({
-              id: v.video_id, platform: 'tiktok',
-              title: v.caption || '', caption: v.caption,
-              author: v.author?.display_name || v.author?.handle,
-              views: v.stats?.views, likes: v.stats?.likes,
-              duration: v.duration_seconds,
-              thumbnail: v.thumbnails?.cover_url,
-              url: v.media?.video_url,
-              fetchedAt: Date.now()
-            }));
-          } catch (e2) { logLine('omkar trending fallback: ' + e2.message); }
-        }
       }
 
-      // 4) Interleave YT Shorts + TikTok shorts, dedupe, sort by views, take top N
+      // 4) Interleave YT Shorts + TikTok shorts, dedupe, shuffle, take top N
+      function shuffle(arr) { return arr.sort(() => Math.random() - 0.5); }
       const seen = new Set();
-      const allVideos = [];
-      const ytPool = [...ytVideos].sort((a, b) => (b.views || 0) - (a.views || 0));
-      const ttPool = [...ttVideos].sort((a, b) => (b.views || 0) - (a.views || 0));
-      // Interleave so each platform gets representation (50/50 balance like flashloop)
+      let allVideos = [];
+      const ytPool = shuffle([...ytVideos]);
+      const ttPool = shuffle([...ttVideos]);
+      // Interleave so each platform gets representation (50/50 balance)
       while (allVideos.length < max && (ytPool.length || ttPool.length)) {
         if (ytPool.length) {
           const v = ytPool.shift();
-          if (!seen.has(v.id)) { seen.add(v.id); allVideos.push(v); }
+          if (!seen.has(v.id) && Number(v.duration || 0) > 0 && Number(v.duration || 0) <= 60) { seen.add(v.id); allVideos.push(v); }
         }
         if (allVideos.length >= max) break;
         if (ttPool.length) {
           const v = ttPool.shift();
-          if (!seen.has(v.id)) { seen.add(v.id); allVideos.push(v); }
+          if (!seen.has(v.id) && Number(v.duration || 0) > 0 && Number(v.duration || 0) <= 60) { seen.add(v.id); allVideos.push(v); }
         }
       }
-      // Final dedupe pass
-      const finalSeen = new Set();
-      const deduped = allVideos.filter(v => { if (finalSeen.has(v.id)) return false; finalSeen.add(v.id); return true; });
+      // Final shuffle so trending feed videos don't always sit at the top
+      shuffle(allVideos);
+
+      // Interleave Flashloop curated formats alongside real videos so users see both
+      if (flashloopFormats.length) {
+        const flashItemsAll = flashloopFormats.map(flashloopAsVideo);
+        const tl = [...flashItemsAll, ...allVideos];
+        allVideos = shuffle(tl);
+      }
 
       const result = {
-        source: liveTerms.length ? 'trendsmcp+yt-shorts+tiktok-shorts' : 'yt-shorts+tiktok-shorts',
+        source: (liveTerms.length ? 'tavily+' : '') + (flashloopFormats.length ? 'flashloop+' : '') + 'yt-shorts+tiktok-shorts',
         category,
         as_of_ts: liveAsOf,
         liveTerms,
-        videos: allVideos
+        flashloopFormats: flashloopFormats.slice(0, 30),
+        videos: allVideos,
+        tavilyConnected: !!TAVILY_API_KEY,
+        flashloopConnected: flashloopFormats.length > 0
       };
-      trendsCache.set(cacheKey, { ts: Date.now(), data: result });
       return sendJson(res, 200, result);
+    }
+
+    // Generate detailed image + video prompts for a selected Flashloop viral AI format.
+    if (p === '/api/flashloop/generate-prompt' && req.method === 'POST') {
+      try {
+        const body = await readBody(req);
+        const { slug = '', name = '', tagline = '', idea = '', duration = 15, ratio = '9:16', model = 'gpt-5.5', references = [] } = body || {};
+        const effectName = String(name || slug).trim();
+        if (!effectName) return sendJson(res, 400, { error: 'effect name or slug required' });
+        const selectedModel = MODELS.includes(model) ? model : 'gpt-5.5';
+        const refs = Array.isArray(references) ? references.filter(r => r && String(r.name || '').trim()) : [];
+        const scene = await generateFlashloopScene(effectName, String(tagline || ''), String(idea || ''), Number(duration), String(ratio), selectedModel, refs);
+        return sendJson(res, 200, { ok: true, slug, name: effectName, duration, ratio, model: selectedModel, ...scene });
+      } catch (e) { logLine('flashloop prompt: ' + e.message); return sendJson(res, 500, { error: e.message }); }
     }
 
     // Instagram reel fetch — uses parth-dl Python module (no login required)
@@ -2406,7 +2967,7 @@ if (p === '/api/trending/tiktok/search' && req.method === 'GET') {
         const { execFile } = require('child_process');
         const script = `import json\nfrom parth_dl.core import InstagramDownloader\ndl = InstagramDownloader()\ninfo = dl.get_info(${JSON.stringify(reelUrl)})\nprint(json.dumps({\"ok\": True, \"data\": str(info)[:2000]}) if info else json.dumps({\"ok\": False}))`;
         const result = await new Promise((resolve) => {
-          execFile('python', ['-c', script], { timeout: 25000 }, (err, stdout, stderr) => {
+          execFile('python3', ['-c', script], { timeout: 25000 }, (err, stdout, stderr) => {
             if (err) { resolve({ ok: false, error: (stderr || err.message || '').slice(0, 200) }); return; }
             try { resolve(JSON.parse(stdout.trim().split('\n').pop())); }
             catch { resolve({ ok: false, error: 'parse failed: ' + stdout.slice(0, 200) }); }
@@ -2465,7 +3026,7 @@ if (p === '/api/trending/tiktok/search' && req.method === 'GET') {
         // 1. Download video (first 20 seconds, 480p to keep it small and fast)
         inflLogLine('video analysis: downloading...');
         await new Promise((resolve, reject) => {
-          execFile('python', ['-m', 'yt_dlp',
+          execFile('python3', ['-m', 'yt_dlp',
             '-f', 'best[height<=480]',
             '--download-sections', '*0:00-0:20',
             '--max-filesize', '30M',
@@ -2485,7 +3046,7 @@ if (p === '/api/trending/tiktok/search' && req.method === 'GET') {
         try {
           const subPath = path.join(tempDir, 'subs');
           await new Promise((resolve) => {
-            execFile('python', ['-m', 'yt_dlp',
+            execFile('python3', ['-m', 'yt_dlp',
               '--write-auto-sub', '--sub-lang', 'en,hi',
               '--skip-download', '--sub-format', 'vtt',
               '-o', subPath, '--no-playlist', '--no-warnings',
@@ -2723,16 +3284,15 @@ Return ONLY valid JSON: {"imgPrompt":"...","vidPrompt":"..."}
       inflSetPhase('trend-create', 3);
       (async () => {
         try {
-                    // Nothing selected: pick a FRESH live TrendsMCP term (no hardcoded list)
+                    // Nothing selected: pick a FRESH live Tavily term (no hardcoded list)
           if (!trendCaption && !trendCover) {
-            inflLogLine('no trend selected — fetching live TrendsMCP trends...');
+            inflLogLine('no trend selected — fetching live Tavily trends...');
             let liveTerm = '';
-            if (TRENDSMCP_KEY) {
+            if (TAVILY_API_KEY) {
               try {
-                const data = await trendsMcpTop('TikTok Trending Searches', 20);
-                const rows = data.data || [];
-                if (rows.length) liveTerm = String(rows[Math.floor(Math.random() * rows.length)][1] || '').trim();
-              } catch (e) { inflLogLine('TrendsMCP live pick failed: ' + e.message); }
+                const terms = await tavilyTrendTerms('TikTok trending', 20);
+                if (terms.length) liveTerm = terms[Math.floor(Math.random() * terms.length)];
+              } catch (e) { inflLogLine('Tavily live pick failed: ' + e.message); }
             }
             if (!liveTerm) throw new Error('could not fetch a fresh live trend');
             inflLogLine('live trend picked: "' + liveTerm + '"');
@@ -2848,6 +3408,7 @@ ${infl.description || '(no description - describe a beautiful confident influenc
     else if (p === '/') filePath = path.join(PUBLIC, 'index.html');
     else if (p === '/influencer') filePath = path.join(PUBLIC, 'influencer.html');
     else if (p === '/trends') filePath = path.join(PUBLIC, 'trends.html');
+    else if (p === '/flashloop-studio' || /^\/effects\/[^/]+$/.test(p)) filePath = path.join(PUBLIC, 'flashloop-studio.html');
     else filePath = path.join(PUBLIC, path.normalize(p).replace(/^([/\\])+/, ''));
 
     if (!filePath.startsWith(FRAMES_DIR) && !filePath.startsWith(VIDEO_DIR) && !filePath.startsWith(PUBLIC)) {
@@ -2862,4 +3423,20 @@ ${infl.description || '(no description - describe a beautiful confident influenc
   }
 });
 
-server.listen(PORT, () => console.log(`Storyboard Studio → http://localhost:${PORT}`));
+server.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`\n❌ Port ${PORT} is already in use.`);
+    console.error(`Run one of the following, then try again:`);
+    console.error(`  1. Kill the process on port ${PORT}:  lsof -ti :${PORT} | xargs kill -9`);
+    console.error(`  2. Start on a different port:          PORT=5174 node web/server.js\n`);
+    process.exit(1);
+  } else {
+    console.error('\n❌ Server error:', err);
+    process.exit(1);
+  }
+});
+
+server.listen(PORT, () => {
+  console.log(`Storyboard Studio → http://localhost:${PORT}`);
+  // TAVILY_API_KEY status already logged at startup (line 38). No additional warning needed here.
+});

@@ -6,6 +6,8 @@ pipeline/apikey.txt
 pipeline/aqua_apikey.txt
 pipeline/omkar-key.txt
 pipeline/trendsmcp-key.txt
+pipeline/tavily-key.txt
+pipeline/youtube-api-key.txt
 *.key.txt
 *apikey*
 

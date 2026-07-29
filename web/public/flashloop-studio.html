@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Flashloop Studio — Storyboard Studio</title>
+<style>
+  :root{
+    --bg:#0c0d11;--bg2:#13151b;--panel:#171a22;--panel2:#1c1f29;--panel3:#252937;
+    --txt:#ecedef;--dim:#9aa1ad;--faint:#5a6172;--line:#252937;--line2:#2d3243;
+    --pink:#f472b6;--violet:#8b7cf6;--green:#34d399;--red:#f87171;--orange:#fb923c;--cyan:#22d3ee;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--txt);min-height:100vh;-webkit-font-smoothing:antialiased}
+  a{color:var(--pink);text-decoration:none}
+  button{cursor:pointer;border:1px solid var(--line2);background:var(--panel2);color:var(--txt);padding:10px 18px;border-radius:10px;font-size:13px;font-weight:600;font-family:inherit;transition:.2s;display:inline-flex;align-items:center;gap:8px}
+  button:hover{background:var(--panel3);border-color:var(--violet);transform:translateY(-1px)}
+  button:disabled{opacity:.5;cursor:not-allowed;transform:none}
+  input,select,textarea{background:var(--panel2);border:1px solid var(--line);color:var(--txt);padding:10px 12px;border-radius:10px;font-size:14px;font-family:inherit;width:100%}
+  input:focus,select:focus,textarea:focus{outline:none;border-color:var(--violet)}
+  textarea{min-height:120px;resize:vertical;line-height:1.55}
+  header{display:flex;align-items:center;gap:14px;padding:0 24px;height:58px;background:rgba(8,9,12,.88);backdrop-filter:blur(10px);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:50}
+  .logo{width:28px;height:28px;border-radius:7px;flex:none;background:linear-gradient(135deg,#fb923c,#ef4444);display:flex;align-items:center;justify-content:center;font-size:14px;box-shadow:0 0 16px rgba(251,146,60,.4)}
+  header h1{font-family:'Oswald',sans-serif;font-size:18px;letter-spacing:4px;font-weight:600}
+  header h1 b{color:var(--orange)}
+  header .sub{color:var(--faint);font-size:10px;letter-spacing:1px;margin-left:4px}
+  header .right{margin-left:auto;display:flex;align-items:center;gap:8px}
+  .back-btn{font-size:11px;padding:6px 14px;border:1px solid var(--line2);border-radius:99px;color:var(--txt);text-decoration:none;font-weight:500;background:var(--panel)}
+  .back-btn:hover{border-color:var(--orange)}
+  .container{max-width:1080px;margin:0 auto;padding:28px 24px}
+  .hero{background:linear-gradient(135deg,rgba(251,146,60,.12),rgba(236,72,153,.12));border:1px solid var(--line2);border-radius:18px;padding:28px;margin-bottom:28px;position:relative;overflow:hidden}
+  .hero::before{content:'⚡';position:absolute;right:24px;top:20px;font-size:64px;opacity:.08}
+  .hero h2{font-family:'Oswald',sans-serif;font-size:30px;letter-spacing:1.5px;font-weight:600;margin-bottom:8px}
+  .hero p{color:var(--dim);font-size:14px;line-height:1.5}
+  .hero .badge{display:inline-block;margin-top:12px;padding:6px 12px;background:rgba(251,146,60,.15);border:1px solid rgba(251,146,60,.35);border-radius:99px;font-size:11px;color:var(--orange);font-weight:600}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin-bottom:20px}
+  .panel h3{font-size:15px;font-weight:600;margin-bottom:14px;display:flex;align-items:center;gap:8px;color:var(--txt)}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  .field{display:flex;flex-direction:column;gap:6px;margin-bottom:16px}
+  .field label{font-size:12px;color:var(--dim);font-weight:500}
+  .hint{font-size:11px;color:var(--faint);margin-top:4px}
+  .generate-btn{background:linear-gradient(135deg,rgba(251,146,60,.25),rgba(236,72,153,.25));border-color:var(--orange);font-size:14px;padding:12px 22px}
+  .generate-btn:hover{background:linear-gradient(135deg,rgba(251,146,60,.35),rgba(236,72,153,.35));box-shadow:0 0 20px rgba(251,146,60,.15)}
+  .output-wrap{display:none}
+  .output-wrap.visible{display:block;animation:fadeIn .35s ease}
+  @keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+  .prompt-section{margin-top:18px}
+  .prompt-section:first-of-type{margin-top:0}
+  .prompt-label{font-size:12px;color:var(--orange);font-weight:700;text-transform:uppercase;letter-spacing:.8px;margin-bottom:6px;display:flex;align-items:center;gap:6px}
+  .prompt-label::before{content:'';width:6px;height:6px;border-radius:50%;background:var(--orange)}
+  .prompt-output{width:100%;min-height:220px;background:var(--bg2);border:1px solid var(--line2);border-radius:12px;padding:16px;font-size:13px;line-height:1.6;white-space:pre-wrap;overflow:auto;max-height:500px}
+  .actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:14px}
+  .toast{position:fixed;bottom:24px;right:24px;background:var(--green);color:#000;padding:10px 16px;border-radius:10px;font-size:13px;font-weight:600;opacity:0;pointer-events:none;transition:.25s;transform:translateY(10px)}
+  .toast.show{opacity:1;transform:none}
+  .loading{display:none;align-items:center;gap:10px;color:var(--dim);font-size:13px;margin-top:12px}
+  .loading.visible{display:flex}
+  .spinner{width:18px;height:18px;border:2px solid var(--line2);border-top-color:var(--orange);border-radius:50%;animation:spin 1s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .error{background:rgba(248,113,113,.12);border:1px solid rgba(248,113,113,.3);color:var(--red);padding:12px 14px;border-radius:10px;font-size:13px;margin-top:12px;display:none}
+  .error.visible{display:block}
+  @media (max-width:640px){.grid2{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">⚡</div>
+  <div><h1>FLASHLOOP <b>STUDIO</b></h1></div>
+  <span class="sub">AI FORMAT PROMPT ENGINE</span>
+  <div class="right">
+    <a href="/trends" class="back-btn">← Trends</a>
+    <a href="/" class="back-btn">🎬 Storyboard</a>
+  </div>
+</header>
+
+<div class="container">
+  <div class="hero">
+    <h2 id="effectTitle">Loading effect…</h2>
+    <p id="effectTagline">Build a detailed, effect-aware prompt that you can paste into any AI video generator.</p>
+    <span id="effectBadge" class="badge" style="display:none">Flashloop AI Format</span>
+  </div>
+
+  <div class="panel">
+    <h3>📝 Scene Inputs</h3>
+    <div class="field">
+      <label for="idea">Describe the scene you want</label>
+      <textarea id="idea" placeholder="e.g. A crystal glass fruit being slowly sliced by a chef's knife on a dark stone board, ASMR satisfying sounds, no hands visible, 15 seconds..."></textarea>
+      <div class="hint">Leave blank and GPT-5.5 will create a scene based on the effect name.</div>
+    </div>
+    <div class="grid2">
+      <div class="field">
+        <label for="duration">Duration</label>
+        <select id="duration">
+          <option value="15">15 seconds</option>
+          <option value="10">10 seconds</option>
+          <option value="6">6 seconds</option>
+          <option value="30">30 seconds</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="ratio">Aspect Ratio</label>
+        <select id="ratio">
+          <option value="9:16">9:16 (vertical short)</option>
+          <option value="16:9">16:9 (landscape)</option>
+          <option value="1:1">1:1 (square)</option>
+        </select>
+      </div>
+    </div>
+    <div class="field">
+      <label for="model">Model</label>
+      <select id="model">
+        <option value="gpt-5.5" selected>GPT-5.5</option>
+        <option value="gpt-5.6-sol">GPT-5.6 Sol</option>
+        <option value="gpt-5.6-terra">GPT-5.6 Terra</option>
+        <option value="kimi-k3">Kimi K3</option>
+      </select>
+      <div class="hint">Choose the PaxSenix chat model that will write the prompts.</div>
+    </div>
+    <div class="field">
+      <label>Character References</label>
+      <div id="references"></div>
+      <button type="button" id="btnAddRef" style="width:auto;padding:8px 14px;font-size:12px">+ Add @Reference</button>
+      <div class="hint">Add characters like @Kairo and @Silas. Their descriptions are injected into both img2img and img2video prompts.</div>
+    </div>
+    <button id="btnGenerate" class="generate-btn">✨ Generate Prompts</button>
+    <div id="loading" class="loading"><div class="spinner"></div> GPT is writing your production-ready prompts…</div>
+    <div id="error" class="error"></div>
+  </div>
+
+  <div id="outputPanel" class="panel output-wrap">
+    <h3>🎬 Generated Scene Prompts</h3>
+
+    <div class="prompt-section">
+      <div class="prompt-label">🖼 img2img Prompt — First-Frame / Reference Image</div>
+      <div id="imagePromptOutput" class="prompt-output"></div>
+    </div>
+
+    <div class="prompt-section">
+      <div class="prompt-label">🎬 img2video Prompt — Motion / Image-to-Video</div>
+      <div id="videoPromptOutput" class="prompt-output"></div>
+    </div>
+
+    <div class="actions">
+      <button id="btnCopyImage" disabled>📋 Copy img2img Prompt</button>
+      <button id="btnCopyVideo" disabled>📋 Copy img2video Prompt</button>
+      <button id="btnUseVideo" disabled style="background:linear-gradient(135deg,rgba(52,211,153,.2),rgba(34,211,238,.2));border-color:var(--cyan)">🎬 Use img2video Prompt as Script</button>
+      <a href="/trends" class="back-btn">← Pick another effect</a>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast">Copied to clipboard!</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const params = new URLSearchParams(location.search);
+
+// Support both /effects/<slug> and /flashloop-studio?slug=... routes
+const pathMatch = location.pathname.match(/^\/effects\/([^/]+)$/);
+let slug = '', name = '', tagline = '';
+if (pathMatch) {
+  slug = decodeURIComponent(pathMatch[1]);
+  name = params.get('name') || slug;
+  tagline = params.get('tagline') || '';
+} else {
+  slug = params.get('slug') || '';
+  name = params.get('name') || slug;
+  tagline = params.get('tagline') || '';
+}
+
+function escapeHtml(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+
+$('effectTitle').textContent = name ? escapeHtml(name) : (slug ? escapeHtml(slug) : 'Flashloop Effect');
+$('effectTagline').textContent = tagline ? escapeHtml(tagline) : 'Select an effect from Trends and describe the scene you want.';
+$('effectBadge').style.display = 'inline-block';
+
+let currentImagePrompt = '';
+let currentVideoPrompt = '';
+let references = [];
+
+function renderRefs(){
+  const container = $('references');
+  if (!references.length) { container.innerHTML = '<div style="color:var(--faint);font-size:12px;padding:6px 0">No references added.</div>'; return; }
+  container.innerHTML = references.map((r,i)=>`
+    <div style="display:flex;gap:8px;align-items:flex-start;margin-bottom:8px" class="ref-row">
+      <input type="text" data-idx="${i}" data-field="name" value="${escapeHtml(r.name)}" placeholder="Kairo" style="width:140px;flex:none;text-transform:lowercase">
+      <textarea data-idx="${i}" data-field="description" placeholder="calm swordsman, emerald-glowing blade, dark cloak..." style="min-height:50px;resize:vertical">${escapeHtml(r.description)}</textarea>
+      <button type="button" data-remove="${i}" style="width:auto;padding:8px 10px;background:rgba(248,113,113,.12);border-color:rgba(248,113,113,.3);color:var(--red)">×</button>
+    </div>`).join('');
+  container.querySelectorAll('input,textarea').forEach(el=>{
+    el.oninput = () => {
+      const i = Number(el.dataset.idx);
+      references[i][el.dataset.field] = el.value;
+    };
+  });
+  container.querySelectorAll('button[data-remove]').forEach(btn=>{
+    btn.onclick = () => { references.splice(Number(btn.dataset.remove),1); renderRefs(); };
+  });
+}
+renderRefs();
+
+function getRefs(){ return references.filter(r => r.name.trim()).map(r => ({ name: r.name.trim().replace(/^@/,''), description: r.description.trim() })); }
+
+$('btnGenerate').onclick = async () => {
+  const idea = $('idea').value.trim();
+  const duration = $('duration').value;
+  const ratio = $('ratio').value;
+  $('error').classList.remove('visible');
+  $('outputPanel').classList.remove('visible');
+  $('btnGenerate').disabled = true;
+  $('loading').classList.add('visible');
+  try {
+    const res = await fetch('/api/flashloop/generate-prompt', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ slug, name, tagline, idea, duration: Number(duration), ratio, model: $('model').value, references: getRefs() })
+    });
+    const j = await res.json().catch(() => ({ error: 'Invalid response from server' }));
+    if (!res.ok || j.error) throw new Error(j.error || 'Failed to generate prompt');
+    currentImagePrompt = j.imagePrompt || '';
+    currentVideoPrompt = j.videoPrompt || j.prompt || 'No video prompt returned.';
+    $('imagePromptOutput').textContent = currentImagePrompt || 'No image prompt returned.';
+    $('videoPromptOutput').textContent = currentVideoPrompt;
+    $('btnCopyImage').disabled = !currentImagePrompt;
+    $('btnCopyVideo').disabled = !currentVideoPrompt;
+    $('btnUseVideo').disabled = !currentVideoPrompt;
+    $('outputPanel').classList.add('visible');
+    if (j.title) $('effectTitle').textContent = j.title;
+  } catch (e) {
+    $('error').textContent = 'Error: ' + e.message;
+    $('error').classList.add('visible');
+  } finally {
+    $('btnGenerate').disabled = false;
+    $('loading').classList.remove('visible');
+  }
+};
+
+function showToast(msg){
+  const t = $('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 1800);
+}
+
+$('btnCopyImage').onclick = () => {
+  navigator.clipboard.writeText(currentImagePrompt).then(() => showToast('Image prompt copied!'));
+};
+
+$('btnCopyVideo').onclick = () => {
+  navigator.clipboard.writeText(currentVideoPrompt).then(() => showToast('Video prompt copied!'));
+};
+
+$('btnUseVideo').onclick = () => {
+  localStorage.setItem('flashloop_prompt', currentVideoPrompt);
+  location.href = '/?prefill=flashloop_prompt';
+};
+</script>
+</body>
+</html>
