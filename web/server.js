@@ -984,7 +984,7 @@ async function download(fileUrl, outPath) {
 async function chatCompletion(model, messages, maxTokens = 16384) {
   const body = { model, messages, temperature: 0.7, max_tokens: maxTokens, stream: true };
   const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), 120000);
+  const timer = setTimeout(() => ac.abort(), IS_VERCEL ? 18000 : 120000);
   let raw = '';
   try {
     const res = await fetch(`${API}/v1/chat/completions`, {
