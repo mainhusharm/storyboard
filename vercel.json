@@ -1,7 +1,9 @@
 {
   "version": 2,
-  "cleanUrls": true,
   "rewrites": [
+    { "source": "/influencer", "destination": "/influencer.html" },
+    { "source": "/trends", "destination": "/trends.html" },
+    { "source": "/flashloop-studio", "destination": "/flashloop-studio.html" },
     { "source": "/effects/:slug", "destination": "/flashloop-studio.html" }
   ]
 }
