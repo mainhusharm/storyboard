@@ -988,21 +988,22 @@ async function enhancePrompt(prompt) {
 }
 
 // img2img with reference image(s) — anchors character identity
-// Only use seedream-5 — nano-banana img2img gets stuck forever
 async function submitImg2ImgTask(prompt, refUrls, imageModel = 'seedream-5', ratio = '16:9') {
-  const postBody = JSON.stringify({ prompt, model: 'seedream-5', ratio, image_urls: refUrls });
+  const model = (imageModel && img2ImgEndpoint(imageModel)) ? imageModel : 'seedream-5';
+  const endpoint = img2ImgEndpoint(model);
+  const postBody = JSON.stringify({ prompt, model, ratio, image_urls: refUrls });
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
-      const res = await paxFetch(`${API}/ai-img2img/seedream`, {
+      const res = await paxFetch(`${API}${endpoint}`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: postBody
       }, 120000);
       const j = await res.json().catch(() => ({}));
       if (res.ok && j.ok && j.task_url) return j.task_url;
-      logLine(`img2img seedream-5 attempt ${attempt}: HTTP ${res.status} ${JSON.stringify(j).slice(0, 120)}`);
-    } catch (e) { logLine(`img2img seedream-5 attempt ${attempt}: ${e.message}`); }
+      logLine(`img2img ${model} attempt ${attempt}: HTTP ${res.status} ${JSON.stringify(j).slice(0, 120)}`);
+    } catch (e) { logLine(`img2img ${model} attempt ${attempt}: ${e.message}`); }
     await new Promise(r => setTimeout(r, 3000 * attempt));
   }
-  logLine('img2img: seedream-5 failed after 3 attempts');
+  logLine(`img2img: ${model} failed after 3 attempts`);
   return null;
 }
 
@@ -1045,9 +1046,9 @@ async function download(fileUrl, outPath) {
 
 // ---------------- streaming chat ----------------
 async function chatCompletion(model, messages, maxTokens = 16384) {
-  // Cap tokens on Vercel so responses finish before function timeout
+  // Use non-streaming mode — streaming was causing ECONNRESET on local
   const cappedTokens = IS_VERCEL ? Math.min(maxTokens, 2500) : maxTokens;
-  const body = { model, messages, temperature: 0.7, max_tokens: cappedTokens, stream: true };
+  const body = { model, messages, temperature: 0.7, max_tokens: cappedTokens, stream: false };
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), IS_VERCEL ? 22000 : 120000);
   let raw = '';
@@ -1063,20 +1064,7 @@ async function chatCompletion(model, messages, maxTokens = 16384) {
 
   let content = '';
   let parseErrors = 0;
-  if (raw.includes('data:')) {
-    for (const line of raw.split('\n')) {
-      const l = line.trim();
-      if (!l.startsWith('data:')) continue;
-      const p = l.slice(5).trim();
-      if (p === '[DONE]') continue;
-      try {
-        const j = JSON.parse(p);
-        if (j.error) { logLine(`API error: ${JSON.stringify(j.error).slice(0,200)}`); throw new Error(`API: ${j.error.message || 'unknown'}`); }
-        content += j.choices?.[0]?.delta?.content ?? j.choices?.[0]?.message?.content ?? '';
-      } catch (e) { if (e.message?.startsWith('API:')) throw e; parseErrors++; }
-    }
-    if (parseErrors > 0) logLine(`SSE: ${parseErrors} unparseable chunks`);
-  } else if (raw.trim()) {
+  if (raw.trim()) {
     try {
       const j = JSON.parse(raw);
       if (j.error) { logLine(`API error: ${JSON.stringify(j.error).slice(0,200)}`); throw new Error(`API: ${j.error.message || 'unknown'}`); }
@@ -2203,15 +2191,17 @@ async function generateInfluencerContentImg2Img(infl, refUrl, userPrompt, style,
   inflLogLine(`cleaned scene prompt length: ${fullPrompt.length} chars`);
 
   let url = null;
-  // Try seedream-5 up to 3 times. Add image_strength to keep output close to ref.
+  const i2iModel = (imageModel && img2ImgEndpoint(imageModel)) ? imageModel : 'seedream-5';
+  const i2iEndpoint = img2ImgEndpoint(i2iModel);
+  // Try the selected img2img model up to 3 times. Add image_strength to keep output close to ref.
   for (let attempt = 1; attempt <= 3; attempt++) {
-    inflLogLine(`img2img: seedream-5 attempt ${attempt}/3...`);
-    const postBody = JSON.stringify({ prompt: fullPrompt, model: 'seedream-5', ratio, image_urls: [refUrl], strength: 0.35, image_strength: 0.35 });
+    inflLogLine(`img2img: ${i2iModel} attempt ${attempt}/3...`);
+    const postBody = JSON.stringify({ prompt: fullPrompt, model: i2iModel, ratio, image_urls: [refUrl], strength: 0.35, image_strength: 0.35 });
     let task = null;
     try {
       const ac = new AbortController();
       const timer = setTimeout(() => ac.abort(), 30000);
-      const res = await fetch(`${API}/ai-img2img/seedream`, {
+      const res = await fetch(`${API}${i2iEndpoint}`, {
         method: 'POST', headers: { Authorization: `Bearer ${API_KEY}`, 'Content-Type': 'application/json' }, body: postBody, signal: ac.signal
       });
       clearTimeout(timer);
@@ -3355,32 +3345,39 @@ Return ONLY a JSON object:
         if (!prompt) return sendJson(res, 400, { error: 'prompt required' });
         if (!refImageUrl) return sendJson(res, 400, { error: 'refImageUrl required (trend reference image)' });
 
-        const selectedModel = IMAGE_MODELS.includes(model) ? model : 'seedream-5';
+        // Respect the selected image model; fall back to seedream-5 if invalid
+        const selectedModel = (model && IMAGE_MODELS.includes(model)) ? model : 'seedream-5';
         const endpoint = img2ImgEndpoint(selectedModel);
 
-        // Proxy external images (e.g. SJinn thumbnails from edit.comfyonline.app) through
-        // a public temp host so PaxSenix can fetch them server-side.
+        // Proxy external images (e.g. SJinn thumbnails) through catbox.moe (serves raw
+        // image bytes) so PaxSenix can fetch them server-side. tmpfiles.org now serves
+        // an HTML wrapper page and PaxSenix rejects it ("URL does not point to an image").
         let finalImageUrl = refImageUrl;
         try {
           const imgRes = await fetch(refImageUrl, { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(15000) });
           if (imgRes.ok) {
-            const imgBuf = Buffer.from(await imgRes.arrayBuffer());
-            if (imgBuf.length > 1000) {
+            const buf = Buffer.from(await imgRes.arrayBuffer());
+            if (buf.length > 500) {
+              const contentType = imgRes.headers.get('content-type') || 'image/jpeg';
+              const ext = contentType.includes('png') ? 'png' : contentType.includes('webp') ? 'webp' : 'jpg';
+              const mime = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg';
               const { FormData, File } = await import('undici').catch(() => ({ FormData: globalThis.FormData, File: globalThis.File }));
               const fd = new FormData();
-              fd.append('file', new File([imgBuf], 'ref.jpg', { type: 'image/jpeg' }));
-              const uploadRes = await fetch('https://tmpfiles.org/api/v1/upload', { method: 'POST', body: fd, signal: AbortSignal.timeout(30000) });
-              const uj = await uploadRes.json().catch(() => ({}));
-              if (uj.data && uj.data.url) {
-                finalImageUrl = uj.data.url.replace('tmpfiles.org/', 'tmpfiles.org/dl/');
+              fd.append('reqtype', 'fileupload');
+              fd.append('fileToUpload', new File([buf], `ref.${ext}`, { type: mime }));
+              const uploadRes = await fetch('https://catbox.moe/user/api.php', { method: 'POST', body: fd, signal: AbortSignal.timeout(30000) });
+              const catUrl = (await uploadRes.text()).trim();
+              if (catUrl.startsWith('http')) {
+                finalImageUrl = catUrl;
                 logLine(`flashloop i2i: proxied ref image to ${finalImageUrl.slice(0, 80)}`);
+              } else {
+                logLine(`flashloop i2i: catbox upload returned no URL, using original`);
               }
             }
           }
         } catch (proxyErr) { logLine(`flashloop i2i: image proxy failed (${proxyErr.message}), using original URL`); }
 
-        // Build a style-anchored prompt so the i2i model matches the trend reference image
-        // instead of just generating the scene described in the text literally.
+        // Build style-anchored prompt
         let stylePrefix = '';
         if (trendName) {
           stylePrefix = `MATCH THE REFERENCE IMAGE STYLE EXACTLY. The reference image shows the "${trendName}" trend${tagline ? ' — ' + tagline : ''}. Replicate its exact visual style: color palette, lighting, texture, rendering technique, materials, mood, and aesthetic. `;
@@ -3391,7 +3388,7 @@ Return ONLY a JSON object:
         logLine(`flashloop i2i: submitting ${selectedModel}${trendName ? ' for "' + trendName + '"' : ''} with ref ${finalImageUrl.slice(0, 80)}…`);
 
         let taskUrl = null;
-        for (let attempt = 1; attempt <= 3; attempt++) {
+        for (let attempt = 1; attempt <= 5; attempt++) {
           try {
             const res2 = await paxFetch(`${API}${endpoint}`, {
               method: 'POST', headers: { 'Content-Type': 'application/json' }, body: postBody
@@ -3403,10 +3400,11 @@ Return ONLY a JSON object:
           await new Promise(r => setTimeout(r, 3000 * attempt));
         }
 
-        if (!taskUrl) return sendJson(res, 500, { error: `Failed to submit i2i task with ${selectedModel} after 3 attempts` });
+        if (!taskUrl) return sendJson(res, 500, { error: `Failed to submit i2i task with ${selectedModel} after 5 attempts` });
         return sendJson(res, 200, { ok: true, taskUrl, model: selectedModel });
       } catch (e) { logLine('flashloop i2i: ' + e.message); return sendJson(res, 500, { error: e.message }); }
     }
+
 
     // Instagram reel fetch — uses parth-dl Python module (no login required)
     if (p === '/api/trending/instagram' && req.method === 'POST') {
