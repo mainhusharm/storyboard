@@ -3349,31 +3349,38 @@ Return ONLY a JSON object:
         const selectedModel = (model && IMAGE_MODELS.includes(model)) ? model : 'seedream-5';
         const endpoint = img2ImgEndpoint(selectedModel);
 
-        // Proxy external images (e.g. SJinn thumbnails) through catbox.moe (serves raw
-        // image bytes) so PaxSenix can fetch them server-side. tmpfiles.org now serves
-        // an HTML wrapper page and PaxSenix rejects it ("URL does not point to an image").
+        // Proxy external images (e.g. SJinn thumbnails on edit.comfyonline.app) through
+        // catbox.moe (serves raw image bytes) so PaxSenix can fetch them server-side.
+        // tmpfiles.org now serves an HTML wrapper page and PaxSenix rejects it
+        // ("URL does not point to an image"). SJinn thumbnails can be large (1-2MB) and
+        // comfyonline is slow, so allow a longer fetch timeout and retry catbox uploads.
         let finalImageUrl = refImageUrl;
         try {
-          const imgRes = await fetch(refImageUrl, { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(15000) });
+          const imgRes = await fetch(refImageUrl, { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(45000) });
           if (imgRes.ok) {
             const buf = Buffer.from(await imgRes.arrayBuffer());
             if (buf.length > 500) {
-              const contentType = imgRes.headers.get('content-type') || 'image/jpeg';
-              const ext = contentType.includes('png') ? 'png' : contentType.includes('webp') ? 'webp' : 'jpg';
-              const mime = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg';
+              // Detect real image type from magic bytes (comfyonline serves octet-stream)
+              let ext = 'jpg', mime = 'image/jpeg';
+              if (buf[0] === 0x89 && buf[1] === 0x50) { ext = 'png'; mime = 'image/png'; }
+              else if (buf[0] === 0x52 && buf[1] === 0x49) { ext = 'webp'; mime = 'image/webp'; }
               const { FormData, File } = await import('undici').catch(() => ({ FormData: globalThis.FormData, File: globalThis.File }));
-              const fd = new FormData();
-              fd.append('reqtype', 'fileupload');
-              fd.append('fileToUpload', new File([buf], `ref.${ext}`, { type: mime }));
-              const uploadRes = await fetch('https://catbox.moe/user/api.php', { method: 'POST', body: fd, signal: AbortSignal.timeout(30000) });
-              const catUrl = (await uploadRes.text()).trim();
-              if (catUrl.startsWith('http')) {
-                finalImageUrl = catUrl;
-                logLine(`flashloop i2i: proxied ref image to ${finalImageUrl.slice(0, 80)}`);
-              } else {
-                logLine(`flashloop i2i: catbox upload returned no URL, using original`);
+              for (let catAttempt = 1; catAttempt <= 3; catAttempt++) {
+                const fd = new FormData();
+                fd.append('reqtype', 'fileupload');
+                fd.append('fileToUpload', new File([buf], `ref.${ext}`, { type: mime }));
+                const uploadRes = await fetch('https://catbox.moe/user/api.php', { method: 'POST', body: fd, signal: AbortSignal.timeout(45000) });
+                const catUrl = (await uploadRes.text()).trim();
+                if (catUrl.startsWith('http')) {
+                  finalImageUrl = catUrl;
+                  logLine(`flashloop i2i: proxied ref image to ${finalImageUrl.slice(0, 80)} (catbox attempt ${catAttempt})`);
+                  break;
+                }
+                logLine(`flashloop i2i: catbox upload attempt ${catAttempt} returned no URL, ${catAttempt < 3 ? 'retrying' : 'giving up'}`);
               }
             }
+          } else {
+            logLine(`flashloop i2i: ref fetch HTTP ${imgRes.status}, using original URL`);
           }
         } catch (proxyErr) { logLine(`flashloop i2i: image proxy failed (${proxyErr.message}), using original URL`); }
 
