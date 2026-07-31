@@ -3326,6 +3326,27 @@ Return ONLY a JSON object:
         const selectedModel = IMAGE_MODELS.includes(model) ? model : 'seedream-5';
         const endpoint = img2ImgEndpoint(selectedModel);
 
+        // Proxy external images (e.g. SJinn thumbnails from edit.comfyonline.app) through
+        // a public temp host so PaxSenix can fetch them server-side.
+        let finalImageUrl = refImageUrl;
+        try {
+          const imgRes = await fetch(refImageUrl, { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(15000) });
+          if (imgRes.ok) {
+            const imgBuf = Buffer.from(await imgRes.arrayBuffer());
+            if (imgBuf.length > 1000) {
+              const { FormData, File } = await import('undici').catch(() => ({ FormData: globalThis.FormData, File: globalThis.File }));
+              const fd = new FormData();
+              fd.append('file', new File([imgBuf], 'ref.jpg', { type: 'image/jpeg' }));
+              const uploadRes = await fetch('https://tmpfiles.org/api/v1/upload', { method: 'POST', body: fd, signal: AbortSignal.timeout(30000) });
+              const uj = await uploadRes.json().catch(() => ({}));
+              if (uj.data && uj.data.url) {
+                finalImageUrl = uj.data.url.replace('tmpfiles.org/', 'tmpfiles.org/dl/');
+                logLine(`flashloop i2i: proxied ref image to ${finalImageUrl.slice(0, 80)}`);
+              }
+            }
+          }
+        } catch (proxyErr) { logLine(`flashloop i2i: image proxy failed (${proxyErr.message}), using original URL`); }
+
         // Build a style-anchored prompt so the i2i model matches the trend reference image
         // instead of just generating the scene described in the text literally.
         let stylePrefix = '';
@@ -3334,8 +3355,8 @@ Return ONLY a JSON object:
         }
         const anchoredPrompt = stylePrefix + prompt;
         const sanitized = sanitizePrompt(anchoredPrompt);
-        const postBody = JSON.stringify({ prompt: sanitized, model: selectedModel, ratio: String(ratio), image_urls: [refImageUrl] });
-        logLine(`flashloop i2i: submitting ${selectedModel}${trendName ? ' for "' + trendName + '"' : ''} with ref ${refImageUrl.slice(0, 80)}…`);
+        const postBody = JSON.stringify({ prompt: sanitized, model: selectedModel, ratio: String(ratio), image_urls: [finalImageUrl] });
+        logLine(`flashloop i2i: submitting ${selectedModel}${trendName ? ' for "' + trendName + '"' : ''} with ref ${finalImageUrl.slice(0, 80)}…`);
 
         let taskUrl = null;
         for (let attempt = 1; attempt <= 3; attempt++) {
