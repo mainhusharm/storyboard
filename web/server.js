@@ -3077,10 +3077,20 @@ Return ONLY a JSON object:
           try { sjinnTrends = await scrapeSjinn(); } catch (e) { logLine('vercel sjinn: ' + e.message); }
           if (!sjinnTrends.length) {
             sjinnTrends = [
-              { slug: 'slime-face', name: 'Slime Face', thumbnail: '', tagline: 'Slime portrait ASMR' },
-              { slug: 'micro-camera-animal', name: 'Micro Camera Animal', thumbnail: '', tagline: 'Tiny animal macro lens' },
-              { slug: 'fruit-avatar', name: 'Fruit Avatar', thumbnail: '', tagline: 'Human-fruit hybrid portrait' },
-              { slug: 'flying-dragon', name: 'Flying Dragon', thumbnail: '', tagline: 'Dragon soaring cinematic' }
+              { slug: 'slime-face', name: 'Slime Face', thumbnail: 'https://edit.comfyonline.app/result/c0f72f12-1c59-481b-8153-63507a0cf861.jpg', tagline: 'Slime portrait ASMR' },
+              { slug: 'micro-camera-animal', name: 'Micro Camera Animal', thumbnail: 'https://edit.comfyonline.app/result/21414077-1074-4697-8e82-f88014e9e804.jpg', tagline: 'Tiny animal macro lens' },
+              { slug: 'topiary-shorts', name: 'Topiary Shorts', thumbnail: 'https://edit.comfyonline.app/result/79e06e43-7a8c-44b4-b0b8-933c450f74e7.jpg', tagline: 'Plant sculpture viral' },
+              { slug: 'food-eating-itself', name: 'Food Eating Itself', thumbnail: 'https://edit.comfyonline.app/result/7405f2e3-b236-4346-91a7-5ed4e3b87ebb.jpg', tagline: 'Food cannibalism trend' },
+              { slug: 'fruit-avatar', name: 'Fruit Avatar', thumbnail: 'https://edit.comfyonline.app/result/de450048-be72-4533-88a2-12482c19ba61.png', tagline: 'Human-fruit hybrid portrait' },
+              { slug: 'matchstick-shorts', name: 'Matchstick Shorts', thumbnail: 'https://edit.comfyonline.app/result/38da8934-a505-4a1e-bbba-4c817e9f0e91.png', tagline: 'Tiny matchstick world' },
+              { slug: 'rust-removal', name: 'Rust Removal', thumbnail: 'https://edit.comfyonline.app/result/3c89e4f4-254b-48b7-89e7-2d0c7d532727.png', tagline: 'Satisfying rust cleaning' },
+              { slug: 'object-talk', name: 'Object Talk', thumbnail: 'https://edit.comfyonline.app/result/33d64f76-d761-4748-897d-1d221e68372f.jpg', tagline: 'Objects with human faces' },
+              { slug: 'time-travel-vlog', name: 'Time Travel Vlog', thumbnail: 'https://edit.comfyonline.app/result/a2675b88-d086-4a64-a925-993944aee29d.jpg', tagline: 'Era-hopping vlog' },
+              { slug: 'fruit-movie-maker', name: 'Fruit Movie Maker', thumbnail: 'https://edit.comfyonline.app/result/6451c532-7df1-41cd-bfa2-135a16b4e979.jpg', tagline: 'Fruit-directed films' },
+              { slug: 'flying-dragon', name: 'Flying Dragon', thumbnail: 'https://edit.comfyonline.app/result/15a562cb-50b4-4a01-9511-d55b9ab769f1.png', tagline: 'Dragon soaring cinematic' },
+              { slug: 'mechanical-toy', name: 'Mechanical Toy', thumbnail: 'https://edit.comfyonline.app/result/78749edc-7e14-4f62-9e85-34b7d35f0355.png', tagline: 'Steampunk toy animation' },
+              { slug: 'mini-rescue', name: 'Mini Rescue', thumbnail: 'https://edit.comfyonline.app/result/2bd49c53-98bd-4834-8f25-c0f537b2bd9b.png', tagline: 'Tiny rescue mission' },
+              { slug: 'pov-roller-coaster', name: 'POV Roller Coaster', thumbnail: 'https://edit.comfyonline.app/result/d500621a-8a29-48f6-9355-b67f5e67fc23.png', tagline: 'First-person coaster ride' }
             ];
           }
           return sendJson(res, 200, {
