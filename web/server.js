@@ -581,16 +581,23 @@ ${hasStyle ? 'Render in the exact visual style described in the VISUAL STYLE REF
 async function generateFlashloopScene(effectName, tagline, userIdea, duration, ratio, model = 'gpt-5.5', references = [], trendThumbnail = '') {
   const cleanRefs = cleanFlashloopRefs(references);
 
-  // STEP 1: If we have a trend reference image, analyze it for STYLE ONLY first.
-  // This extracts style as text so the LLM never sees the image subject.
+  // On Vercel, skip vision style analysis (extra LLM call) so we fit in maxDuration.
+  // Style still comes from effect name + tagline in the prompt itself.
   let styleText = '';
-  if (trendThumbnail) {
+  if (trendThumbnail && !IS_VERCEL) {
     styleText = await analyzeTrendStyle(trendThumbnail, effectName, model);
     logLine(`trend style extracted for "${effectName}": ${styleText.length} chars`);
+  } else if (trendThumbnail && IS_VERCEL) {
+    styleText = `Match the viral "${effectName}" trend aesthetic${tagline ? ' — ' + tagline : ''}. High-contrast short-form social video look, punchy color grade, clean composition, modern AI-video style.`;
   }
 
+  // Prefer a fast reliable model on Vercel to avoid timeouts
+  const promptModel = IS_VERCEL
+    ? (['gemini-2.5-pro', 'gemini-3.1-pro', 'deepseek-v3.2', 'glm-5.2'].includes(model) ? model : 'gemini-2.5-pro')
+    : model;
+
   // STEP 2: Generate prompts using styleText (no image attached — LLM can't copy subject)
-  const imageResult = await generateFlashloopImagePrompt(effectName, tagline, userIdea, ratio, model, cleanRefs, styleText);
+  const imageResult = await generateFlashloopImagePrompt(effectName, tagline, userIdea, ratio, promptModel, cleanRefs, styleText);
 
   // Ensure the image prompt is never empty; if the LLM returned nothing useful, build a minimal anchor.
   if (!imageResult.imagePrompt || !imageResult.imagePrompt.trim()) {
@@ -599,7 +606,7 @@ async function generateFlashloopScene(effectName, tagline, userIdea, duration, r
 
   let videoResult = {};
   try {
-    videoResult = await generateFlashloopVideoPrompt(effectName, tagline, userIdea, duration, ratio, model, cleanRefs, imageResult.imagePrompt, styleText);
+    videoResult = await generateFlashloopVideoPrompt(effectName, tagline, userIdea, duration, ratio, promptModel, cleanRefs, imageResult.imagePrompt, styleText);
   } catch (e) { logLine('flashloop video prompt failed: ' + e.message); }
 
   // Ensure the video prompt is never empty — build a detailed fallback.
@@ -1038,9 +1045,11 @@ async function download(fileUrl, outPath) {
 
 // ---------------- streaming chat ----------------
 async function chatCompletion(model, messages, maxTokens = 16384) {
-  const body = { model, messages, temperature: 0.7, max_tokens: maxTokens, stream: true };
+  // Cap tokens on Vercel so responses finish before function timeout
+  const cappedTokens = IS_VERCEL ? Math.min(maxTokens, 2500) : maxTokens;
+  const body = { model, messages, temperature: 0.7, max_tokens: cappedTokens, stream: true };
   const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), IS_VERCEL ? 18000 : 120000);
+  const timer = setTimeout(() => ac.abort(), IS_VERCEL ? 22000 : 120000);
   let raw = '';
   try {
     const res = await fetch(`${API}/v1/chat/completions`, {
@@ -2327,10 +2336,23 @@ const requestHandler = async (req, res) => {
   // Normalize URL for Vercel (catch-all / rewrites may alter req.url)
   let rawUrl = req.url || '/';
   if (IS_VERCEL) {
-    const hdrPath = req.headers['x-invoke-path'] || req.headers['x-matched-path'] || req.headers['x-vercel-original-path'];
-    if (hdrPath && typeof hdrPath === 'string') {
+    // Prefer rewritten original path from vercel.json (?p=/api/a/b)
+    try {
+      const tmp = new URL(rawUrl, `http://localhost:${PORT}`);
+      const rewritten = tmp.searchParams.get('p');
+      if (rewritten && rewritten.startsWith('/')) {
+        // Keep any extra query params (drop only p)
+        tmp.searchParams.delete('p');
+        const extra = tmp.searchParams.toString();
+        rawUrl = rewritten + (extra ? (rewritten.includes('?') ? '&' : '?') + extra : '');
+      }
+    } catch {}
+    const hdrPath = req.headers['x-invoke-path'] || req.headers['x-matched-path'] || req.headers['x-vercel-original-path'] || req.headers['x-forwarded-uri'];
+    // Only use header path when we still look like the proxy endpoint
+    if (hdrPath && typeof hdrPath === 'string' && (rawUrl.startsWith('/api/_route') || rawUrl.includes('[...path]') || rawUrl.startsWith('/api?'))) {
       const qs = rawUrl.includes('?') ? rawUrl.slice(rawUrl.indexOf('?')) : '';
-      rawUrl = hdrPath.startsWith('/') ? hdrPath + qs : '/' + hdrPath + qs;
+      const cleanHdr = hdrPath.split('?')[0];
+      rawUrl = (cleanHdr.startsWith('/') ? cleanHdr : '/' + cleanHdr) + qs;
     }
     // Catch-all sometimes yields /api/[...path] or path without /api prefix
     if (!rawUrl.startsWith('/api') && !rawUrl.startsWith('/frames') && !rawUrl.startsWith('/video') && !rawUrl.startsWith('/public')) {

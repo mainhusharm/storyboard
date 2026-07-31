@@ -261,8 +261,9 @@ $('btnGenerate').onclick = async () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ slug, name, tagline, idea, duration: Number(duration), ratio, model: $('model').value, references: getRefs(), trendThumbnail })
     });
-    const j = await res.json().catch(() => ({ error: 'Invalid response from server' }));
-    if (!res.ok || j.error) throw new Error(j.error || 'Failed to generate prompt');
+    const rawText = await res.text();
+    let j; try { j = JSON.parse(rawText); } catch { j = { error: rawText ? rawText.slice(0, 180) : ('HTTP ' + res.status) }; }
+    if (!res.ok || j.error) throw new Error(j.error || ('Failed to generate prompt (HTTP ' + res.status + ')'));
     currentImagePrompt = j.imagePrompt || '';
     currentVideoPrompt = j.videoPrompt || j.prompt || 'No video prompt returned.';
     $('imagePromptOutput').textContent = currentImagePrompt || 'No image prompt returned.';

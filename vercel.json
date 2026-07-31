@@ -4,6 +4,9 @@
     { "source": "/influencer", "destination": "/influencer.html" },
     { "source": "/trends", "destination": "/trends.html" },
     { "source": "/flashloop-studio", "destination": "/flashloop-studio.html" },
-    { "source": "/effects/:slug", "destination": "/flashloop-studio.html" }
+    { "source": "/effects/:slug", "destination": "/flashloop-studio.html" },
+    { "source": "/api/:a/:b", "destination": "/api/_route?p=/api/:a/:b" },
+    { "source": "/api/:a/:b/:c", "destination": "/api/_route?p=/api/:a/:b/:c" },
+    { "source": "/api/:a/:b/:c/:d", "destination": "/api/_route?p=/api/:a/:b/:c/:d" }
   ]
 }
