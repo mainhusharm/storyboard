@@ -325,6 +325,62 @@ function flashloopAsVideo(fmt) {
   };
 }
 
+// ─── SJinn Trend Prompts ──────────────────────────────────────────────────
+// Scrapes https://sjinn.ai/trend-prompts for viral AI video prompt templates.
+// Each trend has a name, slug, and result thumbnail from the SJinn platform.
+// Cached 10 minutes per process.
+const sjinnCache = { data: null, until: 0 };
+
+async function scrapeSjinn() {
+  if (sjinnCache.data && Date.now() < sjinnCache.until) return sjinnCache.data;
+  try {
+    const res = await fetch('https://sjinn.ai/trend-prompts', {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36' },
+      signal: AbortSignal.timeout(VERCEL_TIMEOUT)
+    });
+    if (!res.ok) { logLine('sjinn scrape: HTTP ' + res.status); return []; }
+    const html = await res.text();
+
+    const trends = [];
+    const chunks = html.split(/<a\b/);
+    for (let i = 1; i < chunks.length; i++) {
+      const chunk = chunks[i];
+      const hrefM = chunk.match(/href="\/trend-prompts\/([^"]+)"/);
+      if (!hrefM) continue;
+      const slug = hrefM[1];
+      const srcM = chunk.match(/src="(https:\/\/[^"]+)"/);
+      const altM = chunk.match(/alt="([^"]*)"/);
+      const thumbnail = srcM ? srcM[1] : '';
+      const name = (altM && altM[1]) || slug.split('-').map(w => w ? w[0].toUpperCase() + w.slice(1) : '').join(' ');
+      trends.push({ slug, name, thumbnail, tagline: '' });
+    }
+
+    const seen = new Set();
+    const deduped = trends.filter(t => { if (seen.has(t.slug)) return false; seen.add(t.slug); return true; });
+    logLine(`sjinn scrape: ${deduped.length} viral prompts captured`);
+    sjinnCache.data = deduped;
+    sjinnCache.until = Date.now() + 10 * 60 * 1000;
+    return deduped;
+  } catch (e) { logLine('sjinn scrape failed: ' + e.message); return []; }
+}
+
+function sjinnAsVideo(trend) {
+  return {
+    id: 'sjinn_' + trend.name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, ''),
+    slug: trend.slug,
+    name: trend.name,
+    title: trend.name + ' — viral AI video prompt',
+    platform: 'sjinn',
+    url: 'https://sjinn.ai/trend-prompts/' + trend.slug,
+    videoUrl: 'https://sjinn.ai/trend-prompts/' + trend.slug,
+    views: 0, viewsDisplay: '', likes: 0, duration: 0, author: 'SJinn',
+    thumbnail: trend.thumbnail || null,
+    cover: trend.thumbnail || null,
+    tagline: trend.tagline || '',
+    sjinn: true, fetchedAt: Date.now()
+  };
+}
+
 // Example prompts for one-shot Flashloop scene generation.
 // NOTE: These examples are ONLY for structure, detail level, and tone. The LLM must NOT copy the crystal-fruit subject.
 const FLASHLOOP_EXAMPLE_IMAGE_PROMPT = `A photorealistic macro close-up of a single original imaginary crystal-glass fruit resting motionless on a dark slate cutting board. The fruit has a rounded teardrop shape with five gently twisted ribs, a short curled stem, translucent teal glass skin, thin coral-colored veins inside, and six dark crystal seeds arranged symmetrically around a small central core. A polished steel chef's knife lies beside it on the same board, and the background is a soft neutral grey. Soft controlled studio lighting from the left creates realistic caustics and reflections inside the glass. Shallow but stable depth of field keeps the entire fruit tack sharp. Camera positioned 25 degrees above the board, looking down at the fruit from the front. No hands are visible. Premium photorealistic macro food cinematography, realistic ray-traced glass, physically accurate reflections and refraction, 8K, 16:9, first frame only.`;
@@ -3015,6 +3071,29 @@ Return ONLY a JSON object:
             flashloopConnected: flashloopFormats.length > 0
           });
         }
+        // SJinn viral prompts: scrape SJinn trend-prompts — not TikTok search
+        if (category === 'sjinn') {
+          let sjinnTrends = [];
+          try { sjinnTrends = await scrapeSjinn(); } catch (e) { logLine('vercel sjinn: ' + e.message); }
+          if (!sjinnTrends.length) {
+            sjinnTrends = [
+              { slug: 'slime-face', name: 'Slime Face', thumbnail: '', tagline: 'Slime portrait ASMR' },
+              { slug: 'micro-camera-animal', name: 'Micro Camera Animal', thumbnail: '', tagline: 'Tiny animal macro lens' },
+              { slug: 'fruit-avatar', name: 'Fruit Avatar', thumbnail: '', tagline: 'Human-fruit hybrid portrait' },
+              { slug: 'flying-dragon', name: 'Flying Dragon', thumbnail: '', tagline: 'Dragon soaring cinematic' }
+            ];
+          }
+          return sendJson(res, 200, {
+            source: 'sjinn',
+            category,
+            as_of_ts: new Date().toISOString(),
+            liveTerms: [],
+            videos: sjinnTrends.slice(0, max).map(sjinnAsVideo),
+            sjinnTrends: sjinnTrends.slice(0, 30),
+            tavilyConnected: !!TAVILY_API_KEY,
+            sjinnConnected: sjinnTrends.length > 0
+          });
+        }
         // Regular trends: TikWM search + trending feed in parallel (short timeout)
         const queries = searchQuery
           ? [searchQuery]
@@ -3083,6 +3162,20 @@ Return ONLY a JSON object:
           liveTerms,
           videos: flashloopFormats.slice(0, max).map(flashloopAsVideo),
           flashloopFormats: flashloopFormats.slice(0, 30)
+        });
+      }
+
+      // For 'sjinn' tab: return SJinn viral prompt templates directly.
+      if (category === 'sjinn') {
+        let sjinnTrends = [];
+        try { sjinnTrends = await scrapeSjinn(); } catch (e) { logLine('sjinn trends: ' + e.message); }
+        return sendJson(res, 200, {
+          source: 'sjinn',
+          category,
+          as_of_ts: liveAsOf || new Date().toISOString(),
+          liveTerms,
+          videos: sjinnTrends.slice(0, max).map(sjinnAsVideo),
+          sjinnTrends: sjinnTrends.slice(0, 30)
         });
       }
 
