@@ -3364,19 +3364,16 @@ Return ONLY a JSON object:
               let ext = 'jpg', mime = 'image/jpeg';
               if (buf[0] === 0x89 && buf[1] === 0x50) { ext = 'png'; mime = 'image/png'; }
               else if (buf[0] === 0x52 && buf[1] === 0x49) { ext = 'webp'; mime = 'image/webp'; }
-              const { FormData, File } = await import('undici').catch(() => ({ FormData: globalThis.FormData, File: globalThis.File }));
-              for (let catAttempt = 1; catAttempt <= 3; catAttempt++) {
-                const fd = new FormData();
-                fd.append('reqtype', 'fileupload');
-                fd.append('fileToUpload', new File([buf], `ref.${ext}`, { type: mime }));
-                const uploadRes = await fetch('https://catbox.moe/user/api.php', { method: 'POST', body: fd, signal: AbortSignal.timeout(45000) });
-                const catUrl = (await uploadRes.text()).trim();
-                if (catUrl.startsWith('http')) {
-                  finalImageUrl = catUrl;
-                  logLine(`flashloop i2i: proxied ref image to ${finalImageUrl.slice(0, 80)} (catbox attempt ${catAttempt})`);
-                  break;
-                }
-                logLine(`flashloop i2i: catbox upload attempt ${catAttempt} returned no URL, ${catAttempt < 3 ? 'retrying' : 'giving up'}`);
+              const fd = new FormData();
+              fd.append('reqtype', 'fileupload');
+              fd.append('fileToUpload', new Blob([buf], { type: mime }), `ref.${ext}`);
+              const uploadRes = await fetch('https://catbox.moe/user/api.php', { method: 'POST', body: fd, signal: AbortSignal.timeout(30000) });
+              const catUrl = (await uploadRes.text()).trim();
+              if (catUrl.startsWith('http')) {
+                finalImageUrl = catUrl;
+                logLine(`flashloop i2i: proxied ref image to ${finalImageUrl.slice(0, 80)}`);
+              } else {
+                logLine(`flashloop i2i: catbox returned no URL, using original`);
               }
             }
           } else {
