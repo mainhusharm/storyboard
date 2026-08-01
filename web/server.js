@@ -3378,32 +3378,49 @@ Return ONLY a JSON object:
             throw new Error('no host header');
           }
         } catch (selfErr) {
-          // Fallback: re-host via catbox.moe (serves raw image bytes).
+          // Fallback: re-host the ref image on a public host that serves raw bytes so
+          // PaxSenix can fetch it. Try uguu.se first (reliable), then catbox.moe as backup.
           try {
             const imgRes = await fetch(refImageUrl, { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(45000) });
-            if (imgRes.ok) {
+            if (!imgRes.ok) {
+              logLine(`flashloop i2i: ref fetch HTTP ${imgRes.status}, using original URL`);
+            } else {
               const buf = Buffer.from(await imgRes.arrayBuffer());
               if (buf.length > 500) {
                 // Detect real image type from magic bytes (comfyonline serves octet-stream)
                 let ext = 'jpg', mime = 'image/jpeg';
                 if (buf[0] === 0x89 && buf[1] === 0x50) { ext = 'png'; mime = 'image/png'; }
                 else if (buf[0] === 0x52 && buf[1] === 0x49) { ext = 'webp'; mime = 'image/webp'; }
-                const fd = new FormData();
-                fd.append('reqtype', 'fileupload');
-                fd.append('fileToUpload', new Blob([buf], { type: mime }), `ref.${ext}`);
-                const uploadRes = await fetch('https://catbox.moe/user/api.php', { method: 'POST', body: fd, signal: AbortSignal.timeout(30000) });
-                const catUrl = (await uploadRes.text()).trim();
-                if (catUrl.startsWith('http')) {
-                  finalImageUrl = catUrl;
-                  logLine(`flashloop i2i: proxied ref image to ${finalImageUrl.slice(0, 80)}`);
-                } else {
-                  logLine(`flashloop i2i: catbox returned no URL, using original`);
+
+                // 1) uguu.se (primary)
+                try {
+                  const fd2 = new FormData();
+                  fd2.append('files[]', new Blob([buf], { type: mime }), `ref.${ext}`);
+                  const upRes2 = await fetch('https://uguu.se/upload.php', { method: 'POST', body: fd2, signal: AbortSignal.timeout(30000) });
+                  const uj = await upRes2.json().catch(() => ({}));
+                  const uguuUrl = uj && uj.files && uj.files[0] && uj.files[0].url;
+                  if (uj.success && uguuUrl && uguuUrl.startsWith('http')) {
+                    finalImageUrl = uguuUrl;
+                    logLine(`flashloop i2i: proxied ref image via uguu ${finalImageUrl.slice(0, 70)}`);
+                  } else { throw new Error('uguu returned no URL'); }
+                } catch (ugErr) {
+                  logLine(`flashloop i2i: uguu failed (${ugErr.message}), trying catbox`);
+                  // 2) catbox.moe (backup)
+                  try {
+                    const fd = new FormData();
+                    fd.append('reqtype', 'fileupload');
+                    fd.append('fileToUpload', new Blob([buf], { type: mime }), `ref.${ext}`);
+                    const upRes = await fetch('https://catbox.moe/user/api.php', { method: 'POST', body: fd, signal: AbortSignal.timeout(30000) });
+                    const catUrl = (await upRes.text()).trim();
+                    if (catUrl.startsWith('http')) {
+                      finalImageUrl = catUrl;
+                      logLine(`flashloop i2i: proxied ref image via catbox ${finalImageUrl.slice(0, 70)}`);
+                    } else { logLine(`flashloop i2i: catbox returned no URL, using original`); }
+                  } catch (catErr) { logLine(`flashloop i2i: catbox also failed (${catErr.message}), using original URL`); }
                 }
               }
-            } else {
-              logLine(`flashloop i2i: ref fetch HTTP ${imgRes.status}, using original URL`);
             }
-          } catch (catErr) { logLine(`flashloop i2i: catbox proxy failed (${catErr.message}), using original URL`); }
+          } catch (fetchErr) { logLine(`flashloop i2i: ref fetch failed (${fetchErr.message}), using original URL`); }
         }
 
         // Build style-anchored prompt
