@@ -131,7 +131,9 @@ function renderCats(){
 
 function renderVideos(){
   const g=$('grid');
-  const vids=(sourceFilter==='flashloop'||sourceFilter==='sjinn')?TREND_VIDEOS.filter(v=>(v.platform||'').toLowerCase()===sourceFilter):TREND_VIDEOS;
+  // For source-filtered tabs (flashloop/sjinn) the API already returns only those
+  // videos, so trust the response instead of double-filtering by platform field.
+  const vids=(sourceFilter==='flashloop'||sourceFilter==='sjinn')?TREND_VIDEOS:TREND_VIDEOS;
   if(!vids.length){g.innerHTML='<div class="empty"><div class="big">📡</div><p>No trending content found for this category right now. Try another category or refresh.</p></div>';return;}
   g.innerHTML=vids.map((v,i)=>{
     const platform=(v.platform||'youtube').toLowerCase();
