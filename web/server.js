@@ -364,6 +364,25 @@ async function scrapeSjinn() {
   } catch (e) { logLine('sjinn scrape failed: ' + e.message); return []; }
 }
 
+// Hardcoded SJinn trends used as a fallback when the live scrape fails (keeps the
+// SJinn tab from ever rendering empty — thumbnails are on edit.comfyonline.app).
+const SJINN_FALLBACK = [
+  { slug: 'slime-face', name: 'Slime Face', thumbnail: 'https://edit.comfyonline.app/result/c0f72f12-1c59-481b-8153-63507a0cf861.jpg', tagline: 'Slime portrait ASMR' },
+  { slug: 'micro-camera-animal', name: 'Micro Camera Animal', thumbnail: 'https://edit.comfyonline.app/result/21414077-1074-4697-8e82-f88014e9e804.jpg', tagline: 'Tiny animal macro lens' },
+  { slug: 'topiary-shorts', name: 'Topiary Shorts', thumbnail: 'https://edit.comfyonline.app/result/79e06e43-7a8c-44b4-b0b8-933c450f74e7.jpg', tagline: 'Plant sculpture viral' },
+  { slug: 'food-eating-itself', name: 'Food Eating Itself', thumbnail: 'https://edit.comfyonline.app/result/7405f2e3-b236-4346-91a7-5ed4e3b87ebb.jpg', tagline: 'Food cannibalism trend' },
+  { slug: 'fruit-avatar', name: 'Fruit Avatar', thumbnail: 'https://edit.comfyonline.app/result/de450048-be72-4533-88a2-12482c19ba61.png', tagline: 'Human-fruit hybrid portrait' },
+  { slug: 'matchstick-shorts', name: 'Matchstick Shorts', thumbnail: 'https://edit.comfyonline.app/result/38da8934-a505-4a1e-bbba-4c817e9f0e91.png', tagline: 'Tiny matchstick world' },
+  { slug: 'rust-removal', name: 'Rust Removal', thumbnail: 'https://edit.comfyonline.app/result/3c89e4f4-254b-48b7-89e7-2d0c7d532727.png', tagline: 'Satisfying rust cleaning' },
+  { slug: 'object-talk', name: 'Object Talk', thumbnail: 'https://edit.comfyonline.app/result/33d64f76-d761-4748-897d-1d221e68372f.jpg', tagline: 'Objects with human faces' },
+  { slug: 'time-travel-vlog', name: 'Time Travel Vlog', thumbnail: 'https://edit.comfyonline.app/result/a2675b88-d086-4a64-a925-993944aee29d.jpg', tagline: 'Era-hopping vlog' },
+  { slug: 'fruit-movie-maker', name: 'Fruit Movie Maker', thumbnail: 'https://edit.comfyonline.app/result/6451c532-7df1-41cd-bfa2-135a16b4e979.jpg', tagline: 'Fruit-directed films' },
+  { slug: 'flying-dragon', name: 'Flying Dragon', thumbnail: 'https://edit.comfyonline.app/result/15a562cb-50b4-4a01-9511-d55b9ab769f1.png', tagline: 'Dragon soaring cinematic' },
+  { slug: 'mechanical-toy', name: 'Mechanical Toy', thumbnail: 'https://edit.comfyonline.app/result/78749edc-7e14-4f62-9e85-34b7d35f0355.png', tagline: 'Steampunk toy animation' },
+  { slug: 'mini-rescue', name: 'Mini Rescue', thumbnail: 'https://edit.comfyonline.app/result/2bd49c53-98bd-4834-8f25-c0f537b2bd9b.png', tagline: 'Tiny rescue mission' },
+  { slug: 'pov-roller-coaster', name: 'POV Roller Coaster', thumbnail: 'https://edit.comfyonline.app/result/d500621a-8a29-48f6-9355-b67f5e67fc23.png', tagline: 'First-person coaster ride' }
+];
+
 function sjinnAsVideo(trend) {
   return {
     id: 'sjinn_' + trend.name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, ''),
@@ -3087,24 +3106,7 @@ Return ONLY a JSON object:
         if (category === 'sjinn') {
           let sjinnTrends = [];
           try { sjinnTrends = await scrapeSjinn(); } catch (e) { logLine('vercel sjinn: ' + e.message); }
-          if (!sjinnTrends.length) {
-            sjinnTrends = [
-              { slug: 'slime-face', name: 'Slime Face', thumbnail: 'https://edit.comfyonline.app/result/c0f72f12-1c59-481b-8153-63507a0cf861.jpg', tagline: 'Slime portrait ASMR' },
-              { slug: 'micro-camera-animal', name: 'Micro Camera Animal', thumbnail: 'https://edit.comfyonline.app/result/21414077-1074-4697-8e82-f88014e9e804.jpg', tagline: 'Tiny animal macro lens' },
-              { slug: 'topiary-shorts', name: 'Topiary Shorts', thumbnail: 'https://edit.comfyonline.app/result/79e06e43-7a8c-44b4-b0b8-933c450f74e7.jpg', tagline: 'Plant sculpture viral' },
-              { slug: 'food-eating-itself', name: 'Food Eating Itself', thumbnail: 'https://edit.comfyonline.app/result/7405f2e3-b236-4346-91a7-5ed4e3b87ebb.jpg', tagline: 'Food cannibalism trend' },
-              { slug: 'fruit-avatar', name: 'Fruit Avatar', thumbnail: 'https://edit.comfyonline.app/result/de450048-be72-4533-88a2-12482c19ba61.png', tagline: 'Human-fruit hybrid portrait' },
-              { slug: 'matchstick-shorts', name: 'Matchstick Shorts', thumbnail: 'https://edit.comfyonline.app/result/38da8934-a505-4a1e-bbba-4c817e9f0e91.png', tagline: 'Tiny matchstick world' },
-              { slug: 'rust-removal', name: 'Rust Removal', thumbnail: 'https://edit.comfyonline.app/result/3c89e4f4-254b-48b7-89e7-2d0c7d532727.png', tagline: 'Satisfying rust cleaning' },
-              { slug: 'object-talk', name: 'Object Talk', thumbnail: 'https://edit.comfyonline.app/result/33d64f76-d761-4748-897d-1d221e68372f.jpg', tagline: 'Objects with human faces' },
-              { slug: 'time-travel-vlog', name: 'Time Travel Vlog', thumbnail: 'https://edit.comfyonline.app/result/a2675b88-d086-4a64-a925-993944aee29d.jpg', tagline: 'Era-hopping vlog' },
-              { slug: 'fruit-movie-maker', name: 'Fruit Movie Maker', thumbnail: 'https://edit.comfyonline.app/result/6451c532-7df1-41cd-bfa2-135a16b4e979.jpg', tagline: 'Fruit-directed films' },
-              { slug: 'flying-dragon', name: 'Flying Dragon', thumbnail: 'https://edit.comfyonline.app/result/15a562cb-50b4-4a01-9511-d55b9ab769f1.png', tagline: 'Dragon soaring cinematic' },
-              { slug: 'mechanical-toy', name: 'Mechanical Toy', thumbnail: 'https://edit.comfyonline.app/result/78749edc-7e14-4f62-9e85-34b7d35f0355.png', tagline: 'Steampunk toy animation' },
-              { slug: 'mini-rescue', name: 'Mini Rescue', thumbnail: 'https://edit.comfyonline.app/result/2bd49c53-98bd-4834-8f25-c0f537b2bd9b.png', tagline: 'Tiny rescue mission' },
-              { slug: 'pov-roller-coaster', name: 'POV Roller Coaster', thumbnail: 'https://edit.comfyonline.app/result/d500621a-8a29-48f6-9355-b67f5e67fc23.png', tagline: 'First-person coaster ride' }
-            ];
-          }
+          if (!sjinnTrends.length) sjinnTrends = SJINN_FALLBACK;
           return sendJson(res, 200, {
             source: 'sjinn',
             category,
@@ -3191,6 +3193,7 @@ Return ONLY a JSON object:
       if (category === 'sjinn') {
         let sjinnTrends = [];
         try { sjinnTrends = await scrapeSjinn(); } catch (e) { logLine('sjinn trends: ' + e.message); }
+        if (!sjinnTrends.length) sjinnTrends = SJINN_FALLBACK;
         return sendJson(res, 200, {
           source: 'sjinn',
           category,
@@ -3349,37 +3352,59 @@ Return ONLY a JSON object:
         const selectedModel = (model && IMAGE_MODELS.includes(model)) ? model : 'seedream-5';
         const endpoint = img2ImgEndpoint(selectedModel);
 
-        // Proxy external images (e.g. SJinn thumbnails on edit.comfyonline.app) through
-        // catbox.moe (serves raw image bytes) so PaxSenix can fetch them server-side.
-        // tmpfiles.org now serves an HTML wrapper page and PaxSenix rejects it
-        // ("URL does not point to an image"). SJinn thumbnails can be large (1-2MB) and
-        // comfyonline is slow, so allow a longer fetch timeout and retry catbox uploads.
+        // Proxy external reference images (e.g. SJinn thumbnails on edit.comfyonline.app)
+        // so PaxSenix can fetch them. PaxSenix rejects comfyonline URLs directly
+        // (octet-stream → "URL does not point to an image"), so we must re-serve with a
+        // proper image content-type. Two strategies, in order:
+        //   1) Self-proxy via our own /api/proxy-image endpoint (reliable on Vercel).
+        //   2) catbox.moe re-host (works on local where there's no public domain).
         let finalImageUrl = refImageUrl;
         try {
-          const imgRes = await fetch(refImageUrl, { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(45000) });
-          if (imgRes.ok) {
-            const buf = Buffer.from(await imgRes.arrayBuffer());
-            if (buf.length > 500) {
-              // Detect real image type from magic bytes (comfyonline serves octet-stream)
-              let ext = 'jpg', mime = 'image/jpeg';
-              if (buf[0] === 0x89 && buf[1] === 0x50) { ext = 'png'; mime = 'image/png'; }
-              else if (buf[0] === 0x52 && buf[1] === 0x49) { ext = 'webp'; mime = 'image/webp'; }
-              const fd = new FormData();
-              fd.append('reqtype', 'fileupload');
-              fd.append('fileToUpload', new Blob([buf], { type: mime }), `ref.${ext}`);
-              const uploadRes = await fetch('https://catbox.moe/user/api.php', { method: 'POST', body: fd, signal: AbortSignal.timeout(30000) });
-              const catUrl = (await uploadRes.text()).trim();
-              if (catUrl.startsWith('http')) {
-                finalImageUrl = catUrl;
-                logLine(`flashloop i2i: proxied ref image to ${finalImageUrl.slice(0, 80)}`);
-              } else {
-                logLine(`flashloop i2i: catbox returned no URL, using original`);
-              }
+          const proto = (req.headers['x-forwarded-proto'] || (req.socket && req.socket.encrypted) ? 'https' : 'http');
+          const host = req.headers['x-forwarded-host'] || req.headers.host;
+          const isPublicHost = host && !/^(localhost|127\.0\.0\.1|\[::1\]|192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.)/.test(host);
+          if (isPublicHost) {
+            const selfUrl = `${proto}://${host}/api/proxy-image?url=${encodeURIComponent(refImageUrl)}&inline=1`;
+            const selfRes = await fetch(selfUrl, { method: 'GET', headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(20000) });
+            const sct = selfRes.headers.get('content-type') || '';
+            if (selfRes.ok && sct.startsWith('image/')) {
+              finalImageUrl = selfUrl;
+              logLine(`flashloop i2i: using self-proxied ref image (${host})`);
+            } else {
+              logLine(`flashloop i2i: self-proxy not usable (HTTP ${selfRes.status}, ${sct}), trying catbox`);
+              throw new Error('self-proxy unusable');
             }
           } else {
-            logLine(`flashloop i2i: ref fetch HTTP ${imgRes.status}, using original URL`);
+            throw new Error('no host header');
           }
-        } catch (proxyErr) { logLine(`flashloop i2i: image proxy failed (${proxyErr.message}), using original URL`); }
+        } catch (selfErr) {
+          // Fallback: re-host via catbox.moe (serves raw image bytes).
+          try {
+            const imgRes = await fetch(refImageUrl, { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(45000) });
+            if (imgRes.ok) {
+              const buf = Buffer.from(await imgRes.arrayBuffer());
+              if (buf.length > 500) {
+                // Detect real image type from magic bytes (comfyonline serves octet-stream)
+                let ext = 'jpg', mime = 'image/jpeg';
+                if (buf[0] === 0x89 && buf[1] === 0x50) { ext = 'png'; mime = 'image/png'; }
+                else if (buf[0] === 0x52 && buf[1] === 0x49) { ext = 'webp'; mime = 'image/webp'; }
+                const fd = new FormData();
+                fd.append('reqtype', 'fileupload');
+                fd.append('fileToUpload', new Blob([buf], { type: mime }), `ref.${ext}`);
+                const uploadRes = await fetch('https://catbox.moe/user/api.php', { method: 'POST', body: fd, signal: AbortSignal.timeout(30000) });
+                const catUrl = (await uploadRes.text()).trim();
+                if (catUrl.startsWith('http')) {
+                  finalImageUrl = catUrl;
+                  logLine(`flashloop i2i: proxied ref image to ${finalImageUrl.slice(0, 80)}`);
+                } else {
+                  logLine(`flashloop i2i: catbox returned no URL, using original`);
+                }
+              }
+            } else {
+              logLine(`flashloop i2i: ref fetch HTTP ${imgRes.status}, using original URL`);
+            }
+          } catch (catErr) { logLine(`flashloop i2i: catbox proxy failed (${catErr.message}), using original URL`); }
+        }
 
         // Build style-anchored prompt
         let stylePrefix = '';
@@ -4129,12 +4154,18 @@ ${infl.description || '(no description - describe a beautiful confident influenc
     if (p === '/api/proxy-image') {
       const imgUrl = u.searchParams.get('url');
       if (!imgUrl) return sendJson(res, 400, { error: 'missing url param' });
+      const isInline = u.searchParams.get('inline') === '1';
       try {
         const imgRes = await fetch(imgUrl, { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(15000) });
         if (!imgRes.ok) return sendJson(res, 502, { error: 'upstream ' + imgRes.status });
         const buf = Buffer.from(await imgRes.arrayBuffer());
-        const ct = imgRes.headers.get('content-type') || 'image/jpeg';
-        res.writeHead(200, { 'Content-Type': ct, 'Content-Disposition': 'attachment; filename="reference.jpg"', 'Cache-Control': 'public, max-age=86400' });
+        // Detect real image type from magic bytes (comfyonline serves octet-stream)
+        let ct = 'image/jpeg';
+        if (buf[0] === 0x89 && buf[1] === 0x50) ct = 'image/png';
+        else if (buf[0] === 0x52 && buf[1] === 0x49) ct = 'image/webp';
+        const headers = { 'Content-Type': ct, 'Cache-Control': 'public, max-age=86400' };
+        if (!isInline) headers['Content-Disposition'] = 'attachment; filename="reference.jpg"';
+        res.writeHead(200, headers);
         return res.end(buf);
       } catch (e) { return sendJson(res, 502, { error: e.message }); }
     }
