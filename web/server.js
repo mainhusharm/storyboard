@@ -525,11 +525,13 @@ ${visionBlock}
 
 Return ONLY a JSON object with "title" and "imagePrompt". Do not output any explanation outside the JSON.`;
 
+  const variation = `Variation #${Date.now().toString(36)} — pick a DIFFERENT specific scene/subject/composition than any previous generation for this effect.`;
   const userText = `Effect: ${effectName}${tagline ? ' — ' + tagline : ''}
 The effect "${effectName}" is a viral trend — your scene MUST depict a concept that matches this name. For "Everyday Life", show a cozy relatable daily moment (family, morning routine, cooking together). For "Old Cartoon Style", show a scene in retro cartoon aesthetic.
 ${refBlock}
 User idea: ${userIdea || 'Invent a specific compelling scene that represents "' + effectName + '" as a viral trend — pick specific subjects, a specific setting, and a specific action.'}
 Aspect ratio: ${ratio}
+${variation}
 
 Example (match its CONCISENESS, NOT its subject):
 
@@ -567,12 +569,14 @@ ${visionBlock}
 
 Return ONLY a JSON object with "title" and "videoPrompt". Do not output any explanation outside the JSON.`;
 
+  const variation = `Variation #${Date.now().toString(36)} — pick a DIFFERENT specific scene/subject/composition than any previous generation for this effect.`;
   const userText = `Effect: ${effectName}${tagline ? ' — ' + tagline : ''}
 The effect "${effectName}" is a viral trend — your scene MUST depict a concept that matches this name. For "Everyday Life", animate a cozy relatable daily moment. For "Old Cartoon Style", animate in retro cartoon aesthetic.
 ${refBlock}
 User idea: ${userIdea || 'Invent a specific compelling scene that represents "' + effectName + '" as a viral trend — pick specific subjects, a specific setting, and a specific action.'}
 Duration: ${duration} seconds
 Aspect ratio: ${ratio}
+${variation}
 
 First-frame image prompt (your video prompt must describe motion anchored to this exact frame):
 
@@ -3714,9 +3718,10 @@ cartoon, CGI, painting, anime, overprocessed skin, beauty filter, doll face, pla
 
         let imgPrompt = '';
         const selectedModel = MODELS.includes(model) ? model : 'gemini-2.5-pro';
+        const inflVariation = `\n\nVARIATION #${Date.now().toString(36)}: Pick a DIFFERENT specific scene/composition/pose than any previous generation for this activity. Be creative and avoid repeating the same setup.`;
         for (const m of [selectedModel, 'gemini-2.5-pro', 'gemini-3.1-pro']) {
           try {
-            const raw = await chatCompletion(m, [{ role: 'user', content: imgSystem }], 12000);
+            const raw = await chatCompletion(m, [{ role: 'user', content: imgSystem + inflVariation }], 12000);
             imgPrompt = raw.trim();
             if (imgPrompt.length > 50) break;
           } catch (e) { inflLogLine('img prompt gen ' + m + ' failed: ' + e.message); }
@@ -3801,9 +3806,10 @@ Negative Prompt:
 AI motion, robotic movement, jitter, morphing face, frozen smile, bad lip-sync, extra fingers, deformed hands, flickering, warped anatomy, unrealistic physics, low quality, beauty filter, CGI appearance, still life, no people, object-only shot, empty scene`;
 
         let vidPrompt = '';
+        const vidVariation = `\n\nVARIATION #${Date.now().toString(36)}: Pick a DIFFERENT specific action sequence/composition than any previous generation. Be creative and avoid repeating the same movements.`;
         for (const m of [selectedModel, 'gemini-2.5-pro', 'gemini-3.1-pro']) {
           try {
-            const raw = await chatCompletion(m, [{ role: 'user', content: vidSystem }], 16000);
+            const raw = await chatCompletion(m, [{ role: 'user', content: vidSystem + vidVariation }], 16000);
             vidPrompt = raw.trim();
             if (vidPrompt.length > 50) break;
           } catch (e) { inflLogLine('vid prompt gen ' + m + ' failed: ' + e.message); }
