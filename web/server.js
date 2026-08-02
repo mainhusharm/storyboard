@@ -3352,76 +3352,53 @@ Return ONLY a JSON object:
         const selectedModel = (model && IMAGE_MODELS.includes(model)) ? model : 'seedream-5';
         const endpoint = img2ImgEndpoint(selectedModel);
 
-        // Proxy external reference images (e.g. SJinn thumbnails on edit.comfyonline.app)
+        // Re-host external reference images (e.g. SJinn thumbnails on edit.comfyonline.app)
         // so PaxSenix can fetch them. PaxSenix rejects comfyonline URLs directly
-        // (octet-stream → "URL does not point to an image"), so we must re-serve with a
-        // proper image content-type. Two strategies, in order:
-        //   1) Self-proxy via our own /api/proxy-image endpoint (reliable on Vercel).
-        //   2) catbox.moe re-host (works on local where there's no public domain).
+        // (octet-stream → "URL does not point to an image"), so we re-upload the image
+        // bytes to a public host that serves raw image bytes. Try uguu.se first, then
+        // catbox.moe as backup. Same path on local and Vercel (no self-proxy needed).
         let finalImageUrl = refImageUrl;
         try {
-          const proto = (req.headers['x-forwarded-proto'] || (req.socket && req.socket.encrypted) ? 'https' : 'http');
-          const host = req.headers['x-forwarded-host'] || req.headers.host;
-          const isPublicHost = host && !/^(localhost|127\.0\.0\.1|\[::1\]|192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.)/.test(host);
-          if (isPublicHost) {
-            const selfUrl = `${proto}://${host}/api/proxy-image?url=${encodeURIComponent(refImageUrl)}&inline=1`;
-            const selfRes = await fetch(selfUrl, { method: 'GET', headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(20000) });
-            const sct = selfRes.headers.get('content-type') || '';
-            if (selfRes.ok && sct.startsWith('image/')) {
-              finalImageUrl = selfUrl;
-              logLine(`flashloop i2i: using self-proxied ref image (${host})`);
-            } else {
-              logLine(`flashloop i2i: self-proxy not usable (HTTP ${selfRes.status}, ${sct}), trying catbox`);
-              throw new Error('self-proxy unusable');
-            }
+          const imgRes = await fetch(refImageUrl, { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(30000) });
+          if (!imgRes.ok) {
+            logLine(`flashloop i2i: ref fetch HTTP ${imgRes.status}, using original URL`);
           } else {
-            throw new Error('no host header');
-          }
-        } catch (selfErr) {
-          // Fallback: re-host the ref image on a public host that serves raw bytes so
-          // PaxSenix can fetch it. Try uguu.se first (reliable), then catbox.moe as backup.
-          try {
-            const imgRes = await fetch(refImageUrl, { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(45000) });
-            if (!imgRes.ok) {
-              logLine(`flashloop i2i: ref fetch HTTP ${imgRes.status}, using original URL`);
-            } else {
-              const buf = Buffer.from(await imgRes.arrayBuffer());
-              if (buf.length > 500) {
-                // Detect real image type from magic bytes (comfyonline serves octet-stream)
-                let ext = 'jpg', mime = 'image/jpeg';
-                if (buf[0] === 0x89 && buf[1] === 0x50) { ext = 'png'; mime = 'image/png'; }
-                else if (buf[0] === 0x52 && buf[1] === 0x49) { ext = 'webp'; mime = 'image/webp'; }
+            const buf = Buffer.from(await imgRes.arrayBuffer());
+            if (buf.length > 500) {
+              // Detect real image type from magic bytes (comfyonline serves octet-stream)
+              let ext = 'jpg', mime = 'image/jpeg';
+              if (buf[0] === 0x89 && buf[1] === 0x50) { ext = 'png'; mime = 'image/png'; }
+              else if (buf[0] === 0x52 && buf[1] === 0x49) { ext = 'webp'; mime = 'image/webp'; }
 
-                // 1) uguu.se (primary)
+              // 1) uguu.se (primary)
+              try {
+                const fd2 = new FormData();
+                fd2.append('files[]', new Blob([buf], { type: mime }), `ref.${ext}`);
+                const upRes2 = await fetch('https://uguu.se/upload.php', { method: 'POST', body: fd2, signal: AbortSignal.timeout(30000) });
+                const uj = await upRes2.json().catch(() => ({}));
+                const uguuUrl = uj && uj.files && uj.files[0] && uj.files[0].url;
+                if (uj.success && uguuUrl && uguuUrl.startsWith('http')) {
+                  finalImageUrl = uguuUrl;
+                  logLine(`flashloop i2i: proxied ref image via uguu ${finalImageUrl.slice(0, 70)}`);
+                } else { throw new Error('uguu returned no URL'); }
+              } catch (ugErr) {
+                logLine(`flashloop i2i: uguu failed (${ugErr.message}), trying catbox`);
+                // 2) catbox.moe (backup)
                 try {
-                  const fd2 = new FormData();
-                  fd2.append('files[]', new Blob([buf], { type: mime }), `ref.${ext}`);
-                  const upRes2 = await fetch('https://uguu.se/upload.php', { method: 'POST', body: fd2, signal: AbortSignal.timeout(30000) });
-                  const uj = await upRes2.json().catch(() => ({}));
-                  const uguuUrl = uj && uj.files && uj.files[0] && uj.files[0].url;
-                  if (uj.success && uguuUrl && uguuUrl.startsWith('http')) {
-                    finalImageUrl = uguuUrl;
-                    logLine(`flashloop i2i: proxied ref image via uguu ${finalImageUrl.slice(0, 70)}`);
-                  } else { throw new Error('uguu returned no URL'); }
-                } catch (ugErr) {
-                  logLine(`flashloop i2i: uguu failed (${ugErr.message}), trying catbox`);
-                  // 2) catbox.moe (backup)
-                  try {
-                    const fd = new FormData();
-                    fd.append('reqtype', 'fileupload');
-                    fd.append('fileToUpload', new Blob([buf], { type: mime }), `ref.${ext}`);
-                    const upRes = await fetch('https://catbox.moe/user/api.php', { method: 'POST', body: fd, signal: AbortSignal.timeout(30000) });
-                    const catUrl = (await upRes.text()).trim();
-                    if (catUrl.startsWith('http')) {
-                      finalImageUrl = catUrl;
-                      logLine(`flashloop i2i: proxied ref image via catbox ${finalImageUrl.slice(0, 70)}`);
-                    } else { logLine(`flashloop i2i: catbox returned no URL, using original`); }
-                  } catch (catErr) { logLine(`flashloop i2i: catbox also failed (${catErr.message}), using original URL`); }
-                }
+                  const fd = new FormData();
+                  fd.append('reqtype', 'fileupload');
+                  fd.append('fileToUpload', new Blob([buf], { type: mime }), `ref.${ext}`);
+                  const upRes = await fetch('https://catbox.moe/user/api.php', { method: 'POST', body: fd, signal: AbortSignal.timeout(30000) });
+                  const catUrl = (await upRes.text()).trim();
+                  if (catUrl.startsWith('http')) {
+                    finalImageUrl = catUrl;
+                    logLine(`flashloop i2i: proxied ref image via catbox ${finalImageUrl.slice(0, 70)}`);
+                  } else { logLine(`flashloop i2i: catbox returned no URL, using original`); }
+                } catch (catErr) { logLine(`flashloop i2i: catbox also failed (${catErr.message}), using original URL`); }
               }
             }
-          } catch (fetchErr) { logLine(`flashloop i2i: ref fetch failed (${fetchErr.message}), using original URL`); }
-        }
+          }
+        } catch (fetchErr) { logLine(`flashloop i2i: ref fetch failed (${fetchErr.message}), using original URL`); }
 
         // Build style-anchored prompt
         let stylePrefix = '';
