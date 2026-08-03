@@ -59,6 +59,28 @@
   .error{background:rgba(248,113,113,.12);border:1px solid rgba(248,113,113,.3);color:var(--red);padding:12px 14px;border-radius:10px;font-size:13px;margin-top:12px;display:none}
   .error.visible{display:block}
   @media (max-width:640px){.grid2{grid-template-columns:1fr}}
+  /* --- mobile responsive --- */
+  @media(max-width:720px){
+    header{padding:0 12px;gap:10px}
+    header h1{font-size:13px;letter-spacing:2px}
+    header .sub{display:none}
+    header .right{overflow-x:auto;scrollbar-width:none;-webkit-overflow-scrolling:touch;gap:6px}
+    header .right::-webkit-scrollbar{display:none}
+    header .right>*{flex:none;white-space:nowrap}
+    input,select,textarea{font-size:16px}
+    .container{padding:16px 14px}
+    .hero{padding:20px}
+    .hero h2{font-size:24px}
+    .panel{padding:16px}
+    .prompt-output{max-height:none;min-height:160px}
+    #i2iImage{max-width:100%;height:auto}
+    .toast{left:16px;right:16px;bottom:16px;text-align:center}
+  }
+  @media(max-width:520px){
+    .ref-row{flex-direction:column;align-items:stretch}
+    .ref-row input{width:100% !important}
+    #trendPreview>div{flex-direction:column}
+  }
 </style>
 </head>
 <body>

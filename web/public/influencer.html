@@ -142,6 +142,35 @@
   .galcard .goverlay{position:absolute;inset:0;background:rgba(8,9,12,.75);display:none;align-items:center;justify-content:center;flex-direction:column;gap:8px}
   .galcard:hover .goverlay{display:flex}
   .galcard .goverlay span{color:var(--dim);font-size:10px;letter-spacing:1px;text-transform:uppercase}
+
+  /* --- mobile responsive --- */
+  @media(max-width:720px){
+    header{padding:0 12px;gap:10px}
+    header h1{font-size:13px;letter-spacing:2px}
+    header .sub{display:none}
+    header .right{overflow-x:auto;scrollbar-width:none;-webkit-overflow-scrolling:touch;gap:6px}
+    header .right::-webkit-scrollbar{display:none}
+    header .right>*{flex:none;white-space:nowrap}
+    input,select,textarea{font-size:16px}
+    .wrap{padding:14px 14px 32px}
+    .panel{padding:14px}
+    button{min-height:38px}
+    .opts{grid-template-columns:1fr 1fr}
+    .gen-row{grid-template-columns:1fr}
+    .gallery{grid-template-columns:repeat(auto-fill,minmax(min(260px,100%),1fr))}
+    .project-header{flex-wrap:wrap}
+    .project-header>div:last-child{margin-left:0}
+    .ref-cell .del{opacity:1}
+    #trendTikTokPanel>div{flex-wrap:wrap}
+    #trendInstagramPanel>div{flex-wrap:wrap}
+    #trendTikTokPanel input{flex:1 1 100%;min-width:0}
+    .lock-overlay h3{font-size:13px}
+    .lock-overlay p{max-width:240px}
+  }
+  @media(max-width:480px){
+    .opts{grid-template-columns:1fr}
+    .refs-grid{grid-template-columns:1fr 1fr}
+  }
 </style>
 </head>
 <body>

@@ -51,6 +51,23 @@
   .c4:hover{border-color:var(--violet)}.c4 h3 b{color:var(--violet)}
 
   .foot{text-align:center;margin-top:44px;color:var(--faint);font-size:11px}
+
+  /* --- mobile responsive --- */
+  @media(max-width:720px){
+    header{padding:0 14px}
+    header h1{font-size:14px}
+    header .right{overflow-x:auto;scrollbar-width:none;-webkit-overflow-scrolling:touch;gap:6px}
+    header .right::-webkit-scrollbar{display:none}
+    header .right>*{flex:none;white-space:nowrap}
+    header .pill{padding:4px 9px}
+    .wrap{padding:32px 16px}
+    .hero{margin-bottom:32px}
+    .hero h2{font-size:26px}
+    .hero p{font-size:14px}
+    .grid{grid-template-columns:repeat(auto-fit,minmax(min(240px,100%),1fr))}
+    .card{padding:20px}
+    .foot{margin-top:32px}
+  }
 </style>
 </head>
 <body>

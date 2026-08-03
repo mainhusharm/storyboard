@@ -139,6 +139,36 @@
   .final-player{background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden;padding:16px}
   .final-player video{width:100%;border-radius:8px;background:#000}
   .final-player .meta{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
+
+  /* --- mobile responsive --- */
+  @media(max-width:720px){
+    header{padding:0 12px;gap:10px}
+    header h1{font-size:13px;letter-spacing:2px}
+    header .sub{display:none}
+    header .right{overflow-x:auto;scrollbar-width:none;-webkit-overflow-scrolling:touch;gap:6px}
+    header .right::-webkit-scrollbar{display:none}
+    header .right>*{flex:none;white-space:nowrap}
+    header .right .pill:last-child{display:none}
+    a[href="/influencer"]{display:none}
+    input,select,textarea{font-size:16px}
+    .wrap{padding:14px 14px 32px}
+    .panel{padding:14px}
+    button{min-height:38px}
+    .duo button,.trio button,.cactions button{min-height:36px}
+    textarea{min-height:220px}
+    #log{height:140px}
+    .grid{grid-template-columns:repeat(auto-fill,minmax(min(320px,100%),1fr))}
+    .char-grid{grid-template-columns:repeat(auto-fill,minmax(min(150px,100%),1fr))}
+    .fhead h2{font-size:19px;letter-spacing:3px}
+    #overlay{padding:10px}
+    #modal{max-height:92vh}
+    #modal .mimg{min-height:200px}
+    #modal .mbody{max-height:70vh;padding:16px}
+    .empty{padding:48px 16px}
+  }
+  @media(max-width:480px){
+    .stat{grid-template-columns:repeat(3,1fr)}
+  }
 </style>
 </head>
 <body>
