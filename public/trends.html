@@ -74,6 +74,8 @@
     <a href="/trends" class="back-btn">🔥 Trends</a>
     <a href="/" class="back-btn">← Storyboard</a>
     <a href="/influencer" class="back-btn">✨ AI Influencer</a>
+    <span id="authName" style="display:none;font-size:11px;color:#fbbf24">👤 </span>
+    <button id="btnLogout" style="display:none;font-size:11px;padding:5px 12px" onclick="logout()">Log out</button>
   </div>
 </header>
 
@@ -103,11 +105,27 @@
 </div>
 
 <script>
+// Auth guard — redirect to /login if not authenticated; show user + logout when logged in.
+(async function(){
+  try{
+    const r=await fetch('/api/auth/me',{cache:'no-store'});
+    if(r.status===401){location.replace('/login?next='+encodeURIComponent(location.pathname+location.search));return;}
+    const j=await r.json();
+    if(j.user){
+      document.getElementById('authName').style.display='';
+      document.getElementById('authName').textContent='👤 '+(j.user.name||j.user.email);
+      document.getElementById('btnLogout').style.display='';
+    }
+  }catch(e){location.replace('/login?next='+encodeURIComponent(location.pathname));}
+})();
+function logout(){fetch('/api/auth/logout',{method:'POST'}).then(()=>location.replace('/login'));}
+
 const $=id=>document.getElementById(id);
 const CATEGORIES=[
   {id:'trending',label:'🔥 Trending',icon:'🔥'},
   {id:'flashloop',label:'⚡ Flashloop',icon:'⚡'},
   {id:'sjinn',label:'🎬 SJinn',icon:'🎬'},
+  {id:'sloop',label:'🌀 Sloop',icon:'🌀'},
   {id:'anime',label:' Anime',icon:'🎌'},
   {id:'ai-formats',label:'⚡ AI Formats',icon:'⚡'},
   {id:'ai-generated',label:'🤖 AI Generated',icon:'🤖'},
@@ -143,7 +161,7 @@ function renderVideos(){
   // For source-filtered tabs (flashloop/sjinn) the API already returns only those
   // videos, so trust the response instead of double-filtering by platform field.
   const vids=(sourceFilter==='flashloop'||sourceFilter==='sjinn')?TREND_VIDEOS:TREND_VIDEOS;
-  if(!vids.length){g.innerHTML='<div class="empty"><div class="big">📡</div><p>No trending content found for this category right now. Try another category or refresh.</p></div>';return;}
+  if(!vids.length){g.innerHTML='<div class="big">📡</div><p>No trending content found for this category right now. Try another category or refresh.</p>';return;}
   g.innerHTML=vids.map((v,i)=>{
     const platform=(v.platform||'youtube').toLowerCase();
     const badgeClass=platform==='youtube'?'youtube':platform==='tiktok'?'tiktok':platform==='flashloop'?'flashloop':platform==='sjinn'?'sjinn':'';

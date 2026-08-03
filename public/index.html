@@ -148,10 +148,13 @@
   <div><h1>STORYBOARD <b>STUDIO</b></h1></div>
   <span class="sub">SCRIPT → CHARACTERS → FRAMES → VIDEO → FILM</span>
   <div class="right">
+    <a href="/" style="font-size:11px;padding:6px 14px;border:1px solid var(--line2);border-radius:99px;color:var(--dim);cursor:pointer;text-decoration:none;display:flex;align-items:center;gap:5px;font-weight:600;letter-spacing:.5px">🏠 Home</a>
     <a href="/trends?source=flashloop" style="font-size:11px;padding:6px 14px;border:1px solid var(--line2);border-radius:99px;background:linear-gradient(135deg,rgba(139,124,246,.15),rgba(236,72,153,.15));color:var(--violet);cursor:pointer;text-decoration:none;display:flex;align-items:center;gap:5px;font-weight:600;letter-spacing:.5px">⚡ Trend Loop</a>
     <a href="/trends?source=sjinn" style="font-size:11px;padding:6px 14px;border:1px solid var(--line2);border-radius:99px;background:linear-gradient(135deg,rgba(6,182,212,.15),rgba(59,130,246,.15));color:#06b6d4;cursor:pointer;text-decoration:none;display:flex;align-items:center;gap:5px;font-weight:600;letter-spacing:.5px">🎬 SJinn AI</a>
     <a href="/trends" style="font-size:11px;padding:6px 14px;border:1px solid var(--line2);border-radius:99px;background:linear-gradient(135deg,rgba(251,146,60,.15),rgba(239,68,68,.15));color:var(--orange);cursor:pointer;text-decoration:none;display:flex;align-items:center;gap:5px;font-weight:600;letter-spacing:.5px">🔥 Trends</a>
     <a href="/influencer" style="font-size:11px;padding:6px 14px;border:1px solid var(--line2);border-radius:99px;background:linear-gradient(135deg,rgba(244,114,182,.15),rgba(139,124,246,.15));color:var(--pink);cursor:pointer;text-decoration:none;display:flex;align-items:center;gap:5px;font-weight:600;letter-spacing:.5px">✨ Create AI Influencer</a>
+    <span id="authName" style="display:none;font-size:11px;color:var(--amber2)">👤 </span>
+    <button id="btnLogout" style="display:none;font-size:11px;padding:5px 12px" onclick="logout()">Log out</button>
     <div class="pill" id="phasepill"><div class="dot"></div><span id="phasetxt">IDLE</span></div>
     <div class="pill">GROK ⇄ VEO VIDEO</div>
   </div>
@@ -285,6 +288,21 @@ The Director AI will:
 </div>
 
 <script>
+// Auth guard — redirect to /login if not authenticated; show user + logout when logged in.
+(async function(){
+  try{
+    const r=await fetch('/api/auth/me',{cache:'no-store'});
+    if(r.status===401){location.replace('/login?next='+encodeURIComponent(location.pathname+location.search));return;}
+    const j=await r.json();
+    if(j.user){
+      document.getElementById('authName').style.display='';
+      document.getElementById('authName').textContent='👤 '+(j.user.name||j.user.email);
+      document.getElementById('btnLogout').style.display='';
+    }
+  }catch(e){location.replace('/login?next='+encodeURIComponent(location.pathname));}
+})();
+function logout(){fetch('/api/auth/logout',{method:'POST'}).then(()=>location.replace('/login'));}
+
 const $=id=>document.getElementById(id);
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const pad=n=>String(n).padStart(2,'0');

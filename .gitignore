@@ -19,6 +19,9 @@ video/
 storyboard/characters.json
 storyboard/frames.json
 storyboard/influencers.json
+# User accounts + sessions (auth data — NEVER commit)
+storyboard/users.json
+storyboard/sessions.json
 foxy-shots/
 foxy-results.txt
 continue_full.log

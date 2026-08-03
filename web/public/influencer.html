@@ -154,6 +154,8 @@
     <div class="pill" id="phasepill"><div class="dot"></div><span id="phasetxt">IDLE</span></div>
     <a href="/trends" class="back-btn" style="background:linear-gradient(135deg,rgba(251,146,60,.2),rgba(239,68,68,.2));border-color:var(--orange);color:var(--orange);font-weight:600">🔥 Trends</a>
     <a href="/" class="back-btn">← Storyboard</a>
+    <span id="authName" style="display:none;font-size:11px;color:var(--amber2,#fbbf24)">👤 </span>
+    <button id="btnLogout" style="display:none;font-size:11px;padding:5px 12px" onclick="logout()">Log out</button>
   </div>
 </header>
 <div id="gprog"><div></div></div>
@@ -375,6 +377,21 @@
 </div>
 
 <script>
+// Auth guard — redirect to /login if not authenticated; show user + logout when logged in.
+(async function(){
+  try{
+    const r=await fetch('/api/auth/me',{cache:'no-store'});
+    if(r.status===401){location.replace('/login?next='+encodeURIComponent(location.pathname+location.search));return;}
+    const j=await r.json();
+    if(j.user){
+      document.getElementById('authName').style.display='';
+      document.getElementById('authName').textContent='👤 '+(j.user.name||j.user.email);
+      document.getElementById('btnLogout').style.display='';
+    }
+  }catch(e){location.replace('/login?next='+encodeURIComponent(location.pathname));}
+})();
+function logout(){fetch('/api/auth/logout',{method:'POST'}).then(()=>location.replace('/login'));}
+
 const $=id=>document.getElementById(id);
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 let CUR=null; // current influencer object

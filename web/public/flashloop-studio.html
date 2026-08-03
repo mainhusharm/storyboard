@@ -69,6 +69,8 @@
   <div class="right">
     <a href="/trends" class="back-btn">← Trends</a>
     <a href="/" class="back-btn">🎬 Storyboard</a>
+    <span id="authName" style="display:none;font-size:11px;color:#fbbf24">👤 </span>
+    <button id="btnLogout" style="display:none;font-size:11px;padding:5px 12px" onclick="logout()">Log out</button>
   </div>
 </header>
 
@@ -189,6 +191,21 @@
 <div id="toast" class="toast">Copied to clipboard!</div>
 
 <script>
+// Auth guard — redirect to /login if not authenticated; show user + logout when logged in.
+(async function(){
+  try{
+    const r=await fetch('/api/auth/me',{cache:'no-store'});
+    if(r.status===401){location.replace('/login?next='+encodeURIComponent(location.pathname+location.search));return;}
+    const j=await r.json();
+    if(j.user){
+      document.getElementById('authName').style.display='';
+      document.getElementById('authName').textContent='👤 '+(j.user.name||j.user.email);
+      document.getElementById('btnLogout').style.display='';
+    }
+  }catch(e){location.replace('/login?next='+encodeURIComponent(location.pathname));}
+})();
+function logout(){fetch('/api/auth/logout',{method:'POST'}).then(()=>location.replace('/login'));}
+
 const $ = id => document.getElementById(id);
 const params = new URLSearchParams(location.search);
 

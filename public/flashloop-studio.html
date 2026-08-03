@@ -69,6 +69,8 @@
   <div class="right">
     <a href="/trends" class="back-btn">← Trends</a>
     <a href="/" class="back-btn">🎬 Storyboard</a>
+    <span id="authName" style="display:none;font-size:11px;color:#fbbf24">👤 </span>
+    <button id="btnLogout" style="display:none;font-size:11px;padding:5px 12px" onclick="logout()">Log out</button>
   </div>
 </header>
 
@@ -171,7 +173,7 @@
           <option value="nano-banana">Nano Banana</option>
           <option value="gpt-image-2">GPT Image 2</option>
         </select>
-        <div class="hint">Choose which PaxSenix img2img model to use. Seedream 5 is most reliable. Nano Banana models may be slower.</div>
+        <div class="hint">Choose which PaxSenix img2img model to use. Falls back to Seedream 5 if the selected model fails.</div>
       </div>
       <div id="i2iLoading" style="display:none;align-items:center;gap:10px;color:var(--dim);font-size:13px;margin:12px 0"><div class="spinner"></div> Generating image via PaxSenix i2i… This may take 1-3 minutes.</div>
       <div id="i2iError" style="display:none;background:rgba(248,113,113,.12);border:1px solid rgba(248,113,113,.3);color:var(--red);padding:12px 14px;border-radius:10px;font-size:13px;margin:12px 0"></div>
@@ -189,6 +191,21 @@
 <div id="toast" class="toast">Copied to clipboard!</div>
 
 <script>
+// Auth guard — redirect to /login if not authenticated; show user + logout when logged in.
+(async function(){
+  try{
+    const r=await fetch('/api/auth/me',{cache:'no-store'});
+    if(r.status===401){location.replace('/login?next='+encodeURIComponent(location.pathname+location.search));return;}
+    const j=await r.json();
+    if(j.user){
+      document.getElementById('authName').style.display='';
+      document.getElementById('authName').textContent='👤 '+(j.user.name||j.user.email);
+      document.getElementById('btnLogout').style.display='';
+    }
+  }catch(e){location.replace('/login?next='+encodeURIComponent(location.pathname));}
+})();
+function logout(){fetch('/api/auth/logout',{method:'POST'}).then(()=>location.replace('/login'));}
+
 const $ = id => document.getElementById(id);
 const params = new URLSearchParams(location.search);
 

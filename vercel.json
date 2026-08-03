@@ -1,6 +1,10 @@
 {
   "version": 2,
   "rewrites": [
+    { "source": "/", "destination": "/home.html" },
+    { "source": "/login", "destination": "/login.html" },
+    { "source": "/signup", "destination": "/login.html" },
+    { "source": "/storyboard", "destination": "/index.html" },
     { "source": "/influencer", "destination": "/influencer.html" },
     { "source": "/trends", "destination": "/trends.html" },
     { "source": "/flashloop-studio", "destination": "/flashloop-studio.html" },

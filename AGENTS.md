@@ -83,6 +83,24 @@ on `api.aquadevs.com`):
 
 Async job: submit → `{jobId, task_url}` → poll task_url (202 pending, 200 done) → `{url}` on tmpfiles.paxsenix.org.
 
+## Authentication (login / signup)
+
+Zero-framework auth built into `web/server.js` — scrypt password hashing + random session tokens.
+
+- **Users/sessions** live in Postgres when `DATABASE_URL` is set (Vercel Postgres / Neon via the
+  `pg` driver — auto-creates `sb_users` + `sb_sessions` tables). Otherwise a local JSON fallback
+  (`storyboard/users.json` + `storyboard/sessions.json`, gitignored) keeps local dev zero-setup.
+- **Pages**: `/` → `home.html` (portal to all tools), `/login` (login + signup), `/storyboard` →
+  `index.html`, plus `/influencer`, `/trends`, `/flashloop-studio`. All tool pages are protected.
+- **Local server**: tool pages are gated server-side (`requirePageAuth` → 302 to `/login`), and
+  every `/api/*` route (except `/api/health`, `/api/models`, `/api/status`, `/api/auth/*`) requires
+  a valid session via `requireApiAuth`.
+- **Vercel**: pages are served statically, so protection is client-side — each tool page checks
+  `/api/auth/me` on load and redirects to `/login?next=...` when 401; the API stays server-gated.
+- **Endpoints**: `POST /api/auth/signup`, `POST /api/auth/login`, `POST /api/auth/logout`,
+  `GET /api/auth/me` (cookie or `Authorization: Bearer <token>`), `PUT /api/auth/user` (rename).
+- Session cookie: `sb_session` (HttpOnly, SameSite=Lax, 30-day TTL; `Secure` on Vercel).
+
 ## Running
 
 ### Website (primary)

@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Storyboard Studio — Home</title>
+<style>
+  :root {
+    --bg:#08090c;--bg2:#0d0f14;--panel:#11141b;--panel2:#161a23;--panel3:#1c2130;
+    --line:#222836;--line2:#2e3650;
+    --txt:#eef1f6;--dim:#8a94a8;--faint:#556074;
+    --amber:#f0a32e;--amber2:#ffc45e;--teal:#2dd4bf;--red:#f87171;--violet:#8b7cf6;--pink:#f472b6;--orange:#fb923c;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--txt);font:14px/1.55 Inter,system-ui,sans-serif;min-height:100vh;
+    background-image:radial-gradient(900px 400px at 85% -10%,rgba(240,163,46,.07),transparent 60%),radial-gradient(700px 500px at -10% 110%,rgba(45,212,191,.06),transparent 60%)}
+
+  header{display:flex;align-items:center;gap:14px;padding:0 24px;height:58px;background:rgba(8,9,12,.88);backdrop-filter:blur(10px);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:50}
+  .logo{width:28px;height:28px;border-radius:7px;flex:none;background:linear-gradient(135deg,var(--amber),#c97b12);display:flex;align-items:center;justify-content:center;font-weight:800;font-size:14px;color:#100c04;box-shadow:0 0 16px rgba(240,163,46,.3)}
+  header h1{font-size:16px;letter-spacing:3px;font-weight:700}
+  header h1 b{color:var(--amber)}
+  header .right{margin-left:auto;display:flex;align-items:center;gap:8px}
+  .pill{display:flex;align-items:center;gap:6px;font-size:11px;background:var(--panel2);border:1px solid var(--line);border-radius:99px;padding:5px 12px;color:var(--dim)}
+  .pill .dot{width:6px;height:6px;border-radius:50%;background:var(--teal);box-shadow:0 0 6px var(--teal)}
+  .userpill{color:var(--amber2)}
+  button{border:1px solid var(--line2);background:var(--panel3);color:var(--txt);font:600 11px Inter;padding:6px 12px;border-radius:8px;cursor:pointer;transition:.15s}
+  button:hover{transform:translateY(-1px);border-color:var(--amber)}
+  a.logout{font-size:11px;color:var(--faint);text-decoration:none}
+  a.logout:hover{color:var(--red)}
+
+  .wrap{max-width:1100px;margin:0 auto;padding:48px 24px}
+  .hero{text-align:center;margin-bottom:44px}
+  .hero .badge{display:inline-block;font-size:10px;letter-spacing:2px;color:var(--amber2);border:1px solid rgba(240,163,46,.35);background:rgba(240,163,46,.08);border-radius:99px;padding:4px 14px;margin-bottom:16px}
+  .hero h2{font-size:38px;letter-spacing:2px;font-weight:800;margin-bottom:12px}
+  .hero h2 b{color:var(--amber)}
+  .hero p{color:var(--dim);font-size:15px;max-width:560px;margin:0 auto}
+
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px}
+  .card{background:linear-gradient(180deg,var(--panel),var(--bg2));border:1px solid var(--line2);border-radius:14px;padding:24px;text-decoration:none;color:var(--txt);display:flex;flex-direction:column;gap:10px;transition:transform .18s,border-color .18s,box-shadow .18s}
+  .card:hover{transform:translateY(-3px);border-color:var(--amber);box-shadow:0 14px 34px rgba(0,0,0,.45)}
+  .card .ico{font-size:26px}
+  .card h3{font-size:15px;letter-spacing:1.5px}
+  .card h3 b{color:var(--amber)}
+  .card p{font-size:12px;color:var(--faint);line-height:1.6;flex:1}
+  .card .go{font-size:11px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;color:var(--teal)}
+  .card:hover .go{color:var(--amber2)}
+
+  .c1:hover{border-color:var(--amber)}.c1 h3 b{color:var(--amber)}
+  .c2:hover{border-color:var(--orange)}.c2 h3 b{color:var(--orange)}
+  .c3:hover{border-color:var(--pink)}.c3 h3 b{color:var(--pink)}
+  .c4:hover{border-color:var(--violet)}.c4 h3 b{color:var(--violet)}
+
+  .foot{text-align:center;margin-top:44px;color:var(--faint);font-size:11px}
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">S</div>
+  <div><h1>STORYBOARD <b>STUDIO</b></h1></div>
+  <div class="right">
+    <div class="pill"><span class="dot"></span><span id="online">LIVE</span></div>
+    <div class="pill userpill" id="userpill" style="display:none">👤 <span id="username"></span></div>
+    <button id="btnLogout" style="display:none">Log out</button>
+  </div>
+</header>
+
+<div class="wrap">
+  <div class="hero">
+    <div class="badge">AI CREATIVE SUITE</div>
+    <h2>YOUR CREATIVE <b>STUDIO</b></h2>
+    <p>Scripts into cinematic films, viral trend discovery, AI influencers and format prompt engineering — all in one place.</p>
+  </div>
+
+  <div class="grid">
+    <a class="card c1" href="/storyboard">
+      <div class="ico">🎬</div>
+      <h3>STORYBOARD <b>STUDIO</b></h3>
+      <p>Paste a script and get a full cinematic storyboard — locked characters, frame images, narrated videos and a final film.</p>
+      <span class="go">Open →</span>
+    </a>
+    <a class="card c2" href="/trends">
+      <div class="ico">🔥</div>
+      <h3>TRENDS <b>NOW</b></h3>
+      <p>Live trending short-form content across TikTok, YouTube Shorts, Flashloop formats and SJinn prompt templates.</p>
+      <span class="go">Open →</span>
+    </a>
+    <a class="card c3" href="/influencer">
+      <div class="ico">✨</div>
+      <h3>AI INFLUENCER <b>STUDIO</b></h3>
+      <p>Define a persona, generate reference photos, and create photos, images and videos of your own AI influencer.</p>
+      <span class="go">Open →</span>
+    </a>
+    <a class="card c4" href="/flashloop-studio">
+      <div class="ico">⚡</div>
+      <h3>FLASHLOOP <b>STUDIO</b></h3>
+      <p>Turn viral AI format trends into detailed, production-ready image and video prompts in seconds.</p>
+      <span class="go">Open →</span>
+    </a>
+  </div>
+
+  <div class="foot">Storyboard Studio · AI creative suite</div>
+</div>
+
+<script>
+const $=id=>document.getElementById(id);
+async function init(){
+  const r=await fetch('/api/auth/me',{cache:'no-store'});
+  if(r.status===401){location.replace('/login?next=/');return;}
+  const j=await r.json();
+  if(j.user){
+    $('userpill').style.display='';
+    $('username').textContent=j.user.name||j.user.email;
+    $('btnLogout').style.display='';
+    $('online').textContent='LOGGED IN';
+  }
+}
+$('btnLogout').onclick=async()=>{
+  await fetch('/api/auth/logout',{method:'POST'});
+  location.replace('/login');
+};
+init();
+</script>
+</body>
+</html>

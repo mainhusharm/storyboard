@@ -4,6 +4,7 @@ const http = require('http');
 const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
+const crypto = require('crypto');
 const { execFile } = require('child_process');
 const { URL } = require('url');
 
@@ -2423,6 +2424,187 @@ async function generateInfluencerVideo(infl, contentId, ratio, videoDuration = 6
 
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.png': 'image/png', '.jpg': 'image/jpeg', '.mp4': 'video/mp4', '.mp3': 'audio/mpeg', '.json': 'application/json' };
 function sendJson(res, code, obj) { res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(obj)); }
+
+// ================================ AUTH (login / signup) ================================
+// Zero-framework auth: scrypt password hashing + random session tokens.
+// Users/sessions live in Postgres when DATABASE_URL is set (Vercel Postgres / Neon),
+// otherwise a local JSON file fallback keeps local dev working with zero setup.
+const AUTH_COOKIE = 'sb_session';
+const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+const USERS_FILE = path.join(STORYBOARD_DIR, 'users.json');
+const SESSIONS_FILE = path.join(STORYBOARD_DIR, 'sessions.json');
+
+let authPool = null;      // pg.Pool when DATABASE_URL present
+let authMode = 'file';    // 'pg' | 'file'
+let authInitPromise = null;
+
+async function initAuthStore() {
+  if (authInitPromise) return authInitPromise;
+  authInitPromise = (async () => {
+    const DATABASE_URL = process.env.DATABASE_URL || '';
+    if (DATABASE_URL) {
+      try {
+        const { Pool } = require('pg');
+        authPool = new Pool({ connectionString: DATABASE_URL, ssl: { rejectUnauthorized: false } });
+        // Lazy-safe: verify connectivity + create tables
+        await authPool.query(`CREATE TABLE IF NOT EXISTS sb_users (
+          id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, name TEXT NOT NULL,
+          pass_hash TEXT NOT NULL, created_at BIGINT NOT NULL
+        )`);
+        await authPool.query(`CREATE TABLE IF NOT EXISTS sb_sessions (
+          token TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires_at BIGINT NOT NULL
+        )`);
+        authMode = 'pg';
+        console.log('[Auth] Postgres store ready (DATABASE_URL)');
+      } catch (e) {
+        console.log('[Auth] Postgres unavailable, using file fallback: ' + e.message);
+        authPool = null; authMode = 'file';
+      }
+    } else {
+      authMode = 'file';
+      console.log('[Auth] file store (no DATABASE_URL)');
+    }
+    await fsp.mkdir(STORYBOARD_DIR, { recursive: true }).catch(() => {});
+  })();
+  return authInitPromise;
+}
+
+async function hashPassword(password, salt = crypto.randomBytes(16).toString('hex')) {
+  const key = await new Promise((resolve, reject) =>
+    crypto.scrypt(password, salt, 64, (e, k) => e ? reject(e) : resolve(k)));
+  return salt + ':' + key.toString('hex');
+}
+
+async function verifyPassword(password, stored) {
+  const [salt, hex] = String(stored || '').split(':');
+  if (!salt || !hex) return false;
+  const storedBuf = Buffer.from(hex, 'hex');
+  const key = await new Promise((resolve) =>
+    crypto.scrypt(password, salt, 64, (e, k) => resolve(e ? null : k)));
+  return key && key.length === storedBuf.length && crypto.timingSafeEqual(key, storedBuf);
+}
+
+async function findUserByEmail(email) {
+  await initAuthStore();
+  const e = String(email || '').toLowerCase().trim();
+  if (authMode === 'pg') {
+    const r = await authPool.query('SELECT * FROM sb_users WHERE email = $1', [e]);
+    return r.rows[0] || null;
+  }
+  const users = await readJson(USERS_FILE) || [];
+  return users.find(u => u.email === e) || null;
+}
+
+async function createUser(email, name, password) {
+  await initAuthStore();
+  const e = String(email || '').toLowerCase().trim();
+  const user = {
+    id: crypto.randomBytes(16).toString('hex'),
+    email: e, name: String(name || '').trim(),
+    pass_hash: await hashPassword(password),
+    created_at: Date.now()
+  };
+  if (authMode === 'pg') {
+    await authPool.query('INSERT INTO sb_users (id, email, name, pass_hash, created_at) VALUES ($1,$2,$3,$4,$5)',
+      [user.id, e, user.name, user.pass_hash, user.created_at]);
+  } else {
+    const users = await readJson(USERS_FILE) || [];
+    users.push(user);
+    await writeJson(USERS_FILE, users);
+  }
+  return user;
+}
+
+async function createSession(userId) {
+  await initAuthStore();
+  const token = crypto.randomBytes(32).toString('hex');
+  const expiresAt = Date.now() + SESSION_TTL_MS;
+  // Opportunistically prune expired sessions so the store never grows unbounded.
+  try {
+    if (authMode === 'pg') await authPool.query('DELETE FROM sb_sessions WHERE expires_at < $1', [Date.now()]);
+    else {
+      const sessions = await readJson(SESSIONS_FILE) || [];
+      if (sessions.some(s => s.expires_at <= Date.now())) {
+        await writeJson(SESSIONS_FILE, sessions.filter(s => s.expires_at > Date.now()));
+      }
+    }
+  } catch {}
+  if (authMode === 'pg') {
+    await authPool.query('INSERT INTO sb_sessions (token, user_id, expires_at) VALUES ($1,$2,$3)', [token, userId, expiresAt]);
+  } else {
+    const sessions = await readJson(SESSIONS_FILE) || [];
+    sessions.push({ token, user_id: userId, expires_at: expiresAt });
+    await writeJson(SESSIONS_FILE, sessions);
+  }
+  return token;
+}
+
+async function getUserBySessionToken(token) {
+  if (!token) return null;
+  await initAuthStore();
+  if (authMode === 'pg') {
+    const r = await authPool.query(
+      'SELECT u.id, u.email, u.name FROM sb_sessions s JOIN sb_users u ON u.id = s.user_id WHERE s.token = $1 AND s.expires_at > $2',
+      [token, Date.now()]);
+    return r.rows[0] || null;
+  }
+  const sessions = await readJson(SESSIONS_FILE) || [];
+  const s = sessions.find(x => x.token === token && x.expires_at > Date.now());
+  if (!s) return null;
+  const users = await readJson(USERS_FILE) || [];
+  const u = users.find(x => x.id === s.user_id);
+  return u ? { id: u.id, email: u.email, name: u.name } : null;
+}
+
+async function deleteSession(token) {
+  if (!token) return;
+  if (authMode === 'pg') {
+    await authPool.query('DELETE FROM sb_sessions WHERE token = $1', [token]).catch(() => {});
+  } else {
+    const sessions = await readJson(SESSIONS_FILE) || [];
+    await writeJson(SESSIONS_FILE, sessions.filter(s => s.token !== token));
+  }
+}
+
+function readCookie(req, name) {
+  const hdr = req.headers.cookie || '';
+  for (const part of hdr.split(';')) {
+    const i = part.indexOf('=');
+    if (i > -1 && part.slice(0, i).trim() === name) return decodeURIComponent(part.slice(i + 1).trim());
+  }
+  return null;
+}
+
+function setAuthCookie(res, token) {
+  const secure = IS_VERCEL ? '; Secure' : '';
+  res.setHeader('Set-Cookie', `${AUTH_COOKIE}=${token}; HttpOnly; Path=/; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}; SameSite=Lax${secure}`);
+}
+
+function clearAuthCookie(res) {
+  res.setHeader('Set-Cookie', `${AUTH_COOKIE}=; HttpOnly; Path=/; Max-Age=0; SameSite=Lax`);
+}
+
+// Redirect a page visitor to /login if they have no valid session (used for protected pages locally).
+async function requirePageAuth(req, res) {
+  const user = await getUserBySessionToken(readCookie(req, AUTH_COOKIE));
+  if (!user) {
+    res.writeHead(302, { Location: '/login?next=' + encodeURIComponent((req.url || '/').split('?')[0]) });
+    res.end();
+    return null;
+  }
+  return user;
+}
+
+// Reject API calls without a valid session (returns 401).
+async function requireApiAuth(req, res) {
+  const user = await getUserBySessionToken(readCookie(req, AUTH_COOKIE));
+  if (!user) { sendJson(res, 401, { error: 'auth required' }); return null; }
+  return user;
+}
+
+// Auto-login when the client posts its session token (SPA sends Authorization header) —
+// kept tiny so API clients can also authenticate with `Authorization: Bearer <token>`.
+function bearerToken(req) { return (req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim() || null; }
 function readBody(req) { return new Promise((resolve, reject) => { let s = ''; req.on('data', c => { s += c; if (s.length > 15e6) req.destroy(); }); req.on('end', () => { try { resolve(s ? JSON.parse(s) : {}); } catch (e) { reject(e); } }); req.on('error', reject); }); }
 async function runJobOnVercel(res, jobFn, successData = { ok: true }) {
   try { await jobFn(); return sendJson(res, 200, successData); }
@@ -2494,6 +2676,66 @@ const requestHandler = async (req, res) => {
     if (p === '/api/status') return sendJson(res, 200, job);
     if (p === '/api/health' || p === '/api/ping') return sendJson(res, 200, { ok: true, vercel: IS_VERCEL, path: p, url: rawUrl, hasKey: !!API_KEY });
     if (p === '/api/models') return sendJson(res, 200, { chat: MODELS, image: IMAGE_MODELS, video: VIDEO_MODELS, voices: VOICES, languages: LANGUAGES, narrationModes: NARRATION_MODES, styles: STYLE_KEYS.map(k => ({ key: k, label: STYLES[k].label })) });
+
+    // --- AUTH ---
+    if (p === '/api/auth/me' && req.method === 'GET') {
+      const user = await getUserBySessionToken(readCookie(req, AUTH_COOKIE)) || (await getUserBySessionToken(bearerToken(req)));
+      if (!user) return sendJson(res, 401, { error: 'not logged in' });
+      return sendJson(res, 200, { user });
+    }
+    if (p === '/api/auth/signup' && req.method === 'POST') {
+      const b = await readBody(req).catch(() => ({}));
+      const email = String(b.email || '').toLowerCase().trim();
+      const name = String(b.name || '').trim();
+      const password = String(b.password || '');
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return sendJson(res, 400, { error: 'enter a valid email' });
+      if (name.length < 2) return sendJson(res, 400, { error: 'enter your name' });
+      if (password.length < 6) return sendJson(res, 400, { error: 'password must be at least 6 characters' });
+      try {
+        if (await findUserByEmail(email)) return sendJson(res, 409, { error: 'an account with this email already exists — try logging in' });
+        const user = await createUser(email, name, password);
+        const token = await createSession(user.id);
+        setAuthCookie(res, token);
+        return sendJson(res, 200, { ok: true, user: { id: user.id, email: user.email, name: user.name } });
+      } catch (e) { return sendJson(res, 500, { error: 'signup failed: ' + (e.message || e) }); }
+    }
+    if (p === '/api/auth/login' && req.method === 'POST') {
+      const b = await readBody(req).catch(() => ({}));
+      const email = String(b.email || '').toLowerCase().trim();
+      const password = String(b.password || '');
+      const user = await findUserByEmail(email);
+      if (!user || !(await verifyPassword(password, user.pass_hash))) return sendJson(res, 401, { error: 'invalid email or password' });
+      const token = await createSession(user.id);
+      setAuthCookie(res, token);
+      return sendJson(res, 200, { ok: true, user: { id: user.id, email: user.email, name: user.name } });
+    }
+    if (p === '/api/auth/logout' && req.method === 'POST') {
+      const token = readCookie(req, AUTH_COOKIE) || bearerToken(req);
+      await deleteSession(token);
+      clearAuthCookie(res);
+      return sendJson(res, 200, { ok: true });
+    }
+    if (p === '/api/auth/user' && req.method === 'PUT') {
+      const user = await requireApiAuth(req, res);
+      if (!user) return;
+      const b = await readBody(req).catch(() => ({}));
+      const name = String(b.name || '').trim();
+      if (name.length < 2) return sendJson(res, 400, { error: 'name too short' });
+      if (authMode === 'pg') await authPool.query('UPDATE sb_users SET name = $1 WHERE id = $2', [name, user.id]);
+      else {
+        const users = await readJson(USERS_FILE) || [];
+        const u = users.find(x => x.id === user.id); if (u) u.name = name;
+        await writeJson(USERS_FILE, users);
+      }
+      return sendJson(res, 200, { ok: true, user: { id: user.id, email: user.email, name } });
+    }
+
+    // Gate the rest of the API behind auth (all /api/* except auth + public endpoints above)
+    if (p.startsWith('/api/') && req.method !== 'OPTIONS') {
+      const user = await requireApiAuth(req, res);
+      if (!user) return;
+      req.user = user;
+    }
 
     if (p === '/api/characters') {
       const chars = await readJson(CHARS_JSON) || [];
@@ -4292,11 +4534,20 @@ ${infl.description || '(no description - describe a beautiful confident influenc
     let filePath;
     if (p.startsWith('/frames/')) filePath = path.join(FRAMES_DIR, decodeURIComponent(p.slice('/frames/'.length)));
     else if (p.startsWith('/video/')) filePath = path.join(VIDEO_DIR, decodeURIComponent(p.slice('/video/'.length)));
-    else if (p === '/') filePath = path.join(PUBLIC, 'index.html');
+    else if (p === '/' || p === '/home') filePath = path.join(PUBLIC, 'home.html');
+    else if (p === '/login' || p === '/signup') filePath = path.join(PUBLIC, 'login.html');
+    else if (p === '/storyboard' || p === '/index') filePath = path.join(PUBLIC, 'index.html');
     else if (p === '/influencer') filePath = path.join(PUBLIC, 'influencer.html');
     else if (p === '/trends') filePath = path.join(PUBLIC, 'trends.html');
     else if (p === '/flashloop-studio' || /^\/effects\/[^/]+$/.test(p)) filePath = path.join(PUBLIC, 'flashloop-studio.html');
     else filePath = path.join(PUBLIC, path.normalize(p).replace(/^([/\\])+/, ''));
+
+    // Protect tool pages (local server): require a valid session, redirect to /login.
+    // On Vercel the static pages are gated client-side via /api/auth/me instead.
+    if (!IS_VERCEL && (p === '/' || p === '/home' || p === '/index' || p === '/storyboard' || p === '/influencer' || p === '/trends' || p === '/flashloop-studio' || /^\/effects\/[^/]+$/.test(p))) {
+      const pageUser = await requirePageAuth(req, res);
+      if (!pageUser) return;
+    }
 
     if (!filePath.startsWith(FRAMES_DIR) && !filePath.startsWith(VIDEO_DIR) && !filePath.startsWith(PUBLIC)) {
       res.writeHead(403); return res.end('forbidden');
