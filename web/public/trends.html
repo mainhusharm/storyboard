@@ -87,6 +87,11 @@
   <div class="toolbar">
     <input id="searchInput" placeholder="Search trending content (e.g. anime edits, ai girl, ootd...)...">
     <button id="btnSearch">🔍 Search</button>
+    <select id="freshDays" title="Freshness window for live trends" aria-label="Freshness window">
+      <option value="3">🕒 Last 3 days</option>
+      <option value="7" selected>🕒 Last 7 days</option>
+      <option value="14">🕒 Last 14 days</option>
+    </select>
     <button id="btnRefresh" style="background:linear-gradient(135deg,rgba(251,146,60,.25),rgba(239,68,68,.25));border-color:var(--orange)">↻ Refresh</button>
     <span class="status"><span class="dot"></span><span id="lastUpdate">Live</span></span>
   </div>
@@ -120,6 +125,10 @@ let CURR_CAT='trending';
 let TREND_VIDEOS=[];
 const urlParams=new URLSearchParams(location.search);
 const sourceFilter=urlParams.get('source');
+// Freshness window (days) for live trend discovery — persisted so the choice sticks
+const FRESH_DAYS=['3','7','14'];
+let freshDays=localStorage.getItem('freshDays');
+if(!FRESH_DAYS.includes(freshDays))freshDays='7';
 
 function fmtNum(n){if(!n&&n!==0)return'—';if(n>=1e6)return(n/1e6).toFixed(1)+'M';if(n>=1e3)return(n/1e3).toFixed(1)+'K';return String(n);}
 
@@ -179,12 +188,12 @@ async function loadTrends(force=false){
   $('grid').innerHTML='<div class="loading">⏳ Loading live trending '+CURR_CAT+' content...</div>';
   $('liveTerms').style.display='none';
   try{
-    const url='/api/trends?category='+encodeURIComponent(CURR_CAT)+'&max=20'+(force?'&refresh=1':'')+'&_='+Date.now();
+    const url='/api/trends?category='+encodeURIComponent(CURR_CAT)+'&max=20&days='+freshDays+(force?'&refresh=1':'')+'&_='+Date.now();
     const r=await fetch(url, {cache:'no-store'});
     const t=await r.text();
     let j; try{j=JSON.parse(t)}catch(e){throw new Error('API '+r.status+': '+(t||'').slice(0,120))}
     TREND_VIDEOS=j.videos||[];
-    $('lastUpdate').textContent=(j.tavilyConnected?'🔵 Tavily · ':'')+(j.cached?'cached':'live · just now');
+    $('lastUpdate').textContent=(j.tavilyConnected?'🔵 Tavily · ':'')+(j.freshDays?'last '+j.freshDays+'d · ':'')+(j.cached?'cached':'live · just now');
     if(j.liveTerms&&j.liveTerms.length){
       $('liveTerms').style.display='';
       $('liveTerms').innerHTML='<b>🔥 Live trending right now:</b> '+j.liveTerms.slice(0,5).map(escapeHtml).join(' · ');
@@ -202,7 +211,7 @@ async function loadTrends(force=false){
 async function doSearch(q){
   $('grid').innerHTML='<div class="loading">🔍 Searching "'+escapeHtml(q)+'" across YouTube and TikTok...</div>';
   try{
-    const r=await fetch('/api/trends?category='+encodeURIComponent(CURR_CAT)+'&q='+encodeURIComponent(q)+'&max=20&refresh=1&_='+Date.now(), {cache:'no-store'});
+    const r=await fetch('/api/trends?category='+encodeURIComponent(CURR_CAT)+'&q='+encodeURIComponent(q)+'&max=20&days='+freshDays+'&refresh=1&_='+Date.now(), {cache:'no-store'});
     const j=await r.json();
     const allVideos=j.videos||[];
     const filtered=allVideos.filter(v=>{
@@ -226,6 +235,8 @@ $('btnSearch').onclick=()=>{
 };
 $('searchInput').addEventListener('keypress',e=>{if(e.key==='Enter')$('btnSearch').click();});
 $('btnRefresh').onclick=()=>loadTrends(true);
+$('freshDays').onchange=e=>{freshDays=e.target.value;localStorage.setItem('freshDays',freshDays);loadTrends(true);};
+$('freshDays').value=freshDays;
 
 renderCats();
 if(sourceFilter==='flashloop'){

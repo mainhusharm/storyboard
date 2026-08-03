@@ -43,39 +43,67 @@ if (!IS_VERCEL) { try { YOUTUBE_API_KEY = YOUTUBE_API_KEY || fs.readFileSync(pat
 if (TAVILY_API_KEY) console.log('[Tavily] API key loaded — live trend discovery enabled');
 else console.log('[Tavily] no API key found — live trend terms will be skipped (yt-dlp + TikWM fallbacks still serve videos)');
 
-// Tavily search: general web search used for live trend discovery (replaces TrendsMCP).
-async function tavilySearch(query, limit = 5) {
+// Tavily search: fresh-first web search for live trend discovery (replaces TrendsMCP).
+// Freshness fix: default to `topic: 'news'` with a `days` recency window so we get
+// newly-published articles instead of evergreen listicles. Falls back to `general`
+// web search when news returns nothing (niche categories aren't always news-covered).
+async function tavilySearch(query, limit = 5, opts = {}) {
   if (!TAVILY_API_KEY) {
     console.log('[Tavily] TAVILY_API_KEY is not set, skipping live trend lookup');
     return { answer: '', results: [] };
   }
   console.log('[Tavily] searching:', query);
-  try {
-    const res = await fetch(`${TAVILY_API}/search`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+  const days = opts.days || 7;
+  const topics = opts.topic ? [opts.topic] : ['news', 'general']; // news first = freshest
+  for (const topic of topics) {
+    try {
+      const body = {
         api_key: TAVILY_API_KEY,
         query,
         search_depth: 'basic',
+        topic,
         include_answer: true,
         max_results: limit
-      }),
-      signal: AbortSignal.timeout(VERCEL_TIMEOUT)
-    });
-    const j = await res.json().catch(() => ({}));
-    if (!res.ok) { console.log('[Tavily] HTTP error:', res.status, j); logLine('Tavily error: ' + (j.error || res.status)); return { answer: '', results: [] }; }
-    console.log('[Tavily] got response, answer length:', (j.answer || '').length, 'results:', (j.results || []).length);
-    return j || { answer: '', results: [] };
-  } catch (e) { logLine('Tavily search failed: ' + e.message); }
+      };
+      if (topic === 'news') body.days = days; // news respects the days window; general ignores it
+      const res = await fetch(`${TAVILY_API}/search`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(VERCEL_TIMEOUT)
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) { console.log('[Tavily] HTTP error:', res.status, j); logLine('Tavily error: ' + (j.error || res.status)); continue; }
+      // Belt-and-braces: for news, drop any dated result older than the window
+      // (undated ones are kept). The general fallback keeps everything so niche
+      // categories with sparse fresh coverage can still yield trend terms.
+      const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+      const results = (j.results || []).filter(r => {
+        if (topic !== 'news') return true;
+        const pd = r.published_date || r.publishedDate;
+        if (!pd) return true;
+        const t = Date.parse(pd);
+        return isNaN(t) || t >= cutoff;
+      });
+      if (results.length) {
+        j.results = results;
+        console.log(`[Tavily] got response (${topic}, last ${days}d), answer length:`, (j.answer || '').length, 'results:', results.length);
+        return j;
+      }
+      console.log(`[Tavily] ${topic} returned no fresh results, trying next topic`);
+    } catch (e) { logLine('Tavily search failed: ' + e.message); }
+  }
   return { answer: '', results: [] };
 }
 
 // Use Tavily to discover current trending terms for a category.
 // Returns a list of short trend phrases/hashtags suitable for video search.
-async function tavilyTrendTerms(category, limit = 5) {
-  const query = `top trending ${category} TikTok hashtags and YouTube Shorts trends ${new Date().getFullYear()}`;
-  const data = await tavilySearch(query, 5);
+// Use Tavily to discover current trending terms for a category.
+// Returns a list of short trend phrases/hashtags suitable for video search.
+// `days` controls the recency window passed to Tavily (news topic only).
+async function tavilyTrendTerms(category, limit = 5, days = 7) {
+  const query = `latest top trending ${category} TikTok hashtags and YouTube Shorts trends this week ${new Date().getFullYear()}`;
+  const data = await tavilySearch(query, Math.min(Math.max(limit, 5), 10), { days });
   const texts = [];
   if (data.answer) texts.push(data.answer);
   for (const r of data.results || []) {
@@ -99,20 +127,39 @@ async function tavilyTrendTerms(category, limit = 5) {
   for (const p of phrases) candidates.push(p.replace(/[^A-Za-z0-9 _-]/g, '').trim());
 
   // Deduplicate, normalize, and de-noise
-  const stopWords = new Set(['the', 'and', 'for', 'with', 'you', 'this', 'that', 'from', 'are', 'was', 'were', 'trending', 'trend', 'trends', 'hashtag', 'hashtags', 'youtube', 'tiktok', 'shorts', 'video', 'videos']);
+  const stopWords = new Set(['the', 'and', 'for', 'with', 'you', 'this', 'that', 'from', 'are', 'was', 'were', 'trending', 'trend', 'trends', 'hashtag', 'hashtags', 'youtube', 'tiktok', 'shorts', 'video', 'videos', 'marketing', 'agencies', 'agency', 'business', 'businesses', 'brand', 'brands', 'update', 'updates', 'instagram', 'facebook', 'twitter', 'more', 'reach', 'gain', 'popularity', 'similar', 'strategies', 'strategy', 'apply', 'applies', 'using', 'effects', 'filters', 'captions', 'music', 'property', 'index', 'name', 'names', 'guide', 'content', 'creator', 'creators', 'best', 'top', 'new', 'latest', 'now', 'today', 'week', 'month', 'year', 'people', 'users', 'their', 'they', 'have', 'has', 'had', 'been', 'will', 'would', 'can', 'could', 'get', 'got', 'go', 'going', 'make', 'makes', 'making', 'want', 'wants', 'need', 'needs', 'how', 'why', 'what', 'when', 'where', 'who', 'which', 'however', 'also', 'still', 'even', 'already', 'then', 'than', 'them', 'these', 'those', 'there', 'here', 'while', 'during', 'between', 'under', 'over', 'into', 'upon', 'again', 'once', 'much', 'many', 'some', 'any', 'every', 'all', 'both', 'each', 'few', 'most', 'other', 'others', 'such', 'only', 'just', 'very', 'really', 'actually', 'though', 'about', 'around', 'before', 'after', 'because', 'since', 'until']);
   const seen = new Set();
   const result = [];
   for (const t of candidates) {
     const key = t.toLowerCase().trim();
     const words = key.split(/\s+/).filter(Boolean);
-    if (!key || seen.has(key) || words.length > 6 || (words.length === 1 && stopWords.has(key))) continue;
+    if (!key || seen.has(key) || words.length > 6) continue;
+    // De-noise: drop HTML-ish fragments, attribute junk (e.g. "property=", "name="),
+    // pure numbers/years, and single stopwords.
+    if (/[=<>]/.test(key)) continue;
+    if (/[()\[\]{}]/.test(key)) continue;
+    if (/^\d+$/.test(key) || /\b(19|20)\d{2}\b/.test(key)) continue;
+    // Drop tokens with long digit runs (e.g. "03082026") and stray date codes
+    if (/\b[A-Za-z]*\d{3,}[A-Za-z]*\b/.test(key)) continue;
+    if (words.length === 1) {
+      if (stopWords.has(key) || key.length < 3) continue;
+    } else {
+      // Trim leading/trailing filler so "for the most current trends" -> "current trends"
+      while (words.length && stopWords.has(words[0])) words.shift();
+      while (words.length && stopWords.has(words[words.length - 1])) words.pop();
+      if (words.length === 0) continue;
+      // Multi-word phrases must contain at least one meaningful (non-stopword) token
+      const meaningful = words.filter(w => !stopWords.has(w));
+      if (meaningful.length === 0) continue;
+      key = words.join(' ');
+      if (seen.has(key)) continue;
+    }
     seen.add(key);
     result.push(key);
     if (result.length >= limit) break;
   }
   return result;
 }
-
 
 // yt-dlp search: get real SHORT-FORM video data for trending content (<= 60s)
 // Search YouTube Shorts for short-form videos only (<= 60s).
@@ -754,7 +801,7 @@ for (const d of [FRAMES_DIR, VIDEO_DIR, STORYBOARD_DIR]) fs.mkdirSync(d, { recur
 const MODELS = ['kimi-k3', 'gpt-5.6-sol', 'gpt-5.6-terra', 'claude-opus-4-8', 'qwen3.8-max', 'gemini-3.1-pro', 'kimi-2.7-code', 'glm-5.2', 'mimo-v2.5', 'claude-sonnet-4-5', 'deepseek-v3.2', 'gemini-2.5-pro'];
 const IMAGE_MODELS = ['nano-banana-pro', 'nano-banana', 'nano-banana-2', 'seedream-5', 'seedream-4', 'seedream-4.5', 'gpt-image-2'];
 const VIDEO_MODELS = [
-  { id: 'grok-video', label: 'Grok Video (fast, cinematic)' },
+  { id: 'grok-video', label: 'Grok Video (fast, cinematic; auto-fallback → Veo 3.1)' },
   { id: 'veo-3.1', label: 'Veo 3.1 (Google, high quality)' }
 ];
 const DEFAULT_VIDEO_MODEL = 'grok-video';
@@ -769,6 +816,11 @@ const TTS_VOICE_INSTRUCTIONS = {
   female: 'A warm, expressive, cinematic female narrator voice. Clear diction, natural pacing, emotional and engaging, like a professional audiobook storyteller.',
   male: 'A deep, rich, cinematic male narrator voice. Authoritative yet warm, clear diction, natural pacing, like a professional movie trailer narrator.'
 };
+// MIMO voice IDs — `mimo_default` is the Chinese default voice, so English uses
+// English-native voices instead (per MiMo docs: Chloe/Mia female, Milo/Dean male).
+const TTS_MIMO_VOICES = { female: 'Chloe', male: 'Milo' };
+// PaxSenix TTS fallback voices (verified endpoint) — proper en-US neural voices.
+const TTS_PAXSENIX_VOICES = { female: 'en-US-AriaNeural', male: 'en-US-GuyNeural' };
 const LANGUAGES = [
   { id: 'en', label: 'English', ttsCode: 'en' },
   { id: 'hi', label: 'Hindi', ttsCode: 'hi' },
@@ -1609,8 +1661,11 @@ async function generateImages(frames, imageModel, ratio, style, consistency = tr
 async function generateVideos(frames, ratio, videoModel = DEFAULT_VIDEO_MODEL) {
   const withAnim = frames.filter(f => f.animation_prompt);
   setPhase('videos', withAnim.length);
-  logLine(`video phase: ${withAnim.length} frame(s) — ${videoModel} @ ${ratio}`);
-  
+  // Auto-fallback: when grok-video is selected, frames that fail retry with Veo 3.1.
+  // Veo 3.1 takes the singular `imageUrl` param; Grok takes plural `imageUrls` (per PaxSenix swagger).
+  const modelChain = videoModel === 'grok-video' ? ['grok-video', 'veo-3.1'] : [videoModel];
+  logLine(`video phase: ${withAnim.length} frame(s) — ${modelChain.join(' → ')} @ ${ratio}`);
+
   const work = withAnim.filter(f => !fs.existsSync(videoFile(f.frame)));
   for (const f of withAnim.filter(f => fs.existsSync(videoFile(f.frame)))) { job.done++; job.ok++; }
   if (work.length === 0) { logLine('all videos exist, skipping'); job.phase = 'idle'; return; }
@@ -1622,25 +1677,25 @@ async function generateVideos(frames, ratio, videoModel = DEFAULT_VIDEO_MODEL) {
     return { f, prompt: enh };
   }));
 
-  // Submit all tasks in parallel (no delays)
-  logLine(`submitting ${enhanced.length} video tasks in parallel...`);
-  const submitted = await Promise.all(enhanced.map(async ({ f, prompt }) => {
+  // Render every frame in parallel; each frame walks the model chain until one succeeds
+  logLine(`rendering ${enhanced.length} frame videos in parallel (can take several minutes)...`);
+  await Promise.all(enhanced.map(async ({ f, prompt }) => {
     const img = f.generated_image_url;
     const mode = img ? 'image-to-video' : 'text-to-video';
-    const imgParam = img ? `&imageUrls=${encodeURIComponent(img)}` : '';
-    const q = `/ai-video/${videoModel}?prompt=${encodeURIComponent(prompt)}&ratio=${encodeURIComponent(ratio)}&type=${mode}${imgParam}`;
-    const task = await submitTask(q);
-    if (task) { logLine(`frame ${f.frame}: submitted (${mode})`); return { f, task }; }
-    else { job.failed.push(f.frame); job.done++; logLine(`frame ${f.frame}: SUBMIT FAILED`); return null; }
-  }));
-
-  // Wait for all renders in parallel
-  const results = submitted.filter(Boolean);
-  logLine(`waiting for ${results.length} video renders in parallel (can take several minutes)...`);
-  await Promise.all(results.map(async ({ f, task }) => {
-    const url = await waitTask(task, 25);
-    if (url && await download(url, videoFile(f.frame))) { job.ok++; logLine(`frame ${f.frame}: VIDEO DONE`); }
-    else { job.failed.push(f.frame); logLine(`frame ${f.frame}: VIDEO FAILED`); }
+    let done = false;
+    for (const model of modelChain) {
+      const imgKey = model === 'veo-3.1' ? 'imageUrl' : 'imageUrls';
+      const imgParam = img ? `&${imgKey}=${encodeURIComponent(img)}` : '';
+      const q = `/ai-video/${model}?prompt=${encodeURIComponent(prompt)}&ratio=${encodeURIComponent(ratio)}&type=${mode}${imgParam}`;
+      const task = await submitTask(q);
+      if (!task) { logLine(`frame ${f.frame}: ${model} SUBMIT FAILED`); if (modelChain.length > 1) logLine(`frame ${f.frame}: → falling back to next model`); continue; }
+      logLine(`frame ${f.frame}: ${model} submitted (${mode})`);
+      const url = await waitTask(task, 25);
+      if (url && await download(url, videoFile(f.frame))) { job.ok++; logLine(`frame ${f.frame}: VIDEO DONE (${model})`); done = true; break; }
+      logLine(`frame ${f.frame}: ${model} RENDER FAILED`);
+      if (modelChain.length > 1) logLine(`frame ${f.frame}: → falling back to next model`);
+    }
+    if (!done) { job.failed.push(f.frame); logLine(`frame ${f.frame}: VIDEO FAILED on all models`); }
     job.done++;
   }));
 
@@ -1676,8 +1731,12 @@ async function generateFullNarration(frames, voice = DEFAULT_VOICE, language = D
   const langObj = LANGUAGES.find(l => l.id === language);
   const langName = langObj ? langObj.label : 'English';
   const baseInstructions = TTS_VOICE_INSTRUCTIONS[voice] || TTS_VOICE_INSTRUCTIONS.female;
-  const langInstructions = language !== 'en' ? ` Speak entirely in ${langName}. Pronounce all ${langName} words naturally and fluently.` : '';
+  // ALWAYS pass an explicit language directive — the MIMO default voice is Chinese-biased
+  // and without a language cue it drifts into the wrong language even for English text.
+  const langInstructions = ` Speak entirely in ${langName}. Pronounce all ${langName} words naturally and fluently. Do not switch to any other language.`;
   const instructions = baseInstructions + langInstructions;
+  // English uses English-native MIMO voices; other languages keep the default voice.
+  const ttsVoice = language === 'en' ? (TTS_MIMO_VOICES[voice] || TTS_MIMO_VOICES.female) : 'mimo_default';
 
   // Assemble full narration script from all frames
   const fullText = withSpeech.map(f => {
@@ -1707,7 +1766,7 @@ async function generateFullNarration(frames, voice = DEFAULT_VOICE, language = D
             model: TTS_MODEL,
             input: chunks[i],
             instructions,
-            audio: { voice: 'mimo_default' }
+            audio: { voice: ttsVoice }
           }),
           signal: AbortSignal.timeout(300000)
         });
@@ -1727,12 +1786,65 @@ async function generateFullNarration(frames, voice = DEFAULT_VOICE, language = D
       }
     }
 
+    // Fallback: PaxSenix TTS (verified endpoint with explicit language + proper en-US voices).
+    // IMPORTANT: the PaxSenix /tools/tts/v2 endpoint rejects text over ~200 chars with a 404
+    // ("Failed to retrieve this content"), so long chunks are sub-split into <=180-char pieces
+    // and the resulting mp3s are concatenated into the chunk file. Pieces are hard-capped at
+    // 180 chars even when a single sentence is longer (run-on dialogue without punctuation).
+    const tryPaxSenix = async () => {
+      const pieceFiles = [];
+      const cleanup = () => { for (const pf of pieceFiles) { try { fs.unlinkSync(pf); } catch {} } };
+      try {
+        const ttsCode = langObj ? langObj.ttsCode : 'en';
+        const paxVoice = TTS_PAXSENIX_VOICES[voice] || 'en-US-AriaNeural';
+        // Sentence-aware split, then hard-slice anything still over the cap.
+        const pieces = [];
+        for (const s of splitTextIntoChunks(chunks[i], 180)) {
+          for (let k = 0; k < s.length; k += 180) pieces.push(s.slice(k, k + 180).trim());
+        }
+        logLine(`chunk ${i+1}: MIMO unavailable — falling back to PaxSenix TTS (${pieces.length} piece(s))...`);
+        for (let p = 0; p < pieces.length; p++) {
+          const paxUrl = `${API}/tools/tts/v2?text=${encodeURIComponent(pieces[p])}&language=${ttsCode}&voice=${paxVoice}`;
+          const res = await fetch(paxUrl, { headers: { Authorization: `Bearer ${API_KEY}` }, signal: AbortSignal.timeout(120000) });
+          const j = await res.json().catch(() => ({}));
+          if (!(res.ok && j.ok && j.url)) { logLine(`chunk ${i+1}: PaxSenix piece ${p+1}/${pieces.length} failed — ${JSON.stringify(j).slice(0,100)}`); cleanup(); return false; }
+          const piecePath = path.join(VIDEO_DIR, `narr_pax_${String(i + 1).padStart(2, '0')}_${String(p + 1).padStart(2, '0')}.mp3`);
+          if (await download(j.url, piecePath)) { pieceFiles.push(piecePath); logLine(`chunk ${i+1}: PaxSenix piece ${p+1}/${pieces.length} DONE`); }
+          else { logLine(`chunk ${i+1}: PaxSenix piece ${p+1} download failed`); cleanup(); return false; }
+          if (p < pieces.length - 1) await new Promise(r => setTimeout(r, 1500)); // be polite
+        }
+        // Concatenate pieces into the chunk file
+        if (pieceFiles.length === 1) {
+          fs.copyFileSync(pieceFiles[0], chunkPath);
+        } else {
+          const listPath = path.join(VIDEO_DIR, `narr_pax_${String(i + 1).padStart(2, '0')}.txt`);
+          await fsp.writeFile(listPath, pieceFiles.map(p => `file '${path.basename(p)}'`).join('\n'));
+          await new Promise((resolve) => {
+            execFile('ffmpeg', ['-y', '-f', 'concat', '-safe', '0', '-i', listPath, '-c', 'copy', chunkPath],
+              { cwd: VIDEO_DIR, timeout: 30000 }, () => { try { fs.unlinkSync(listPath); } catch {} resolve(); });
+          });
+        }
+        cleanup();
+        return fs.existsSync(chunkPath);
+      } catch (e) { logLine(`chunk ${i+1}: PaxSenix fallback error — ${e.message}`); cleanup(); return false; }
+    };
+
+    // Download the MIMO chunk; if it fails to download, try the PaxSenix fallback too.
+    let chunkSaved = false;
     if (chunkUrl) {
-      if (await download(chunkUrl, chunkPath)) {
+      chunkSaved = await download(chunkUrl, chunkPath);
+      if (chunkSaved) { chunkFiles.push(chunkPath); logLine(`chunk ${i+1}: DONE`); }
+      else logLine(`chunk ${i+1}: MIMO download failed`);
+    } else {
+      logLine(`chunk ${i+1}: MIMO returned no URL`);
+    }
+
+    if (!chunkSaved) {
+      if (await tryPaxSenix()) {
         chunkFiles.push(chunkPath);
-        logLine(`chunk ${i+1}: DONE`);
-      } else { logLine(`chunk ${i+1}: download failed`); }
-    } else { logLine(`chunk ${i+1}: no URL received`); }
+        logLine(`chunk ${i+1}: DONE (PaxSenix fallback)`);
+      }
+    }
 
     // Longer delay between chunks to avoid rate limiting
     if (i < chunks.length - 1) await new Promise(r => setTimeout(r, 3000));
@@ -2545,7 +2657,7 @@ const requestHandler = async (req, res) => {
       const frames = await readJson(FRAMES_JSON) || [];
       if (!frames.length) return sendJson(res, 400, { error: 'no frames' });
       for (const f of frames) { try { fs.unlinkSync(ttsFile(f.frame)); } catch {} }
-      for (const f of fs.readdirSync(VIDEO_DIR).filter(f => f.startsWith('narr_chunk_') || f === 'full_narration.mp3')) { try { fs.unlinkSync(path.join(VIDEO_DIR, f)); } catch {} }
+      for (const f of fs.readdirSync(VIDEO_DIR).filter(f => f.startsWith('narr_chunk_') || f.startsWith('narr_pax_') || f === 'full_narration.mp3')) { try { fs.unlinkSync(path.join(VIDEO_DIR, f)); } catch {} }
       setPhase('narration', 1);
       if (IS_VERCEL) return runJobOnVercel(res, async () => { await generateFullNarration(frames, body.voice || DEFAULT_VOICE, body.language || DEFAULT_LANGUAGE); job.phase = 'idle'; });
       (async () => {
@@ -2895,6 +3007,8 @@ Return ONLY a JSON object:
         // Live trending influencer content — no hardcoded lists, fresh every call
     if (p === '/api/trending/tiktok' && req.method === 'GET') {
       const max = Math.min(parseInt(u.searchParams.get('max') || '12'), 20);
+      const daysParam = parseInt(u.searchParams.get('days') || '7', 10);
+      const freshDays = [3, 7, 14].includes(daysParam) ? daysParam : 7;
       try {
         if (IS_VERCEL) {
           const queries = ['beauty influencer grwm', 'fashion haul ootd', 'lifestyle influencer vlog', 'get ready with me'];
@@ -2923,7 +3037,7 @@ Return ONLY a JSON object:
         let liveAsOf = null;
         if (TAVILY_API_KEY) {
           try {
-            liveTerms = await tavilyTrendTerms('TikTok influencer trending', 20);
+            liveTerms = await tavilyTrendTerms('TikTok influencer trending', 20, freshDays);
             liveAsOf = new Date().toISOString();
           } catch (e) { logLine('Tavily: ' + e.message); }
         }
@@ -3076,6 +3190,9 @@ Return ONLY a JSON object:
       const max = Math.min(parseInt(u.searchParams.get('max') || '20'), 30);
       const forceRefresh = u.searchParams.get('refresh') === '1' || u.searchParams.get('nocache') === '1';
       const searchQuery = (u.searchParams.get('q') || '').trim();
+      // Freshness window for Tavily trend discovery (3/7/14 days)
+      const daysParam = parseInt(u.searchParams.get('days') || '7', 10);
+      const freshDays = [3, 7, 14].includes(daysParam) ? daysParam : 7;
 
       if (IS_VERCEL) {
         // Trend Loop (flashloop category): scrape Flashloop formats — not TikTok search
@@ -3175,7 +3292,7 @@ Return ONLY a JSON object:
       let liveAsOf = null;
       if (TAVILY_API_KEY) {
         try {
-          liveTerms = await tavilyTrendTerms(category, 5);
+          liveTerms = await tavilyTrendTerms(category, 5, freshDays);
           liveAsOf = new Date().toISOString();
         } catch (e) { logLine('Tavily fetch: ' + e.message); }
       }
@@ -3320,6 +3437,7 @@ Return ONLY a JSON object:
         source: (liveTerms.length ? 'tavily+' : '') + (flashloopFormats.length ? 'flashloop+' : '') + 'yt-shorts+tiktok-shorts',
         category,
         as_of_ts: liveAsOf,
+        freshDays,
         liveTerms,
         flashloopFormats: flashloopFormats.slice(0, 30),
         videos: allVideos,

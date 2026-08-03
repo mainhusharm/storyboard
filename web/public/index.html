@@ -153,7 +153,7 @@
     <a href="/trends" style="font-size:11px;padding:6px 14px;border:1px solid var(--line2);border-radius:99px;background:linear-gradient(135deg,rgba(251,146,60,.15),rgba(239,68,68,.15));color:var(--orange);cursor:pointer;text-decoration:none;display:flex;align-items:center;gap:5px;font-weight:600;letter-spacing:.5px">🔥 Trends</a>
     <a href="/influencer" style="font-size:11px;padding:6px 14px;border:1px solid var(--line2);border-radius:99px;background:linear-gradient(135deg,rgba(244,114,182,.15),rgba(139,124,246,.15));color:var(--pink);cursor:pointer;text-decoration:none;display:flex;align-items:center;gap:5px;font-weight:600;letter-spacing:.5px">✨ Create AI Influencer</a>
     <div class="pill" id="phasepill"><div class="dot"></div><span id="phasetxt">IDLE</span></div>
-    <div class="pill">GROK VIDEO</div>
+    <div class="pill">GROK ⇄ VEO VIDEO</div>
   </div>
 </header>
 <div id="gprog"><div></div></div>
@@ -185,7 +185,8 @@ The Director AI will:
       <label class="f">Clip duration (per shot)</label>
       <select id="clipDuration">
         <option value="6" selected>6 seconds — Grok Video default</option>
-        <option value="10">10 seconds — extended clips</option>
+        <option value="10">10 seconds — Grok Video extended</option>
+        <option value="8">8 seconds — Veo 3.1 (single duration)</option>
       </select>
       <label class="f">Narration language</label>
       <select id="language"></select>
@@ -202,7 +203,10 @@ The Director AI will:
       <label class="f">Image model</label>
       <select id="imageModel"></select>
       <label class="f">Video model</label>
-      <select id="videoModel"></select>
+      <select id="videoModel">
+        <option value="grok-video">Grok Video (fast, cinematic; auto-fallback → Veo 3.1)</option>
+        <option value="veo-3.1">Veo 3.1 (Google, high quality)</option>
+      </select>
       <label class="f">Aspect ratio</label>
       <select id="ratio">
         <option value="16:9">16:9 — cinematic</option>

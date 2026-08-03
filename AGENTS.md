@@ -1,8 +1,8 @@
 # Storyboard Production Project
 
 Transforms scripts into production-ready cinematic storyboards with **locked character
-consistency**, generates frame images, animates them via Grok Video, and combines
-everything into a single story film via ffmpeg.
+consistency**, generates frame images, animates them via Grok Video (auto-fallback to
+Veo 3.1), and combines everything into a single story film via ffmpeg.
 
 ## Layout
 
@@ -26,7 +26,7 @@ everything into a single story film via ffmpeg.
    - **Character consistency**: when enabled (default ON), every frame image is generated via
      img2img anchored to the character reference portraits, keeping faces/wardrobe identical
 4. **TTS Narration** — per-frame narration/dialogue audio via PaxSenix TTS (voice selectable)
-5. **Frame Videos** — Grok Video image-to-video or text-to-video per frame
+5. **Frame Videos** — Grok Video image-to-video or text-to-video per frame (auto-fallback to Veo 3.1)
 6. **Final Film** — ffmpeg concatenates all frame MP4s into `final_story.mp4`
 
 ## Website Features
@@ -50,10 +50,36 @@ Verified endpoints:
   - models: `nano-banana`, `nano-banana-pro`, `nano-banana-2`
 - `GET /ai-video/grok-video?prompt=..&ratio=16:9&type=text-to-video`
   - `type=image-to-video&imageUrls=<url>` for frame animation
+- `GET /ai-video/veo-3.1?prompt=..&ratio=16:9&type=text-to-video`
+  - `type=image-to-video&imageUrl=<url>` (singular `imageUrl` — differs from grok's plural)
+- **Video model auto-fallback**: when `grok-video` is selected and a frame fails to submit/render,
+  it automatically retries that frame with `veo-3.1`. If `veo-3.1` is selected directly, no fallback runs.
+
+## Fresh trends (Tavily)
+
+`tavilySearch()` queries `topic: 'news'` with a 7-day `days` recency window first so trend terms
+come from freshly-published articles (not evergreen listicles), then falls back to `general` web
+search when news returns nothing (niche categories). Results are additionally filtered by
+`published_date` when present. `tavilyTrendTerms()` queries for "this week" trends and pulls from
+up to 10 results.
 - `GET /tools/tts/v2?text=..&language=en&voice=en-US-AriaNeural`
   - voices: en-US-AriaNeural, en-US-JennyNeural, en-US-GuyNeural, en-US-ChristopherNeural,
     en-US-EricNeural, en-GB-SoniaNeural, en-GB-RyanNeural, en-IN-NeerjaNeural,
     en-IN-PrabhatNeural, alloy
+
+## Narration TTS (MIMO with PaxSenix fallback)
+
+Storyboard narration uses **AquaDevs MIMO TTS** (`mimo-v2.5-tts` via `POST /v1/audio/speech`
+on `api.aquadevs.com`):
+- An explicit language instruction is ALWAYS sent (even for English) — the MIMO default
+  voice `mimo_default` is Chinese-biased and will drift into the wrong language otherwise.
+- English uses English-native MIMO voices (`Chloe` female / `Milo` male) instead of `mimo_default`.
+- When MIMO fails (non-200 / no URL / download failure), each chunk automatically falls back
+  to the verified PaxSenix endpoint above with proper en-US voices (`en-US-AriaNeural` female /
+  `en-US-GuyNeural` male) and the language code (`language=hi|es|fr|...`), so narration never breaks.
+- **PaxSenix text limit**: `/tools/tts/v2` rejects text over ~200 chars (404 "Failed to retrieve
+  this content"). The fallback sub-splits narration into <=180-char pieces (sentence-aware, then
+  hard-capped), generates each, and ffmpeg-concatenates the mp3s into the chunk file.
 
 Async job: submit → `{jobId, task_url}` → poll task_url (202 pending, 200 done) → `{url}` on tmpfiles.paxsenix.org.
 

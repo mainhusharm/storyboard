@@ -12,12 +12,8 @@ pipeline/youtube-api-key.txt
 *apikey*
 
 # Generated content (large, regeneratable)
-frames/backup_*/
-frames/*.png
-frames/*.mp4
-frames/*.jpg
-video/*.mp4
-video/*.png
+frames/
+video/
 
 # Generated JSON state (regeneratable from pipeline)
 storyboard/characters.json
