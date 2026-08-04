@@ -357,9 +357,15 @@ async function init(){
   document.addEventListener('keydown',e=>{if(e.key==='Escape')closeModal()});
 }
 
-async function refresh(){
-  const d=await api('/frames');
-  CHARS=d.characters||[];FRAMES=d.frames||[];
+async function refresh(d){
+  if(!d){try{d=await api('/frames')}catch(e){d={}}}
+  let chars=d.characters||[],frames=d.frames||[];
+  // Vercel: /tmp files can vanish on an instance switch — fall back to the last
+  // storyboard we saved locally so the UI never shows an empty board after a reload.
+  if(!chars.length&&!frames.length){try{chars=JSON.parse(localStorage.getItem('sb_chars')||'[]');frames=JSON.parse(localStorage.getItem('sb_frames')||'[]');OFFLINE_BOARD=true}catch(e){}}
+  if(chars.length||frames.length){try{localStorage.setItem('sb_chars',JSON.stringify(chars));localStorage.setItem('sb_frames',JSON.stringify(frames))}catch(e){}}
+  CHARS=chars;FRAMES=frames;
+  const hasFinal=!!d.hasFinal;
   // stats
   const refsC=CHARS.filter(c=>c.hasRef).length;
   const imgsC=FRAMES.filter(f=>f.hasImage).length;
@@ -387,7 +393,7 @@ async function refresh(){
       </div>`).join('');
   } else { $('charSection').style.display='none'; }
   // final film
-  if(d.hasFinal){
+  if(hasFinal){
     $('finalSection').style.display='';
     $('finalVideo').src=`/video/final_story.mp4?v=${Date.now()}`;
   } else { $('finalSection').style.display='none'; }
@@ -459,9 +465,19 @@ function openModal(n){
 }
 function closeModal(){$('overlay').classList.remove('open')}
 
+let LOCAL_BUSY=false;
+// Set only when the board was hydrated from an ephemeral source (inline Vercel
+// response or localStorage) — i.e. when server-side /tmp may be gone. Phase calls
+// then carry characters/framesData along; on localhost this stays false so the
+// server's authoritative disk files are never overwritten with a stale copy.
+let OFFLINE_BOARD=false;
+function sbPayload(extra){const b={...extra};if(OFFLINE_BOARD){if(CHARS.length)b.characters=CHARS;if(FRAMES.length)b.framesData=FRAMES;}return b;}
 async function poll(){
-  const s=await api('/status');
-  const busy=s.phase!=='idle';
+  let s={phase:'idle',done:0,total:0,log:[]};
+  try{s=await api('/status')}catch(e){}
+  // LOCAL_BUSY covers long synchronous jobs (e.g. storyboard on Vercel) whose
+  // in-memory progress isn't visible cross-instance via /api/status.
+  const busy=LOCAL_BUSY||s.phase!=='idle';
   $('phasepill').classList.toggle('busy',busy);
   $('phasetxt').textContent=busy?`${s.phase.toUpperCase()} ${s.done}/${s.total||'?'}`:'IDLE';
   $('gprog').firstElementChild.style.width=s.total?Math.round(100*s.done/s.total)+'%':(busy?'12%':'0%');
@@ -482,9 +498,15 @@ $('btnStoryboard').onclick=async()=>{
   const script=$('script').value.trim();
   if(script.length<10)return alert('Paste a script first.');
   if(FRAMES.length && !confirm('This will archive existing renders and start a new storyboard. Continue?')) return;
-  await api('/clean-outputs',{method:'POST'});
-  const r=await api('/storyboard',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({script,model:$('chatModel').value,duration:Number($('duration').value),look:$('look').value,language:$('language').value,clipDuration:Number($('clipDuration').value)})});
-  if(r.error)alert(r.error);
+  LOCAL_BUSY=true;poll();
+  try{
+    await api('/clean-outputs',{method:'POST'});
+    const r=await api('/storyboard',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({script,model:$('chatModel').value,duration:Number($('duration').value),look:$('look').value,language:$('language').value,clipDuration:Number($('clipDuration').value)})});
+    if(r.error){alert(r.error);return}
+    // On Vercel the storyboard comes back inline (ephemeral /tmp) — render it directly.
+    if(r.characters&&r.frames){OFFLINE_BOARD=true;await refresh({characters:r.characters,frames:r.frames});}
+  }catch(e){alert('Error: '+e.message)}
+  finally{LOCAL_BUSY=false;poll();}
 };
 $('btnAuto').onclick=async()=>{
   const script=$('script').value.trim();
@@ -497,17 +519,17 @@ $('btnAuto').onclick=async()=>{
   })});
   if(r.error)alert(r.error);
 };
-$('btnCharRefs').onclick=async()=>{const r=await api('/char-refs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({imageModel:$('imageModel').value,style:$('style').value,force:true})});if(r.error)alert(r.error)};
+$('btnCharRefs').onclick=async()=>{const r=await api('/char-refs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sbPayload({imageModel:$('imageModel').value,style:$('style').value,force:true}))});if(r.error)alert(r.error);if(r.characters){CHARS=r.characters;try{localStorage.setItem('sb_chars',JSON.stringify(CHARS))}catch(e){}}};
 $('btnImages').onclick=async()=>{
   const frameNumbers=FRAMES.map(f=>f.frame);
-  const r=await api('/images',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({frames:frameNumbers,imageModel:$('imageModel').value,ratio:$('ratio').value,style:$('style').value,consistency:$('consistency').checked})});
+  const r=await api('/images',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sbPayload({frames:frameNumbers,imageModel:$('imageModel').value,ratio:$('ratio').value,style:$('style').value,consistency:$('consistency').checked}))});
   if(r.error)alert(r.error)
 };
-$('btnVideos').onclick=async()=>{const r=await api('/videos',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ratio:$('ratio').value,videoModel:$('videoModel').value,force:true})});if(r.error)alert(r.error)};
-$('btnNarration').onclick=async()=>{const r=await api('/narration',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({voice:$('voice').value,language:$('language').value,force:true})});if(r.error)alert(r.error)};
-$('btnCombine').onclick=async()=>{const r=await api('/combine',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ratio:$('ratio').value})});if(r.error)alert(r.error)};
-async function regenFrame(n){await api('/images',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({frames:[n],imageModel:$('imageModel').value,ratio:$('ratio').value,style:$('style').value,consistency:$('consistency').checked})})}
-async function regenChar(id){await api('/char-refs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({force:[id]})})}
+$('btnVideos').onclick=async()=>{const r=await api('/videos',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sbPayload({ratio:$('ratio').value,videoModel:$('videoModel').value,force:true}))});if(r.error)alert(r.error)};
+$('btnNarration').onclick=async()=>{const r=await api('/narration',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sbPayload({voice:$('voice').value,language:$('language').value,force:true}))});if(r.error)alert(r.error)};
+$('btnCombine').onclick=async()=>{const r=await api('/combine',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sbPayload({ratio:$('ratio').value}))});if(r.error)alert(r.error)};
+async function regenFrame(n){await api('/images',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sbPayload({frames:[n],imageModel:$('imageModel').value,ratio:$('ratio').value,style:$('style').value,consistency:$('consistency').checked}))})}
+async function regenChar(id){const r=await api('/char-refs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sbPayload({force:[id]}))});if(r.characters){CHARS=r.characters;try{localStorage.setItem('sb_chars',JSON.stringify(CHARS))}catch(e){}}}
 
 init();
 </script>

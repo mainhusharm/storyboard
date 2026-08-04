@@ -1027,6 +1027,17 @@ async function resolveInfluencerRefUrl(infl) {
 async function readJson(f) { try { return JSON.parse(await fsp.readFile(f, 'utf8')); } catch { return null; } }
 async function writeJson(f, d) { await fsp.mkdir(path.dirname(f), { recursive: true }); await fsp.writeFile(f, JSON.stringify(d, null, 2)); }
 
+// Hydrate characters/frames from the request body when supplied (the client keeps a
+// copy for Vercel, where /tmp files may not survive an instance switch), falling back
+// to disk. Body data is persisted so later phases on the same instance find it.
+async function storyDataFrom(body = {}) {
+  let chars = Array.isArray(body.characters) ? body.characters : (await readJson(CHARS_JSON) || []);
+  let frames = Array.isArray(body.framesData) ? body.framesData : (await readJson(FRAMES_JSON) || []);
+  if (Array.isArray(body.characters)) await writeJson(CHARS_JSON, body.characters);
+  if (Array.isArray(body.framesData)) await writeJson(FRAMES_JSON, body.framesData);
+  return { chars, frames };
+}
+
 // ---------------- PaxSenix helpers ----------------
 async function paxFetch(url, opts = {}, timeoutMs = 120000) {
   const ctrl = new AbortController();
@@ -1123,10 +1134,13 @@ async function download(fileUrl, outPath) {
 // ---------------- streaming chat ----------------
 async function chatCompletion(model, messages, maxTokens = 16384) {
   // Use non-streaming mode — streaming was causing ECONNRESET on local
-  const cappedTokens = IS_VERCEL ? Math.min(maxTokens, 2500) : maxTokens;
+  // On Vercel (fluid compute allows maxDuration up to 300s) give LLM calls real
+  // headroom: allow up to 12k output tokens and wait up to 250s. The old 22s/2500
+  // budget made storyboard generation abort mid-phase ("This operation was aborted").
+  const cappedTokens = IS_VERCEL ? Math.min(maxTokens, 12000) : maxTokens;
   const body = { model, messages, temperature: 0.7, max_tokens: cappedTokens, stream: false };
   const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), IS_VERCEL ? 22000 : 120000);
+  const timer = setTimeout(() => ac.abort(), IS_VERCEL ? 250000 : 120000);
   let raw = '';
   try {
     const res = await fetch(`${API}/v1/chat/completions`, {
@@ -2781,13 +2795,21 @@ const requestHandler = async (req, res) => {
       const targetDuration = Math.max(10, Math.min(600, Number(duration) || 120));
       const secPerFrame = Number(clipDuration) || 6;
       setPhase('storyboard', 1); logLine(`storyboard generation: ${model || MODELS[0]} — target ${targetDuration}s — ${secPerFrame}s per clip`);
-      if (IS_VERCEL) return runJobOnVercel(res, async () => {
-        const { characters, frames } = await generateStoryboard(script, model || MODELS[0], targetDuration, look || '', language || DEFAULT_LANGUAGE, secPerFrame);
-        job.ok = 1; job.done = 1;
-        const totalDur = frames.reduce((s, f) => s + (f.duration_sec || 0), 0);
-        logLine(`storyboard ready: ${characters.length} characters, ${frames.length} frames (${totalDur}s total)`);
-        job.phase = 'idle';
-      });
+      if (IS_VERCEL) return (async () => {
+        try {
+          const { characters, frames } = await generateStoryboard(script, model || MODELS[0], targetDuration, look || '', language || DEFAULT_LANGUAGE, secPerFrame);
+          job.ok = 1; job.done = 1;
+          const totalDur = frames.reduce((s, f) => s + (f.duration_sec || 0), 0);
+          logLine(`storyboard ready: ${characters.length} characters, ${frames.length} frames (${totalDur}s total)`);
+          job.phase = 'idle';
+          // Return the storyboard inline — on Vercel the /tmp files may not survive
+          // an instance switch, so the client renders this directly + keeps a copy.
+          return sendJson(res, 200, { ok: true, characters, frames });
+        } catch (e) {
+          job.phase = 'idle';
+          return sendJson(res, 500, { error: String(e.message || e) });
+        }
+      })();
       (async () => {
         try {
           const { characters, frames } = await generateStoryboard(script, model || MODELS[0], targetDuration, look || '', language || DEFAULT_LANGUAGE, secPerFrame);
@@ -2865,12 +2887,20 @@ const requestHandler = async (req, res) => {
 
     if (p === '/api/char-refs' && req.method === 'POST') {
       if (job.phase !== 'idle') return sendJson(res, 409, { error: 'busy' });
-      const chars = await readJson(CHARS_JSON) || [];
-      if (!chars.length) return sendJson(res, 400, { error: 'no characters — generate storyboard first' });
       const body = await readBody(req).catch(() => ({}));
+      let { chars } = await storyDataFrom(body);
+      if (!chars.length) return sendJson(res, 400, { error: 'no characters — generate storyboard first' });
       if (body.force === true) { for (const c of chars) { try { fs.unlinkSync(charRefFile(c.id)); } catch {} } }
       else if (Array.isArray(body.force)) { for (const id of body.force) { try { fs.unlinkSync(charRefFile(id)); } catch {} } }
-      if (IS_VERCEL) return runJobOnVercel(res, async () => { await generateCharRefs(chars, body.imageModel || IMAGE_MODELS[0], body.style || 'cinematic'); job.phase = 'idle'; });
+      if (IS_VERCEL) return (async () => {
+        try {
+          await generateCharRefs(chars, body.imageModel || IMAGE_MODELS[0], body.style || 'cinematic');
+          job.phase = 'idle';
+          // Return refreshed characters (incl. reference_image_url) so the client keeps
+          // its copy in sync even though /api/status is per-instance on Vercel.
+          return sendJson(res, 200, { ok: true, characters: (await readJson(CHARS_JSON)) || chars });
+        } catch (e) { job.phase = 'idle'; return sendJson(res, 500, { error: String(e.message || e) }); }
+      })();
       generateCharRefs(chars, body.imageModel || IMAGE_MODELS[0], body.style || 'cinematic').catch(e => { logLine(`char-refs crash: ${e.message}`); job.phase = 'idle'; });
       return sendJson(res, 202, { started: true, count: chars.length });
     }
@@ -2878,14 +2908,14 @@ const requestHandler = async (req, res) => {
     if (p === '/api/images' && req.method === 'POST') {
       if (job.phase !== 'idle') return sendJson(res, 409, { error: 'busy' });
       const body = await readBody(req).catch(() => ({}));
-      let frames = await readJson(FRAMES_JSON) || [];
+      let { frames } = await storyDataFrom(body);
       if (!frames.length) return sendJson(res, 400, { error: 'no frames — generate storyboard first' });
       if (Array.isArray(body.frames) && body.frames.length) {
         const wanted = new Set(body.frames.map(Number));
         frames = frames.filter(f => wanted.has(f.frame));
         for (const f of frames) { try { fs.unlinkSync(frameFile(f.frame)); } catch {} }
       }
-      const chars = await readJson(CHARS_JSON) || [];
+      const { chars } = await storyDataFrom(body);
       if (IS_VERCEL) return runJobOnVercel(res, async () => { await generateImages(frames, body.imageModel || IMAGE_MODELS[0], body.ratio || '16:9', body.style || 'cinematic', body.consistency !== false, chars); job.phase = 'idle'; });
       generateImages(frames, body.imageModel || IMAGE_MODELS[0], body.ratio || '16:9', body.style || 'cinematic', body.consistency !== false, chars).catch(e => { logLine(`images crash: ${e.message}`); job.phase = 'idle'; });
       return sendJson(res, 202, { started: true, count: frames.length });
@@ -2894,7 +2924,7 @@ const requestHandler = async (req, res) => {
     if (p === '/api/videos' && req.method === 'POST') {
       if (job.phase !== 'idle') return sendJson(res, 409, { error: 'busy' });
       const body = await readBody(req).catch(() => ({}));
-      const frames = await readJson(FRAMES_JSON) || [];
+      let { frames } = await storyDataFrom(body);
       if (!frames.length) return sendJson(res, 400, { error: 'no frames' });
       if (body.force) { for (const f of frames) { if (f.animation_prompt) { try { fs.unlinkSync(videoFile(f.frame)); } catch {} } } }
       if (IS_VERCEL) return runJobOnVercel(res, async () => { await generateVideos(frames, body.ratio || '16:9', body.videoModel || DEFAULT_VIDEO_MODEL); job.phase = 'idle'; });
@@ -2905,7 +2935,7 @@ const requestHandler = async (req, res) => {
     if (p === '/api/combine' && req.method === 'POST') {
       if (job.phase !== 'idle') return sendJson(res, 409, { error: 'busy' });
       const body = await readBody(req).catch(() => ({}));
-      const frames = await readJson(FRAMES_JSON) || [];
+      let { frames } = await storyDataFrom(body);
       if (IS_VERCEL) return runJobOnVercel(res, async () => { await combineFilm(frames, body.ratio || '16:9'); job.phase = 'idle'; });
       combineFilm(frames, body.ratio || '16:9').then(fp => { if (!fp) logLine('combine: no output'); }).catch(e => { logLine(`combine crash: ${e.message}`); job.phase = 'idle'; });
       return sendJson(res, 202, { started: true });
@@ -2919,7 +2949,7 @@ const requestHandler = async (req, res) => {
     if (p === '/api/narration' && req.method === 'POST') {
       if (job.phase !== 'idle') return sendJson(res, 409, { error: 'busy' });
       const body = await readBody(req).catch(() => ({}));
-      const frames = await readJson(FRAMES_JSON) || [];
+      let { frames } = await storyDataFrom(body);
       if (!frames.length) return sendJson(res, 400, { error: 'no frames' });
       for (const f of frames) { try { fs.unlinkSync(ttsFile(f.frame)); } catch {} }
       for (const f of fs.readdirSync(VIDEO_DIR).filter(f => f.startsWith('narr_chunk_') || f.startsWith('narr_pax_') || f === 'full_narration.mp3')) { try { fs.unlinkSync(path.join(VIDEO_DIR, f)); } catch {} }
