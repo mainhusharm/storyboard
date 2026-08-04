@@ -2431,6 +2431,18 @@ function sendJson(res, code, obj) { res.writeHead(code, { 'Content-Type': 'appli
 // otherwise a local JSON file fallback keeps local dev working with zero setup.
 const AUTH_COOKIE = 'sb_session';
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+// Stable secret used to sign session tokens. On serverless platforms (Vercel) every
+// instance must share the same secret so a token minted by one instance verifies on
+// any other. Derived from existing stable env vars; set SESSION_SECRET explicitly to
+// control/rotate it. NOTE: rotating any of these env vars invalidates every session.
+// Tokens validate without any server-side session store, which is what keeps logins
+// working across Vercel cold starts and instance switches.
+const SESSION_SECRET = process.env.SESSION_SECRET
+  || process.env.PAXSENIX_API_KEY
+  || process.env.AQUA_API_KEY
+  || process.env.TAVILY_API_KEY
+  || process.env.DATABASE_URL
+  || 'storyboard-local-session-secret';
 const USERS_FILE = path.join(STORYBOARD_DIR, 'users.json');
 const SESSIONS_FILE = path.join(STORYBOARD_DIR, 'sessions.json');
 
@@ -2515,33 +2527,42 @@ async function createUser(email, name, password) {
   return user;
 }
 
-async function createSession(userId) {
-  await initAuthStore();
-  const token = crypto.randomBytes(32).toString('hex');
-  const expiresAt = Date.now() + SESSION_TTL_MS;
-  // Opportunistically prune expired sessions so the store never grows unbounded.
-  try {
-    if (authMode === 'pg') await authPool.query('DELETE FROM sb_sessions WHERE expires_at < $1', [Date.now()]);
-    else {
-      const sessions = await readJson(SESSIONS_FILE) || [];
-      if (sessions.some(s => s.expires_at <= Date.now())) {
-        await writeJson(SESSIONS_FILE, sessions.filter(s => s.expires_at > Date.now()));
-      }
-    }
-  } catch {}
-  if (authMode === 'pg') {
-    await authPool.query('INSERT INTO sb_sessions (token, user_id, expires_at) VALUES ($1,$2,$3)', [token, userId, expiresAt]);
-  } else {
-    const sessions = await readJson(SESSIONS_FILE) || [];
-    sessions.push({ token, user_id: userId, expires_at: expiresAt });
-    await writeJson(SESSIONS_FILE, sessions);
-  }
-  return token;
+// Mint a STATELESS session token. The token itself carries identity + expiry and is
+// HMAC-signed with a stable shared secret, so validating it never needs a server-side
+// session store. On Vercel the /tmp filesystem is per-instance and can be wiped between
+// requests — stateless tokens keep sessions alive across cold starts / instance switches.
+async function createSession(user) {
+  const payload = { id: user.id, email: user.email, name: user.name, exp: Date.now() + SESSION_TTL_MS };
+  const body = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  const sig = crypto.createHmac('sha256', SESSION_SECRET).update(body).digest('base64url');
+  return body + '.' + sig;
+}
+
+// Verify a stateless session token: timing-safe HMAC signature check + expiry check,
+// then decode the embedded identity. Returns {id,email,name} or null.
+function verifySessionToken(token) {
+  if (!token) return null;
+  const i = token.lastIndexOf('.');
+  if (i < 1) return null;
+  const body = token.slice(0, i);
+  const sig = token.slice(i + 1);
+  const expected = crypto.createHmac('sha256', SESSION_SECRET).update(body).digest('base64url');
+  const a = Buffer.from(sig, 'base64url');
+  const b = Buffer.from(expected, 'base64url');
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+  let payload;
+  try { payload = JSON.parse(Buffer.from(body, 'base64url').toString('utf8')); } catch { return null; }
+  if (!payload || !payload.id || typeof payload.exp !== 'number' || payload.exp <= Date.now()) return null;
+  return { id: payload.id, email: payload.email || '', name: payload.name || '' };
 }
 
 async function getUserBySessionToken(token) {
   if (!token) return null;
   await initAuthStore();
+  // Stateless path first — verifies on any instance with no shared storage.
+  const signed = verifySessionToken(token);
+  if (signed) return signed;
+  // Legacy path: tokens minted by older builds that stored sessions server-side.
   if (authMode === 'pg') {
     const r = await authPool.query(
       'SELECT u.id, u.email, u.name FROM sb_sessions s JOIN sb_users u ON u.id = s.user_id WHERE s.token = $1 AND s.expires_at > $2',
@@ -2602,8 +2623,8 @@ async function requireApiAuth(req, res) {
   return user;
 }
 
-// Auto-login when the client posts its session token (SPA sends Authorization header) —
-// kept tiny so API clients can also authenticate with `Authorization: Bearer <token>`.
+// API clients can also authenticate with `Authorization: Bearer <token>` (the browser
+// SPA itself authenticates via the HttpOnly sb_session cookie).
 function bearerToken(req) { return (req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim() || null; }
 function readBody(req) { return new Promise((resolve, reject) => { let s = ''; req.on('data', c => { s += c; if (s.length > 15e6) req.destroy(); }); req.on('end', () => { try { resolve(s ? JSON.parse(s) : {}); } catch (e) { reject(e); } }); req.on('error', reject); }); }
 async function runJobOnVercel(res, jobFn, successData = { ok: true }) {
@@ -2694,7 +2715,7 @@ const requestHandler = async (req, res) => {
       try {
         if (await findUserByEmail(email)) return sendJson(res, 409, { error: 'an account with this email already exists — try logging in' });
         const user = await createUser(email, name, password);
-        const token = await createSession(user.id);
+        const token = await createSession(user);
         setAuthCookie(res, token);
         return sendJson(res, 200, { ok: true, user: { id: user.id, email: user.email, name: user.name } });
       } catch (e) { return sendJson(res, 500, { error: 'signup failed: ' + (e.message || e) }); }
@@ -2705,7 +2726,7 @@ const requestHandler = async (req, res) => {
       const password = String(b.password || '');
       const user = await findUserByEmail(email);
       if (!user || !(await verifyPassword(password, user.pass_hash))) return sendJson(res, 401, { error: 'invalid email or password' });
-      const token = await createSession(user.id);
+      const token = await createSession(user);
       setAuthCookie(res, token);
       return sendJson(res, 200, { ok: true, user: { id: user.id, email: user.email, name: user.name } });
     }
@@ -2727,6 +2748,8 @@ const requestHandler = async (req, res) => {
         const u = users.find(x => x.id === user.id); if (u) u.name = name;
         await writeJson(USERS_FILE, users);
       }
+      // Re-issue the stateless session so the name embedded in the token stays current.
+      setAuthCookie(res, await createSession({ id: user.id, email: user.email, name }));
       return sendJson(res, 200, { ok: true, user: { id: user.id, email: user.email, name } });
     }
 
