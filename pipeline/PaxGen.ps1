@@ -20,7 +20,7 @@ param(
     # Image model: nano-banana | nano-banana-pro | nano-banana-2
     [string]$ImageModel = 'nano-banana-pro',
 
-    # Video model endpoint: veo-3.1 | grok-video
+    # Video model endpoint: veo-3.1 | grok-video | omni-flash
     [string]$VideoEndpoint = 'veo-3.1',
 
     [string]$Ratio = '16:9',

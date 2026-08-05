@@ -1,8 +1,8 @@
 # Storyboard Production Project
 
 Transforms scripts into production-ready cinematic storyboards with **locked character
-consistency**, generates frame images, animates them via Grok Video (auto-fallback to
-Veo 3.1), and combines everything into a single story film via ffmpeg.
+consistency**, generates frame images, animates them via Grok Video / Omni Flash (8s)
+/ Veo 3.1 with auto-fallback, and combines everything into a single story film via ffmpeg.
 
 ## Layout
 
@@ -26,7 +26,11 @@ Veo 3.1), and combines everything into a single story film via ffmpeg.
    - **Character consistency**: when enabled (default ON), every frame image is generated via
      img2img anchored to the character reference portraits, keeping faces/wardrobe identical
 4. **TTS Narration** — per-frame narration/dialogue audio via PaxSenix TTS (voice selectable)
-5. **Frame Videos** — Grok Video image-to-video or text-to-video per frame (auto-fallback to Veo 3.1)
+5. **Frame Videos** — Grok Video / Omni Flash / Veo 3.1 image-to-video or text-to-video
+   per frame (grok-video & omni-flash auto-fallback to Veo 3.1). With **Seamless Scene
+   Chaining** ON (default), each scene's video is anchored to the LAST FRAME extracted
+   from the previous scene's video (`chain_NN.png` in `frames/`), so scene N starts exactly
+   where scene N-1 ended — scenes render sequentially in that mode.
 6. **Final Film** — ffmpeg concatenates all frame MP4s into `final_story.mp4`
 
 ## Website Features
@@ -36,6 +40,9 @@ Veo 3.1), and combines everything into a single story film via ffmpeg.
 - **Narration Voices** — voice dropdown (10 options: US/UK/Indian male/female)
 - **Character Consistency toggle** — when ON, frame images use img2img anchored to the character
   reference portraits (faces, hair, skin tone, wardrobe stay identical across all shots)
+- **Seamless Scene Chaining toggle** — when ON (default), each scene's video starts from the last
+  frame of the previous scene's video (extracted with ffmpeg and re-hosted to a public URL), so the
+  story flows continuously across cuts. Renders scenes sequentially.
 - **🚀 Create Full Film — auto** — one-click button that runs the entire pipeline:
   clean → storyboard → character refs → images → narration → videos → final combine
 - **Per-frame re-render** — individual frame re-render buttons still work with consistency
@@ -50,10 +57,15 @@ Verified endpoints:
   - models: `nano-banana`, `nano-banana-pro`, `nano-banana-2`
 - `GET /ai-video/grok-video?prompt=..&ratio=16:9&type=text-to-video`
   - `type=image-to-video&imageUrls=<url>` for frame animation
-- `GET /ai-video/veo-3.1?prompt=..&ratio=16:9&type=text-to-video`
+- `GET /ai-video/omni-flash?prompt=..&ratio=16:9&type=text-to-video` (8-second clips)
+  - `type=image-to-video&imageUrl=<url>` (singular `imageUrl`)
+- `GET /ai-video/veo-3.1?prompt=..&ratio=16:9&type=text-to-video` (8-second clips)
   - `type=image-to-video&imageUrl=<url>` (singular `imageUrl` — differs from grok's plural)
-- **Video model auto-fallback**: when `grok-video` is selected and a frame fails to submit/render,
-  it automatically retries that frame with `veo-3.1`. If `veo-3.1` is selected directly, no fallback runs.
+- **Video model auto-fallback**: when `grok-video` or `omni-flash` is selected and a frame fails
+  to submit/render, it automatically retries that frame with `veo-3.1`. If `veo-3.1` is selected
+  directly, no fallback runs.
+- **Seamless chaining**: `POST /api/videos` (and `/api/run-all`) accept `chainContinuity: true` —
+  videos then render sequentially, each anchored to the previous scene's last frame.
 
 ## Fresh trends (Tavily)
 

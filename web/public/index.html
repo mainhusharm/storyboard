@@ -219,7 +219,7 @@ The Director AI will:
       <select id="clipDuration">
         <option value="6" selected>6 seconds — Grok Video default</option>
         <option value="10">10 seconds — Grok Video extended</option>
-        <option value="8">8 seconds — Veo 3.1 (single duration)</option>
+        <option value="8">8 seconds — Veo 3.1 / Omni Flash (single duration)</option>
       </select>
       <label class="f">Narration language</label>
       <select id="language"></select>
@@ -238,7 +238,8 @@ The Director AI will:
       <label class="f">Video model</label>
       <select id="videoModel">
         <option value="grok-video">Grok Video (fast, cinematic; auto-fallback → Veo 3.1)</option>
-        <option value="veo-3.1">Veo 3.1 (Google, high quality)</option>
+        <option value="omni-flash">Omni Flash (8s clips, fast; auto-fallback → Veo 3.1)</option>
+        <option value="veo-3.1">Veo 3.1 (Google, 8s, high quality)</option>
       </select>
       <label class="f">Aspect ratio</label>
       <select id="ratio">
@@ -254,6 +255,10 @@ The Director AI will:
       <label style="display:flex;align-items:flex-start;gap:8px;margin-top:10px;font-size:11px;color:var(--dim);cursor:pointer">
         <input type="checkbox" id="consistency" checked style="accent-color:var(--amber);margin-top:2px">
         <span>Lock character consistency — anchor every frame to the character reference portraits</span>
+      </label>
+      <label style="display:flex;align-items:flex-start;gap:8px;margin-top:8px;font-size:11px;color:var(--dim);cursor:pointer">
+        <input type="checkbox" id="chainContinuity" checked style="accent-color:var(--teal);margin-top:2px">
+        <span>Seamless scene chaining — each scene's video starts from the <b>last frame of the previous scene</b>, so the story flows continuously (scenes render in order, slower but true continuity)</span>
       </label>
       <div class="trio">
         <button id="btnCharRefs" class="violet-btn">👤 Char Refs</button>
@@ -344,13 +349,15 @@ async function init(){
   const m=await api('/models');
   $('chatModel').innerHTML=m.chat.map(x=>`<option>${x}</option>`).join('');
   $('imageModel').innerHTML=m.image.map(x=>`<option>${x}</option>`).join('');
-  $('videoModel').innerHTML=(m.video||[{id:'grok-video',label:'Grok Video'},{id:'veo-3.1',label:'Veo 3.1'}]).map(v=>`<option value="${v.id}">${v.label}</option>`).join('');
+  $('videoModel').innerHTML=(m.video||[{id:'grok-video',label:'Grok Video'},{id:'omni-flash',label:'Omni Flash (8s)'},{id:'veo-3.1',label:'Veo 3.1'}]).map(v=>`<option value="${v.id}">${v.label}</option>`).join('');
   $('voice').innerHTML=(m.voices||[{id:'female',label:'Female narrator'},{id:'male',label:'Male narrator'}]).map(v=>`<option value="${v.id}">${v.label}</option>`).join('');
   $('language').innerHTML=(m.languages||[{id:'en',label:'English'},{id:'hi',label:'Hindi'}]).map(l=>`<option value="${l.id}">${l.label}</option>`).join('');
   $('narrationMode').innerHTML=(m.narrationModes||[{id:'tts',label:'TTS Voice'},{id:'prompt',label:'Prompt Vocalized'}]).map(n=>`<option value="${n.id}">${n.label}</option>`).join('');
   $('style').innerHTML=(m.styles||[{key:'cinematic',label:'Cinematic'}]).map(s=>`<option value="${s.key}">${s.label}</option>`).join('');
   $('modelname').textContent=$('chatModel').value;
   $('chatModel').onchange=()=>$('modelname').textContent=$('chatModel').value;
+  // Sync clip duration with the video model (Grok: 6s, Omni Flash / Veo 3.1: 8s)
+  $('videoModel').onchange=()=>{ $('clipDuration').value=$('videoModel').value==='grok-video'?'6':'8'; };
   $('script').oninput=()=>$('charcount').textContent=$('script').value.length+' chars';
   await refresh();
   poll();setInterval(poll,2500);
@@ -515,7 +522,7 @@ $('btnAuto').onclick=async()=>{
   const r=await api('/run-all',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
     script,model:$('chatModel').value,duration:Number($('duration').value),look:$('look').value,
     style:$('style').value,imageModel:$('imageModel').value,videoModel:$('videoModel').value,ratio:$('ratio').value,
-    voice:$('voice').value,consistency:$('consistency').checked,language:$('language').value,narrationMode:$('narrationMode').value,clipDuration:Number($('clipDuration').value)
+    voice:$('voice').value,consistency:$('consistency').checked,language:$('language').value,narrationMode:$('narrationMode').value,chainContinuity:$('chainContinuity').checked,clipDuration:Number($('clipDuration').value)
   })});
   if(r.error)alert(r.error);
 };
@@ -525,7 +532,7 @@ $('btnImages').onclick=async()=>{
   const r=await api('/images',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sbPayload({frames:frameNumbers,imageModel:$('imageModel').value,ratio:$('ratio').value,style:$('style').value,consistency:$('consistency').checked}))});
   if(r.error)alert(r.error)
 };
-$('btnVideos').onclick=async()=>{const r=await api('/videos',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sbPayload({ratio:$('ratio').value,videoModel:$('videoModel').value,force:true}))});if(r.error)alert(r.error)};
+$('btnVideos').onclick=async()=>{const r=await api('/videos',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sbPayload({ratio:$('ratio').value,videoModel:$('videoModel').value,force:true,chainContinuity:$('chainContinuity').checked}))});if(r.error)alert(r.error)};
 $('btnNarration').onclick=async()=>{const r=await api('/narration',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sbPayload({voice:$('voice').value,language:$('language').value,force:true}))});if(r.error)alert(r.error)};
 $('btnCombine').onclick=async()=>{const r=await api('/combine',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sbPayload({ratio:$('ratio').value}))});if(r.error)alert(r.error)};
 async function regenFrame(n){await api('/images',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sbPayload({frames:[n],imageModel:$('imageModel').value,ratio:$('ratio').value,style:$('style').value,consistency:$('consistency').checked}))})}

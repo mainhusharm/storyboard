@@ -803,9 +803,19 @@ const MODELS = ['kimi-k3', 'gpt-5.6-sol', 'gpt-5.6-terra', 'claude-opus-4-8', 'q
 const IMAGE_MODELS = ['nano-banana-pro', 'nano-banana', 'nano-banana-2', 'seedream-5', 'seedream-4', 'seedream-4.5', 'gpt-image-2'];
 const VIDEO_MODELS = [
   { id: 'grok-video', label: 'Grok Video (fast, cinematic; auto-fallback → Veo 3.1)' },
-  { id: 'veo-3.1', label: 'Veo 3.1 (Google, high quality)' }
+  { id: 'omni-flash', label: 'Omni Flash (8s clips, fast; auto-fallback → Veo 3.1)' },
+  { id: 'veo-3.1', label: 'Veo 3.1 (Google, 8s, high quality)' }
 ];
 const DEFAULT_VIDEO_MODEL = 'grok-video';
+// Video model auto-fallback chain: grok-video and omni-flash retry a failed frame
+// with Veo 3.1. Selecting Veo 3.1 directly runs it alone (no fallback).
+function videoModelChain(videoModel) {
+  const m = videoModel || DEFAULT_VIDEO_MODEL;
+  return m === 'veo-3.1' ? ['veo-3.1'] : [m, 'veo-3.1'];
+}
+// Veo 3.1 and Omni Flash take the singular `imageUrl` param; Grok takes plural
+// `imageUrls` (per PaxSenix swagger).
+function videoImgKey(model) { return (model === 'veo-3.1' || model === 'omni-flash') ? 'imageUrl' : 'imageUrls'; }
 // MIMO TTS voices (AquaDevs API) — simple male / female selection
 const VOICES = [
   { id: 'female', label: 'Female narrator (warm, expressive)' },
@@ -1671,15 +1681,49 @@ async function generateImages(frames, imageModel, ratio, style, consistency = tr
   job.phase = 'idle';
 }
 
-// ================================ VIDEO GENERATION (Grok Video) ================================
+// ================================ VIDEO GENERATION (Grok / Veo 3.1 / Omni Flash) ================================
+// Seamless scene chaining: when enabled, each scene's video is rendered from the
+// LAST FRAME of the previous scene's video (extracted via ffmpeg, re-hosted to a
+// public URL), so scene N starts exactly where scene N-1 ended — true story flow.
+// Requires sequential rendering, so the toggle trades speed for continuity.
 
-async function generateVideos(frames, ratio, videoModel = DEFAULT_VIDEO_MODEL) {
-  const withAnim = frames.filter(f => f.animation_prompt);
+function chainRefFile(n) { return path.join(FRAMES_DIR, `chain_${String(n).padStart(2, '0')}.png`); }
+
+// Extract the last settled frame of a rendered clip into a PNG (chain anchor).
+// -sseof seeks 0.15s before the end — generated clips usually hold the final pose
+// there instead of freezing black on the exact last frame.
+function extractLastFrame(videoPath, outPng) {
+  return new Promise((resolve, reject) => {
+    execFile('ffmpeg', ['-y', '-sseof', '-0.15', '-i', videoPath, '-frames:v', '1', '-q:v', '2', outPng],
+      { timeout: 60000 }, err => err ? reject(err) : resolve());
+  });
+}
+
+// Public URL of a previous scene's final frame (seamless-chain anchor). Re-uploads
+// the local chain PNG when present (fresh, always-accessible URL), else reuses the
+// URL stored on the frame from a previous run.
+async function chainRefFor(prevFrame) {
+  if (!prevFrame) return null;
+  const localPng = chainRefFile(prevFrame.frame);
+  try {
+    if (fs.existsSync(localPng)) return await uploadToImageHost(localPng, logLine);
+  } catch (e) { logLine(`chain ref upload (frame ${prevFrame.frame}) failed: ${e.message}`); }
+  return prevFrame.chain_image_url || null;
+}
+
+async function persistChainImage(frame) {
+  const allFrames = (await readJson(FRAMES_JSON)) || [];
+  const af = allFrames.find(x => x.frame === frame.frame);
+  if (af) af.chain_image_url = frame.chain_image_url; else allFrames.push(frame);
+  await writeJson(FRAMES_JSON, allFrames);
+}
+
+async function generateVideos(frames, ratio, videoModel = DEFAULT_VIDEO_MODEL, chainContinuity = false) {
+  const withAnim = frames.filter(f => f.animation_prompt).sort((a, b) => a.frame - b.frame);
   setPhase('videos', withAnim.length);
-  // Auto-fallback: when grok-video is selected, frames that fail retry with Veo 3.1.
-  // Veo 3.1 takes the singular `imageUrl` param; Grok takes plural `imageUrls` (per PaxSenix swagger).
-  const modelChain = videoModel === 'grok-video' ? ['grok-video', 'veo-3.1'] : [videoModel];
-  logLine(`video phase: ${withAnim.length} frame(s) — ${modelChain.join(' → ')} @ ${ratio}`);
+  const modelChain = videoModelChain(videoModel);
+  logLine(`video phase: ${withAnim.length} frame(s) — ${modelChain.join(' → ')} @ ${ratio}` +
+    (chainContinuity ? ' — SEAMLESS CHAINING (each scene starts from previous scene\'s last frame)' : ''));
 
   const work = withAnim.filter(f => !fs.existsSync(videoFile(f.frame)));
   for (const f of withAnim.filter(f => fs.existsSync(videoFile(f.frame)))) { job.done++; job.ok++; }
@@ -1692,27 +1736,71 @@ async function generateVideos(frames, ratio, videoModel = DEFAULT_VIDEO_MODEL) {
     return { f, prompt: enh };
   }));
 
-  // Render every frame in parallel; each frame walks the model chain until one succeeds
-  logLine(`rendering ${enhanced.length} frame videos in parallel (can take several minutes)...`);
-  await Promise.all(enhanced.map(async ({ f, prompt }) => {
-    const img = f.generated_image_url;
+  // renderVideo: walk the model chain for one frame, optionally anchored to a
+  // continuity image (previous scene's last frame). On success with chaining ON,
+  // extract + re-host this scene's last frame as the anchor for the next scene.
+  const renderVideo = async (f, prompt, anchorImg) => {
+    const img = anchorImg || f.generated_image_url;
     const mode = img ? 'image-to-video' : 'text-to-video';
-    let done = false;
     for (const model of modelChain) {
-      const imgKey = model === 'veo-3.1' ? 'imageUrl' : 'imageUrls';
-      const imgParam = img ? `&${imgKey}=${encodeURIComponent(img)}` : '';
+      const imgParam = img ? `&${videoImgKey(model)}=${encodeURIComponent(img)}` : '';
       const q = `/ai-video/${model}?prompt=${encodeURIComponent(prompt)}&ratio=${encodeURIComponent(ratio)}&type=${mode}${imgParam}`;
       const task = await submitTask(q);
       if (!task) { logLine(`frame ${f.frame}: ${model} SUBMIT FAILED`); if (modelChain.length > 1) logLine(`frame ${f.frame}: → falling back to next model`); continue; }
-      logLine(`frame ${f.frame}: ${model} submitted (${mode})`);
+      logLine(`frame ${f.frame}: ${model} submitted (${mode}${anchorImg ? ', anchored to previous scene' : ''})`);
       const url = await waitTask(task, 25);
-      if (url && await download(url, videoFile(f.frame))) { job.ok++; logLine(`frame ${f.frame}: VIDEO DONE (${model})`); done = true; break; }
+      if (url && await download(url, videoFile(f.frame))) {
+        job.ok++;
+        logLine(`frame ${f.frame}: VIDEO DONE (${model})`);
+        if (chainContinuity) {
+          try {
+            const png = chainRefFile(f.frame);
+            await extractLastFrame(videoFile(f.frame), png);
+            const cUrl = await uploadToImageHost(png, logLine);
+            if (cUrl) {
+              f.chain_image_url = cUrl;
+              await persistChainImage(f);
+              logLine(`frame ${f.frame}: chain anchor saved → next scene starts from its last frame`);
+            }
+          } catch (e) { logLine(`frame ${f.frame}: chain anchor extract/upload failed: ${e.message}`); }
+        }
+        return true;
+      }
       logLine(`frame ${f.frame}: ${model} RENDER FAILED`);
       if (modelChain.length > 1) logLine(`frame ${f.frame}: → falling back to next model`);
     }
-    if (!done) { job.failed.push(f.frame); logLine(`frame ${f.frame}: VIDEO FAILED on all models`); }
-    job.done++;
-  }));
+    return false;
+  };
+
+  if (chainContinuity) {
+    // SEAMLESS CHAINING: render in scene order so each scene can anchor to the
+    // previous scene's final frame. Slower than parallel, but the story flows.
+    logLine(`rendering ${enhanced.length} frame videos sequentially for seamless chaining (can take much longer)...`);
+    const anchors = new Map(); // frame -> fresh chain anchor, filled when a scene renders this run
+    for (const { f, prompt } of enhanced) {
+      // Anchor = last frame of the immediately preceding scene in story order,
+      // whether it was rendered this run or already exists from an earlier run.
+      const idx = withAnim.indexOf(f);
+      const prev = idx > 0 ? withAnim[idx - 1] : null;
+      const chainUrl = prev ? (anchors.get(prev.frame) || await chainRefFor(prev)) : null;
+      const ok = await renderVideo(f, prompt, chainUrl);
+      if (ok && f.chain_image_url) {
+        anchors.set(f.frame, f.chain_image_url); // next scene starts from THIS scene's last frame
+      } else if (!ok) {
+        job.failed.push(f.frame);
+        logLine(`frame ${f.frame}: VIDEO FAILED on all models`);
+      }
+      job.done++;
+    }
+  } else {
+    // Render every frame in parallel; each frame walks the model chain until one succeeds
+    logLine(`rendering ${enhanced.length} frame videos in parallel (can take several minutes)...`);
+    await Promise.all(enhanced.map(async ({ f, prompt }) => {
+      const ok = await renderVideo(f, prompt, null);
+      if (!ok) { job.failed.push(f.frame); logLine(`frame ${f.frame}: VIDEO FAILED on all models`); }
+      job.done++;
+    }));
+  }
 
   logLine(`videos finished: ${job.ok} ok, ${job.failed.length} failed`);
   job.phase = 'idle';
@@ -2865,7 +2953,7 @@ const requestHandler = async (req, res) => {
         if (narrationMode === 'prompt') {
           logLine('prompt-vocalized mode: narration embedded in video prompts, no TTS');
         }
-        steps.push(['videos', () => generateVideos(videoFrames, body.ratio || '16:9', body.videoModel || DEFAULT_VIDEO_MODEL)]);
+        steps.push(['videos', () => generateVideos(videoFrames, body.ratio || '16:9', body.videoModel || DEFAULT_VIDEO_MODEL, body.chainContinuity === true)]);
         steps.push(['combine', () => combineFilm(frames, body.ratio || '16:9')]);
         // After combine: generate full narration TTS and overlay on final video
         if (narrationMode === 'tts') {
@@ -2927,8 +3015,8 @@ const requestHandler = async (req, res) => {
       let { frames } = await storyDataFrom(body);
       if (!frames.length) return sendJson(res, 400, { error: 'no frames' });
       if (body.force) { for (const f of frames) { if (f.animation_prompt) { try { fs.unlinkSync(videoFile(f.frame)); } catch {} } } }
-      if (IS_VERCEL) return runJobOnVercel(res, async () => { await generateVideos(frames, body.ratio || '16:9', body.videoModel || DEFAULT_VIDEO_MODEL); job.phase = 'idle'; });
-      generateVideos(frames, body.ratio || '16:9', body.videoModel || DEFAULT_VIDEO_MODEL).catch(e => { logLine(`videos crash: ${e.message}`); job.phase = 'idle'; });
+      if (IS_VERCEL) return runJobOnVercel(res, async () => { await generateVideos(frames, body.ratio || '16:9', body.videoModel || DEFAULT_VIDEO_MODEL, body.chainContinuity === true); job.phase = 'idle'; });
+      generateVideos(frames, body.ratio || '16:9', body.videoModel || DEFAULT_VIDEO_MODEL, body.chainContinuity === true).catch(e => { logLine(`videos crash: ${e.message}`); job.phase = 'idle'; });
       return sendJson(res, 202, { started: true, count: frames.filter(f => f.animation_prompt).length });
     }
 
