@@ -68,6 +68,12 @@ Verified endpoints:
 - **Video model auto-fallback**: when `grok-video` or `omni-flash` is selected and a frame fails
   to submit/render, it automatically retries that frame with `veo-3.1`. If `veo-3.1` is selected
   directly, no fallback runs. The dropdown lists each model as a separate standalone option.
+- **Image-to-video asset hardening**: before submitting image-to-video, the frame's stored image
+  URL is verified reachable; if it is dead/expired (e.g. old `tmpfiles.paxsenix.org` links), the
+  local frame PNG is re-hosted to catbox/uguu for a fresh URL. If a video task still dies with
+  PaxSenix's transient `Uploaded asset ... not ready within 120000ms` error, the SAME model is
+  retried once with a refreshed image URL (tighter 4-min poll budget on Vercel to fit the 300s
+  maxDuration) before falling back to the next model in the chain.
 - **Seamless chaining**: `POST /api/videos` (and `/api/run-all`) accept `chainContinuity: true` —
   videos then render sequentially, each anchored to the previous scene's last frame.
 
