@@ -829,11 +829,11 @@ const VIDEO_MODELS = [
   { id: 'veo-3.1', label: 'Veo 3.1 — 8s clips, high quality' }
 ];
 const DEFAULT_VIDEO_MODEL = 'grok-video';
-// Video model auto-fallback chain: grok-video and omni-flash retry a failed frame
-// with Veo 3.1. Selecting Veo 3.1 directly runs it alone (no fallback).
+// Video model selection is STANDALONE: the chosen model runs alone with no hidden
+// fallback chain. Selecting "Omni Flash" renders only with omni-flash; selecting
+// "Veo 3.1" renders only with veo-3.1 — each is its own explicit choice in the UI.
 function videoModelChain(videoModel) {
-  const m = videoModel || DEFAULT_VIDEO_MODEL;
-  return m === 'veo-3.1' ? ['veo-3.1'] : [m, 'veo-3.1'];
+  return [videoModel || DEFAULT_VIDEO_MODEL];
 }
 // Veo 3.1 and Omni Flash take the singular `imageUrl` param; Grok takes plural
 // `imageUrls` (per PaxSenix swagger).
@@ -1826,6 +1826,12 @@ async function generateVideos(frames, ratio, videoModel = DEFAULT_VIDEO_MODEL, c
   const modelChain = videoModelChain(videoModel);
   logLine(`video phase: ${withAnim.length} frame(s) — ${modelChain.join(' → ')} @ ${ratio}` +
     (chainContinuity ? ' — SEAMLESS CHAINING (each scene starts from previous scene\'s last frame)' : ''));
+  // Standalone models: no hidden fallback, so warn upfront when the chosen model is
+  // known to be unreliable for image-to-video (PaxSenix omni-flash i2v asset pipeline
+  // fails server-side regardless of image URL). The user can switch to Veo 3.1.
+  if (videoModel === 'omni-flash' && withAnim.some(f => f.generated_image_url)) {
+    logLine(`NOTE: omni-flash image-to-video is currently failing on PaxSenix (server-side asset pipeline error). With standalone models there is NO auto-fallback — frames will fail. Select Veo 3.1 for reliable image-to-video.`);
+  }
 
   const work = withAnim.filter(f => !fs.existsSync(videoFile(f.frame)));
   for (const f of withAnim.filter(f => fs.existsSync(videoFile(f.frame)))) { job.done++; job.ok++; }
@@ -1838,14 +1844,8 @@ async function generateVideos(frames, ratio, videoModel = DEFAULT_VIDEO_MODEL, c
     return { f, prompt: enh };
   }));
 
-  // Circuit breaker: once a model dies with PaxSenix's asset-processing error
-  // ("Uploaded asset ... not ready within 120000ms"), the image URL is already
-  // verified fresh — so the failure is server-side and retrying just burns ~2.5 min
-  // per frame for nothing. Skip that model for the REST of this run and let the
-  // fallback (veo-3.1) handle the remaining frames immediately.
-  const assetBroken = new Set();
-
-  // renderVideo: walk the model chain for one frame, optionally anchored to a
+  // renderVideo: render ONE frame with the standalone selected model (no fallback
+  // chain — each model is its own explicit choice). Optionally anchored to a
   // continuity image (previous scene's last frame). On success with chaining ON,
   // extract + re-host this scene's last frame as the anchor for the next scene.
   const renderVideo = async (f, prompt, anchorImg) => {
@@ -1855,12 +1855,11 @@ async function generateVideos(frames, ratio, videoModel = DEFAULT_VIDEO_MODEL, c
     const img = anchorImg || await resolveVideoImage(f);
     const mode = img ? 'image-to-video' : 'text-to-video';
     for (const model of modelChain) {
-      if (assetBroken.has(model)) continue;
       const imgParam = img ? `&${videoImgKey(model)}=${encodeURIComponent(img)}` : '';
       const mRatio = normalizeVideoRatio(ratio, model);
       const q = `/ai-video/${model}?prompt=${encodeURIComponent(prompt)}&ratio=${encodeURIComponent(mRatio)}&type=${mode}${imgParam}`;
       const task = await submitTask(q);
-      if (!task) { logLine(`frame ${f.frame}: ${model} SUBMIT FAILED`); if (modelChain.length > 1) logLine(`frame ${f.frame}: → falling back to next model`); continue; }
+      if (!task) { logLine(`frame ${f.frame}: ${model} SUBMIT FAILED`); return false; }
       logLine(`frame ${f.frame}: ${model} submitted (${mode}${anchorImg ? ', anchored to previous scene' : ''})`);
       const info = {};
       const url = await waitTask(task, 25, logLine, info);
@@ -1882,16 +1881,8 @@ async function generateVideos(frames, ratio, videoModel = DEFAULT_VIDEO_MODEL, c
         return true;
       }
       const assetErr = !!(info.failed && /asset|not ready/i.test(JSON.stringify(info.payload || '')));
-      logLine(`frame ${f.frame}: ${model} RENDER FAILED${assetErr ? ' (asset error)' : ''}`);
-      // Trip the breaker only for NON-last-resort models — the final model in the
-      // chain (veo-3.1, or the sole model when selected directly) must always be
-      // attempted on later frames, since a single transient blip would otherwise
-      // fail every remaining frame instantly.
-      if (assetErr && model !== modelChain[modelChain.length - 1]) {
-        assetBroken.add(model);
-        logLine(`frame ${f.frame}: ${model} image-to-video asset pipeline is failing server-side — skipping ${model} for the rest of this run (falling back to ${modelChain[modelChain.length - 1]})`);
-      }
-      if (modelChain.length > 1) logLine(`frame ${f.frame}: → falling back to next model`);
+      logLine(`frame ${f.frame}: ${model} RENDER FAILED${assetErr ? ' (asset error — server-side asset pipeline issue; try Veo 3.1 for image-to-video)' : ''}`);
+      return false;
     }
     return false;
   };
@@ -1912,7 +1903,7 @@ async function generateVideos(frames, ratio, videoModel = DEFAULT_VIDEO_MODEL, c
         anchors.set(f.frame, f.chain_image_url); // next scene starts from THIS scene's last frame
       } else if (!ok) {
         job.failed.push(f.frame);
-        logLine(`frame ${f.frame}: VIDEO FAILED on all models`);
+        logLine(`frame ${f.frame}: VIDEO FAILED (${modelChain.join('/')})`);
       }
       job.done++;
     }
@@ -1921,7 +1912,7 @@ async function generateVideos(frames, ratio, videoModel = DEFAULT_VIDEO_MODEL, c
     logLine(`rendering ${enhanced.length} frame videos in parallel (can take several minutes)...`);
     await Promise.all(enhanced.map(async ({ f, prompt }) => {
       const ok = await renderVideo(f, prompt, null);
-      if (!ok) { job.failed.push(f.frame); logLine(`frame ${f.frame}: VIDEO FAILED on all models`); }
+      if (!ok) { job.failed.push(f.frame); logLine(`frame ${f.frame}: VIDEO FAILED (${modelChain.join('/')})`); }
       job.done++;
     }));
   }

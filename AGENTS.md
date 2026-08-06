@@ -65,18 +65,15 @@ Verified endpoints:
   ONLY `16:9` / `9:16`; no video model accepts `4:3`. The app auto-snaps an unsupported ratio to the
   closest supported one (portrait-ish → `9:16`, otherwise → `16:9`) with a log note, so a frame never
   dies at submit time. The storyboard UI hides `4:3` for this reason.
-- **Video model auto-fallback**: when `grok-video` or `omni-flash` is selected and a frame fails
-  to submit/render, it automatically retries that frame with `veo-3.1`. If `veo-3.1` is selected
-  directly, no fallback runs. The dropdown lists each model as a separate standalone option.
+- **Standalone video models (no auto-fallback)**: the video model dropdown lists `grok-video`,
+  `omni-flash`, and `veo-3.1` as separate, explicit choices. The selected model runs ALONE — a
+  failed frame is reported failed; it is NOT silently retried with another model (this was
+  removed because PaxSenix's omni-flash image-to-video asset pipeline fails server-side with
+  `Uploaded asset ... not ready within 120000ms` regardless of the image URL, so a hidden
+  veo-3.1 fallback only wasted ~2.5 min per frame). For reliable image-to-video, pick `veo-3.1`.
 - **Image-to-video asset hardening**: before submitting image-to-video, the frame's stored image
   URL is verified reachable; if it is dead/expired (e.g. old `tmpfiles.paxsenix.org` links), the
-  local frame PNG is re-hosted to catbox/uguu for a fresh URL. If a video task still dies with
-  PaxSenix's `Uploaded asset ... not ready within 120000ms` error (a server-side asset-pipeline
-  failure that retrying does not cure), a per-run circuit breaker skips that model for the rest of
-  the run so remaining frames fall straight through to the next model (veo-3.1) without burning
-  ~2.5 min per frame. The LAST model in the chain is never skipped — it is always attempted.
-  With seamless chaining ON, frames render sequentially, so a broken omni-flash i2v pipeline can
-  otherwise add ~25 min of dead time to an 11-frame run.
+  local frame PNG is re-hosted to catbox/uguu for a fresh URL.
 - **Seamless chaining**: `POST /api/videos` (and `/api/run-all`) accept `chainContinuity: true` —
   videos then render sequentially, each anchored to the previous scene's last frame.
 
