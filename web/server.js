@@ -1838,62 +1838,58 @@ async function generateVideos(frames, ratio, videoModel = DEFAULT_VIDEO_MODEL, c
     return { f, prompt: enh };
   }));
 
+  // Circuit breaker: once a model dies with PaxSenix's asset-processing error
+  // ("Uploaded asset ... not ready within 120000ms"), the image URL is already
+  // verified fresh — so the failure is server-side and retrying just burns ~2.5 min
+  // per frame for nothing. Skip that model for the REST of this run and let the
+  // fallback (veo-3.1) handle the remaining frames immediately.
+  const assetBroken = new Set();
+
   // renderVideo: walk the model chain for one frame, optionally anchored to a
   // continuity image (previous scene's last frame). On success with chaining ON,
   // extract + re-host this scene's last frame as the anchor for the next scene.
-  const renderVideo = async (f, prompt, anchorImg, prev) => {
+  const renderVideo = async (f, prompt, anchorImg) => {
     // Anchored scenes use the previous scene's freshly re-hosted last frame;
     // unanchored scenes verify + refresh the frame's stored image URL first so a
     // dead/expired link never kills the video task's asset download.
-    let img = anchorImg || await resolveVideoImage(f);
+    const img = anchorImg || await resolveVideoImage(f);
     const mode = img ? 'image-to-video' : 'text-to-video';
     for (const model of modelChain) {
-      // Retry the same model once when a render dies with PaxSenix's transient
-      // asset-processing error ("Uploaded asset ... not ready within 120000ms") —
-      // usually a bad image URL or a server hiccup, not a real model failure. Only
-      // fall back to the next model when the retry also fails.
-      for (let attempt = 1; attempt <= 2; attempt++) {
-        const imgParam = img ? `&${videoImgKey(model)}=${encodeURIComponent(img)}` : '';
-        const mRatio = normalizeVideoRatio(ratio, model);
-        const q = `/ai-video/${model}?prompt=${encodeURIComponent(prompt)}&ratio=${encodeURIComponent(mRatio)}&type=${mode}${imgParam}`;
-        const task = await submitTask(q);
-        if (!task) { logLine(`frame ${f.frame}: ${model} SUBMIT FAILED`); break; }
-        logLine(`frame ${f.frame}: ${model} submitted (${mode}${anchorImg ? ', anchored to previous scene' : ''}${attempt > 1 ? ', retry' : ''})`);
-        const info = {};
-        // Retry attempts poll on a tighter budget on Vercel so they fit inside the
-        // 300s maxDuration (locally the full 25 min budget is fine).
-        const pollMin = (attempt > 1 && IS_VERCEL) ? 4 : 25;
-        const url = await waitTask(task, pollMin, logLine, info);
-        if (url && await download(url, videoFile(f.frame))) {
-          job.ok++;
-          logLine(`frame ${f.frame}: VIDEO DONE (${model})`);
-          if (chainContinuity) {
-            try {
-              const png = chainRefFile(f.frame);
-              await extractLastFrame(videoFile(f.frame), png);
-              const cUrl = await uploadToImageHost(png, logLine);
-              if (cUrl) {
-                f.chain_image_url = cUrl;
-                await persistChainImage(f);
-                logLine(`frame ${f.frame}: chain anchor saved → next scene starts from its last frame`);
-              }
-            } catch (e) { logLine(`frame ${f.frame}: chain anchor extract/upload failed: ${e.message}`); }
-          }
-          return true;
-        }
-        const assetErr = !!(info.failed && /asset|not ready/i.test(JSON.stringify(info.payload || '')));
-        logLine(`frame ${f.frame}: ${model} RENDER FAILED${assetErr ? ' (asset error)' : ''}`);
-        if (assetErr && attempt === 1) {
-          // Refresh the image URL (expired/slow hosts cause most asset failures)
-          // and give the same model one more chance before falling back.
-          logLine(`frame ${f.frame}: ${model}: refreshing image URL and retrying...`);
+      if (assetBroken.has(model)) continue;
+      const imgParam = img ? `&${videoImgKey(model)}=${encodeURIComponent(img)}` : '';
+      const mRatio = normalizeVideoRatio(ratio, model);
+      const q = `/ai-video/${model}?prompt=${encodeURIComponent(prompt)}&ratio=${encodeURIComponent(mRatio)}&type=${mode}${imgParam}`;
+      const task = await submitTask(q);
+      if (!task) { logLine(`frame ${f.frame}: ${model} SUBMIT FAILED`); if (modelChain.length > 1) logLine(`frame ${f.frame}: → falling back to next model`); continue; }
+      logLine(`frame ${f.frame}: ${model} submitted (${mode}${anchorImg ? ', anchored to previous scene' : ''})`);
+      const info = {};
+      const url = await waitTask(task, 25, logLine, info);
+      if (url && await download(url, videoFile(f.frame))) {
+        job.ok++;
+        logLine(`frame ${f.frame}: VIDEO DONE (${model})`);
+        if (chainContinuity) {
           try {
-            const fresh = anchorImg ? (prev ? await chainRefFor(prev) : null) : await resolveVideoImage(f);
-            if (fresh) img = fresh;
-          } catch (e) { logLine(`frame ${f.frame}: image refresh failed: ${e.message}`); }
-          continue;
+            const png = chainRefFile(f.frame);
+            await extractLastFrame(videoFile(f.frame), png);
+            const cUrl = await uploadToImageHost(png, logLine);
+            if (cUrl) {
+              f.chain_image_url = cUrl;
+              await persistChainImage(f);
+              logLine(`frame ${f.frame}: chain anchor saved → next scene starts from its last frame`);
+            }
+          } catch (e) { logLine(`frame ${f.frame}: chain anchor extract/upload failed: ${e.message}`); }
         }
-        break;
+        return true;
+      }
+      const assetErr = !!(info.failed && /asset|not ready/i.test(JSON.stringify(info.payload || '')));
+      logLine(`frame ${f.frame}: ${model} RENDER FAILED${assetErr ? ' (asset error)' : ''}`);
+      // Trip the breaker only for NON-last-resort models — the final model in the
+      // chain (veo-3.1, or the sole model when selected directly) must always be
+      // attempted on later frames, since a single transient blip would otherwise
+      // fail every remaining frame instantly.
+      if (assetErr && model !== modelChain[modelChain.length - 1]) {
+        assetBroken.add(model);
+        logLine(`frame ${f.frame}: ${model} image-to-video asset pipeline is failing server-side — skipping ${model} for the rest of this run (falling back to ${modelChain[modelChain.length - 1]})`);
       }
       if (modelChain.length > 1) logLine(`frame ${f.frame}: → falling back to next model`);
     }
@@ -1911,7 +1907,7 @@ async function generateVideos(frames, ratio, videoModel = DEFAULT_VIDEO_MODEL, c
       const idx = withAnim.indexOf(f);
       const prev = idx > 0 ? withAnim[idx - 1] : null;
       const chainUrl = prev ? (anchors.get(prev.frame) || await chainRefFor(prev)) : null;
-      const ok = await renderVideo(f, prompt, chainUrl, prev);
+      const ok = await renderVideo(f, prompt, chainUrl);
       if (ok && f.chain_image_url) {
         anchors.set(f.frame, f.chain_image_url); // next scene starts from THIS scene's last frame
       } else if (!ok) {
@@ -1924,7 +1920,7 @@ async function generateVideos(frames, ratio, videoModel = DEFAULT_VIDEO_MODEL, c
     // Render every frame in parallel; each frame walks the model chain until one succeeds
     logLine(`rendering ${enhanced.length} frame videos in parallel (can take several minutes)...`);
     await Promise.all(enhanced.map(async ({ f, prompt }) => {
-      const ok = await renderVideo(f, prompt, null, null);
+      const ok = await renderVideo(f, prompt, null);
       if (!ok) { job.failed.push(f.frame); logLine(`frame ${f.frame}: VIDEO FAILED on all models`); }
       job.done++;
     }));
