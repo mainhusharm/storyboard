@@ -46,6 +46,13 @@ consistency**, generates frame images, animates them via Grok Video / Omni Flash
 - **🚀 Create Full Film — auto** — one-click button that runs the entire pipeline:
   clean → storyboard → character refs → images → narration → videos → final combine
 - **Per-frame re-render** — individual frame re-render buttons still work with consistency
+- **✕ Cancel button** — shown in the header while a task runs; `POST /api/cancel` sets a
+  `cancelRequested` flag that the pipeline loops (storyboard, char refs, images, videos,
+  narration, combine, auto run-all) and task polls (`waitTask`/`submitTask`) check between
+  frames, aborting quickly so the job returns to `idle`. Run buttons stay ENABLED while busy:
+  clicking one prompts to cancel the running task first (`guardBusy` in the SPA), then starts
+  the new job — so a pending task never blocks a fresh run. Cancellation is scoped to the
+  storyboard job only (the influencer job is independent).
 
 ## PaxSenix API (v3.3.1)
 

@@ -951,14 +951,20 @@ function applyStyle(prompt, styleKey) {
 }
 
 // ---------------- in-memory job state ----------------
-const job = { phase: 'idle', total: 0, done: 0, ok: 0, failed: [], log: [], startedAt: null };
+const job = { phase: 'idle', total: 0, done: 0, ok: 0, failed: [], log: [], startedAt: null, cancelRequested: false };
 function logLine(msg) {
   job.log.push(`[${new Date().toLocaleTimeString()}] ${msg}`);
   if (job.log.length > 500) job.log.shift();
 }
 function setPhase(phase, total = 0) {
   job.phase = phase; job.total = total; job.done = 0; job.ok = 0; job.failed = [];
-  job.startedAt = Date.now(); job.log = [];
+  job.startedAt = Date.now(); job.log = []; job.cancelRequested = false;
+}
+// Cancel coordination: POST /api/cancel sets job.cancelRequested; pipeline loops and
+// task polls check it and abort. Only the storyboard job is cancellable this way
+// (call sites that log via logLine), never the independent influencer job (inflLogLine).
+function storyboardCancelRequested(logFn) {
+  return logFn === logLine && job.cancelRequested;
 }
 
 // ---------------- SEPARATE job state for AI Influencer (fully independent from storyboard) ----------------
@@ -1122,6 +1128,7 @@ async function paxFetch(url, opts = {}, timeoutMs = 120000) {
 
 async function submitTask(pathAndQuery, logFn = logLine) {
   for (let attempt = 1; attempt <= 4; attempt++) {
+    if (storyboardCancelRequested(logFn)) { logFn('submit cancelled by user'); return null; }
     try {
       const res = await paxFetch(`${API}${pathAndQuery}`);
       const j = await res.json().catch(() => ({}));
@@ -1171,6 +1178,7 @@ async function waitTask(taskUrl, maxMin = 25, logFn = logLine, outInfo = null) {
   let networkErrors = 0;
   let lastStatus = 'pending';
   while (Date.now() < deadline) {
+    if (storyboardCancelRequested(logFn)) { logFn('task cancelled by user'); if (outInfo) outInfo.cancelled = true; return null; }
     try {
       const res = await paxFetch(taskUrl, {}, 90000);
       const j = await res.json().catch(() => ({}));
@@ -1554,6 +1562,7 @@ async function generateStoryboard(script, model, targetDuration = 120, look = ''
   ];
   let characters = [], charModel = model;
   for (const m of modelsToTry) {
+    if (job.cancelRequested) { logLine('storyboard cancelled by user'); return { characters: [], frames: [] }; }
     try {
       const rawContent = await chatCompletion(m, charMsgs);
       if (!rawContent) { logLine(`${m}: empty response, next`); continue; }
@@ -1586,6 +1595,7 @@ async function generateStoryboard(script, model, targetDuration = 120, look = ''
   ];
   let frames = [], frameModel = model;
   for (const m of modelsToTry) {
+    if (job.cancelRequested) { logLine('storyboard cancelled by user'); return { characters: [], frames: [] }; }
     try {
       const rawContent = await chatCompletion(m, frameMsgs);
       if (!rawContent) { logLine(`${m}: empty response, next`); continue; }
@@ -1666,6 +1676,7 @@ async function generateCharRefs(characters, imageModel = 'seedream-5', style = '
   // Submit all tasks in parallel (no delays)
   logLine(`submitting ${enhanced.length} ref tasks in parallel...`);
   const submitted = await Promise.all(enhanced.map(async ({ c, prompt }) => {
+    if (job.cancelRequested) return null;
     const q = `${imageEndpoint(imageModel)}?prompt=${encodeURIComponent(prompt)}&model=${encodeURIComponent(imageModel)}&ratio=1:1`;
     const task = await submitTask(q);
     if (!task) { job.failed.push(c.id); job.done++; logLine(`${c.id}: SUBMIT FAILED`); return null; }
@@ -1677,7 +1688,9 @@ async function generateCharRefs(characters, imageModel = 'seedream-5', style = '
   const results = submitted.filter(Boolean);
   logLine(`waiting for ${results.length} ref renders in parallel...`);
   await Promise.all(results.map(async ({ c, task }) => {
+    if (job.cancelRequested) return;
     const url = await waitTask(task);
+    if (job.cancelRequested) { logLine('cancelled'); return; }
     if (url && await download(url, charRefFile(c.id))) { c.reference_image_url = url; job.ok++; logLine(`${c.id}: REF DONE`); }
     else { job.failed.push(c.id); logLine(`${c.id}: REF FAILED`); }
     job.done++;
@@ -1710,6 +1723,7 @@ async function generateImages(frames, imageModel, ratio, style, consistency = tr
   // Submit all tasks in parallel (no delays)
   logLine(`submitting ${enhanced.length} image tasks in parallel...`);
   const submitted = await Promise.all(enhanced.map(async ({ f, prompt }) => {
+    if (job.cancelRequested) return null;
     let task = null;
     if (useRefs) {
       const refs = (f.characters_present || []).map(id => refById.get(id)).filter(Boolean).slice(0, 3);
@@ -1731,7 +1745,9 @@ async function generateImages(frames, imageModel, ratio, style, consistency = tr
   logLine(`waiting for ${results.length} image renders in parallel...`);
   const urlMap = new Map();
   await Promise.all(results.map(async ({ f, task }) => {
+    if (job.cancelRequested) return;
     const url = await waitTask(task);
+    if (job.cancelRequested) { logLine('cancelled'); return; }
     if (url && await download(url, frameFile(f.frame))) { f.generated_image_url = url; urlMap.set(f.frame, url); job.ok++; logLine(`frame ${f.frame}: DONE`); }
     else { job.failed.push(f.frame); logLine(`frame ${f.frame}: FAILED`); }
     job.done++;
@@ -1863,6 +1879,7 @@ async function generateVideos(frames, ratio, videoModel = DEFAULT_VIDEO_MODEL, c
       logLine(`frame ${f.frame}: ${model} submitted (${mode}${anchorImg ? ', anchored to previous scene' : ''})`);
       const info = {};
       const url = await waitTask(task, 25, logLine, info);
+      if (job.cancelRequested) { logLine(`frame ${f.frame}: cancelled by user`); return false; }
       if (url && await download(url, videoFile(f.frame))) {
         job.ok++;
         logLine(`frame ${f.frame}: VIDEO DONE (${model})`);
@@ -1893,6 +1910,7 @@ async function generateVideos(frames, ratio, videoModel = DEFAULT_VIDEO_MODEL, c
     logLine(`rendering ${enhanced.length} frame videos sequentially for seamless chaining (can take much longer)...`);
     const anchors = new Map(); // frame -> fresh chain anchor, filled when a scene renders this run
     for (const { f, prompt } of enhanced) {
+      if (job.cancelRequested) { logLine('video phase cancelled by user'); break; }
       // Anchor = last frame of the immediately preceding scene in story order,
       // whether it was rendered this run or already exists from an earlier run.
       const idx = withAnim.indexOf(f);
@@ -1902,8 +1920,8 @@ async function generateVideos(frames, ratio, videoModel = DEFAULT_VIDEO_MODEL, c
       if (ok && f.chain_image_url) {
         anchors.set(f.frame, f.chain_image_url); // next scene starts from THIS scene's last frame
       } else if (!ok) {
-        job.failed.push(f.frame);
-        logLine(`frame ${f.frame}: VIDEO FAILED (${modelChain.join('/')})`);
+        if (job.cancelRequested) { logLine(`frame ${f.frame}: cancelled by user`); }
+        else { job.failed.push(f.frame); logLine(`frame ${f.frame}: VIDEO FAILED (${modelChain.join('/')})`); }
       }
       job.done++;
     }
@@ -1911,8 +1929,12 @@ async function generateVideos(frames, ratio, videoModel = DEFAULT_VIDEO_MODEL, c
     // Render every frame in parallel; each frame walks the model chain until one succeeds
     logLine(`rendering ${enhanced.length} frame videos in parallel (can take several minutes)...`);
     await Promise.all(enhanced.map(async ({ f, prompt }) => {
+      if (job.cancelRequested) return;
       const ok = await renderVideo(f, prompt, null);
-      if (!ok) { job.failed.push(f.frame); logLine(`frame ${f.frame}: VIDEO FAILED (${modelChain.join('/')})`); }
+      if (!ok) {
+        if (job.cancelRequested) { logLine(`frame ${f.frame}: cancelled by user`); return; }
+        job.failed.push(f.frame); logLine(`frame ${f.frame}: VIDEO FAILED (${modelChain.join('/')})`);
+      }
       job.done++;
     }));
   }
@@ -2118,6 +2140,7 @@ async function generateFullNarration(frames, voice = DEFAULT_VOICE, language = D
   const narrationStart = Date.now();
   const qwenBudgetMs = IS_VERCEL ? 240000 : 0; // 0 = unlimited (per-call default)
   for (let i = 0; i < chunks.length; i++) {
+    if (job.cancelRequested) { logLine('narration cancelled by user'); break; }
     const chunkPath = path.join(VIDEO_DIR, `narr_chunk_${String(i + 1).padStart(2, '0')}.mp3`);
     if (fs.existsSync(chunkPath)) { chunkFiles.push(chunkPath); logLine(`chunk ${i+1}: exists, skip`); continue; }
 
@@ -2429,6 +2452,7 @@ async function combineFilm(frames, ratio = '16:9') {
 
   logLine(`preparing ${sorted.length} clips (audio + normalize in one pass)...`);
   for (const f of sorted) {
+    if (job.cancelRequested) { logLine('combine cancelled by user'); job.phase = 'idle'; return null; }
     const vf = videoFile(f.frame);
     const tf = ttsFile(f.frame);
     const clipPath = path.join(workDir, `clip_${String(f.frame).padStart(2, '0')}.mp4`);
@@ -3146,6 +3170,15 @@ const requestHandler = async (req, res) => {
       req.user = user;
     }
 
+    if (p === '/api/cancel' && req.method === 'POST') {
+      if (job.phase !== 'idle') {
+        job.cancelRequested = true;
+        logLine('cancel requested — stopping current task...');
+        return sendJson(res, 200, { ok: true, cancelled: job.phase });
+      }
+      return sendJson(res, 200, { ok: true, cancelled: null });
+    }
+
     if (p === '/api/characters') {
       const chars = await readJson(CHARS_JSON) || [];
       for (const c of chars) { c.hasRef = fs.existsSync(charRefFile(c.id)); }
@@ -3248,6 +3281,7 @@ const requestHandler = async (req, res) => {
         }
 
         for (const [name, fn] of steps) {
+          if (job.cancelRequested) { logLine('auto pipeline cancelled by user'); break; }
           try { await fn(); }
           catch (e) { logLine(`auto pipeline: ${name} failed: ${e.message} — continuing`); job.phase = 'idle'; }
         }

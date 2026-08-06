@@ -186,6 +186,7 @@
     <span id="authName" style="display:none;font-size:11px;color:var(--amber2)">👤 </span>
     <button id="btnLogout" style="display:none;font-size:11px;padding:5px 12px" onclick="logout()">Log out</button>
     <div class="pill" id="phasepill"><div class="dot"></div><span id="phasetxt">IDLE</span></div>
+    <button id="btnCancel" style="display:none;font-size:11px;padding:5px 12px;border:1px solid #f87171;color:#f87171;background:rgba(248,113,113,.1);border-radius:99px;cursor:pointer;font-weight:600;letter-spacing:.5px" onclick="cancelJob()">✕ Cancel</button>
     <div class="pill">GROK · OMNI · VEO</div>
   </div>
 </header>
@@ -504,7 +505,9 @@ async function poll(){
   $('phasepill').classList.toggle('busy',busy);
   $('phasetxt').textContent=busy?`${s.phase.toUpperCase()} ${s.done}/${s.total||'?'}`:'IDLE';
   $('gprog').firstElementChild.style.width=s.total?Math.round(100*s.done/s.total)+'%':(busy?'12%':'0%');
-  $('btnStoryboard').disabled=$('btnCharRefs').disabled=$('btnImages').disabled=$('btnVideos').disabled=$('btnCombine').disabled=$('btnNarration').disabled=$('btnAuto').disabled=busy;
+  // Run buttons stay ENABLED while busy — clicking one asks to cancel the running
+  // task first (guardBusy) so a new run never gets stuck behind the previous one.
+  $('btnCancel').style.display=busy?'':'none';
   $('log').innerHTML=s.log.map(l=>{
     const m=l.match(/^(\[[^\]]+\])\s?(.*)$/);
     const time=m?`<span class="t">${esc(m[1])}</span> `:'';
@@ -517,10 +520,48 @@ async function poll(){
   if(busy)poll.wasBusy=true;
 }
 
+// Cancel the currently running task (server stops at the next frame/poll boundary).
+async function cancelJob(){
+  if(!confirm('Cancel the current task?')) return;
+  try{ await api('/cancel',{method:'POST'}); }catch(e){}
+  poll();
+}
+// If a task is running, ask the user before starting a new one — on confirm, cancel
+// the running task and wait for it to fully stop, then proceed.
+async function guardBusy(){
+  if(SUBMITTING) return false; // a run is already being submitted (double-click guard)
+  if(LOCAL_BUSY){ // inline storyboard request already in flight
+    if(!confirm('A task is currently running. Cancel it and start this new one?')) return false;
+    try{ await api('/cancel',{method:'POST'}); }catch(e){}
+    LOCAL_BUSY=false; poll();
+    return true;
+  }
+  let s={phase:'idle'};
+  try{s=await api('/status')}catch(e){}
+  if(s.phase==='idle') return true;
+  if(!confirm('A task is currently running. Cancel it and start this new one?')) return false;
+  try{ await api('/cancel',{method:'POST'}); }catch(e){}
+  for(let i=0;i<30;i++){ await new Promise(r=>setTimeout(r,1000)); try{s=await api('/status'); if(s.phase==='idle')break }catch(e){} }
+  return true;
+}
+let SUBMITTING=false;
+// POST a run with busy-guard + double-click lock; alerts on server errors.
+async function postJob(path, body){
+  if(SUBMITTING) return null;
+  if(!(await guardBusy())) return null;
+  SUBMITTING=true;
+  try{
+    const r=await api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(r.error)alert(r.error);
+    return r;
+  } finally { SUBMITTING=false; }
+}
+
 $('btnStoryboard').onclick=async()=>{
   const script=$('script').value.trim();
   if(script.length<10)return alert('Paste a script first.');
   if(FRAMES.length && !confirm('This will archive existing renders and start a new storyboard. Continue?')) return;
+  if(!(await guardBusy()))return;
   LOCAL_BUSY=true;poll();
   try{
     await api('/clean-outputs',{method:'POST'});
@@ -535,6 +576,7 @@ $('btnAuto').onclick=async()=>{
   const script=$('script').value.trim();
   if(script.length<10)return alert('Paste a script first.');
   if(!confirm(`Full auto pipeline: archives old renders, then builds storyboard → character refs → images → ${$('narrationMode').value==='tts'?'TTS narration → ':''}videos → final film. Language: ${$('language').selectedOptions[0]?.text||'English'}. This can take 20–60 minutes. Start?`))return;
+  if(!(await guardBusy()))return;
   const r=await api('/run-all',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
     script,model:$('chatModel').value,duration:Number($('duration').value),look:$('look').value,
     style:$('style').value,imageModel:$('imageModel').value,videoModel:$('videoModel').value,ratio:$('ratio').value,
@@ -542,15 +584,14 @@ $('btnAuto').onclick=async()=>{
   })});
   if(r.error)alert(r.error);
 };
-$('btnCharRefs').onclick=async()=>{const r=await api('/char-refs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sbPayload({imageModel:$('imageModel').value,style:$('style').value,force:true}))});if(r.error)alert(r.error);if(r.characters){CHARS=r.characters;try{localStorage.setItem('sb_chars',JSON.stringify(CHARS))}catch(e){}}};
+$('btnCharRefs').onclick=async()=>{const r=await postJob('/char-refs',sbPayload({imageModel:$('imageModel').value,style:$('style').value,force:true}));if(r&&r.characters){CHARS=r.characters;try{localStorage.setItem('sb_chars',JSON.stringify(CHARS))}catch(e){}}};
 $('btnImages').onclick=async()=>{
   const frameNumbers=FRAMES.map(f=>f.frame);
-  const r=await api('/images',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sbPayload({frames:frameNumbers,imageModel:$('imageModel').value,ratio:$('ratio').value,style:$('style').value,consistency:$('consistency').checked}))});
-  if(r.error)alert(r.error)
+  await postJob('/images',sbPayload({frames:frameNumbers,imageModel:$('imageModel').value,ratio:$('ratio').value,style:$('style').value,consistency:$('consistency').checked}));
 };
-$('btnVideos').onclick=async()=>{const r=await api('/videos',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sbPayload({ratio:$('ratio').value,videoModel:$('videoModel').value,force:true,chainContinuity:$('chainContinuity').checked}))});if(r.error)alert(r.error)};
-$('btnNarration').onclick=async()=>{const r=await api('/narration',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sbPayload({voice:$('voice').value,language:$('language').value,narrationEngine:$('narrationEngine').value,qwenSpeaker:$('qwenSpeaker').value,qwenSpeed:$('qwenSpeed').value,qwenPitch:$('qwenPitch').value,qwenEmotion:$('qwenEmotion').value,force:true}))});if(r.error)alert(r.error)};
-$('btnCombine').onclick=async()=>{const r=await api('/combine',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sbPayload({ratio:$('ratio').value}))});if(r.error)alert(r.error)};
+$('btnVideos').onclick=async()=>{await postJob('/videos',sbPayload({ratio:$('ratio').value,videoModel:$('videoModel').value,force:true,chainContinuity:$('chainContinuity').checked}))};
+$('btnNarration').onclick=async()=>{await postJob('/narration',sbPayload({voice:$('voice').value,language:$('language').value,narrationEngine:$('narrationEngine').value,qwenSpeaker:$('qwenSpeaker').value,qwenSpeed:$('qwenSpeed').value,qwenPitch:$('qwenPitch').value,qwenEmotion:$('qwenEmotion').value,force:true}))};
+$('btnCombine').onclick=async()=>{await postJob('/combine',sbPayload({ratio:$('ratio').value}))};
 async function regenFrame(n){await api('/images',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sbPayload({frames:[n],imageModel:$('imageModel').value,ratio:$('ratio').value,style:$('style').value,consistency:$('consistency').checked}))})}
 async function regenChar(id){const r=await api('/char-refs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sbPayload({force:[id]}))});if(r.characters){CHARS=r.characters;try{localStorage.setItem('sb_chars',JSON.stringify(CHARS))}catch(e){}}}
 
