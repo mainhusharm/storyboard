@@ -121,6 +121,16 @@ if ($Phase -eq 'images' -or $Phase -eq 'all') {
 # ---------------- VIDEO PHASE ----------------
 if ($Phase -eq 'videos' -or $Phase -eq 'all') {
     Write-Host "`n===== VIDEO GENERATION ($VideoEndpoint, image-to-video) ====="
+    # PaxSenix video models reject unsupported ratios (omni-flash & veo-3.1 accept
+    # only 16:9 / 9:16; grok-video adds 1:1; 4:3 is rejected by all). Snap unsupported
+    # ratios for video so submissions never fail at submit time.
+    $videoRatio = $Ratio
+    $videoRatios = if ($VideoEndpoint -eq 'grok-video') { @('16:9','9:16','1:1') } else { @('16:9','9:16') }
+    if ($videoRatios -notcontains $Ratio) {
+        $w, $h = $Ratio -split ':' | ForEach-Object { try { [int]$_ } catch { 0 } }
+        $videoRatio = if ($w -gt 0 -and $h -gt 0 -and $w -lt $h) { '9:16' } else { '16:9' }
+        Write-Warning "Video model $VideoEndpoint does not support ratio $Ratio — using $videoRatio for video."
+    }
     $jobs = @()
     foreach ($f in $frames) {
         if (-not $f.animation_prompt) { continue }
@@ -133,7 +143,7 @@ if ($Phase -eq 'videos' -or $Phase -eq 'all') {
         $mode = 'text-to-video'
         $imgParam = ''
         if ($imgUrl) { $mode = 'image-to-video'; $imgParam = '&imageUrl=' + [uri]::EscapeDataString($imgUrl) }
-        $url = "$Base/ai-video/$VideoEndpoint?prompt=" + [uri]::EscapeDataString($f.animation_prompt) + "&ratio=$Ratio&type=$mode$imgParam"
+        $url = "$Base/ai-video/$VideoEndpoint?prompt=" + [uri]::EscapeDataString($f.animation_prompt) + "&ratio=$videoRatio&type=$mode$imgParam"
         $task = Submit-Job $url
         if ($task) { $jobs += [pscustomobject]@{ Frame = $f.frame; Task = $task; Out = $vidOut }; Write-Host "frame $($f.frame): submitted ($mode)" }
         else { Write-Warning "frame $($f.frame): SUBMIT FAILED" }

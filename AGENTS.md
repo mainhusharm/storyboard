@@ -61,9 +61,13 @@ Verified endpoints:
   - `type=image-to-video&imageUrl=<url>` (singular `imageUrl`)
 - `GET /ai-video/veo-3.1?prompt=..&ratio=16:9&type=text-to-video` (8-second clips)
   - `type=image-to-video&imageUrl=<url>` (singular `imageUrl` — differs from grok's plural)
+- **Video ratios**: `grok-video` accepts `16:9` / `9:16` / `1:1`; `omni-flash` and `veo-3.1` accept
+  ONLY `16:9` / `9:16`; no video model accepts `4:3`. The app auto-snaps an unsupported ratio to the
+  closest supported one (portrait-ish → `9:16`, otherwise → `16:9`) with a log note, so a frame never
+  dies at submit time. The storyboard UI hides `4:3` for this reason.
 - **Video model auto-fallback**: when `grok-video` or `omni-flash` is selected and a frame fails
   to submit/render, it automatically retries that frame with `veo-3.1`. If `veo-3.1` is selected
-  directly, no fallback runs.
+  directly, no fallback runs. The dropdown lists each model as a separate standalone option.
 - **Seamless chaining**: `POST /api/videos` (and `/api/run-all`) accept `chainContinuity: true` —
   videos then render sequentially, each anchored to the previous scene's last frame.
 
@@ -79,7 +83,43 @@ up to 10 results.
     en-US-EricNeural, en-GB-SoniaNeural, en-GB-RyanNeural, en-IN-NeerjaNeural,
     en-IN-PrabhatNeural, alloy
 
-## Narration TTS (MIMO with PaxSenix fallback)
+## Narration TTS engines (MIMO default · PaxSenix · Qwen3-TTS)
+
+Storyboard narration picks an engine from the **Narration engine** dropdown
+(`/api/models` → `narrationEngines`): `mimo` (default) | `paxsenix` | `qwen`.
+- `mimo` — AquaDevs MIMO via `POST /v1/audio/speech` on `api.aquadevs.com` (see below).
+- `paxsenix` — the verified `/tools/tts/v2` endpoint used as the fallback engine directly.
+- `qwen` — **Qwen3-TTS** ModelScope Gradio space: POST `/gradio_api/call/v2/generate_tts`
+  (named params or `{data:[text, language, speaker, speed, pitch, emotion, custom_instruct,
+  preset_name]}`) → `{event_id}` → GET `/gradio_api/call/generate_tts/<event_id>` (SSE) →
+  the completion block carries the audio file (gradio v5 sends a raw array of FileData objects
+  `{path, url}`; gradio v4 wraps it as `{"output":{"data":[...]}}`) → download via
+  `/gradio_api/file=<path>` (wav → ffmpeg → mp3).
+  - Base URL: `QWEN_TTS_BASE` env. Default (NO token needed): the public studio host
+    `https://mama8054-qwen3-tts-domen.ms.show` — requires a browser **User-Agent header**
+    (anti-bot 403 without it). When `MODELSCOPE_TOKEN` is set (env or
+    `pipeline/modelscope_token.txt`) it automatically switches to the api-inference host
+    `https://studio-mama8054-qwen3-tts-domen.api-inference.modelscope.net`.
+    Speakers: Vivian, Ryan (default), Aiden, Eric, Serena.
+  - Payload shapes are tried in both orders on both paths (named params first — the
+    tokenless v2 path rejects `data[]` with HTTP 500; the api-inference host wants `data[]`).
+  - Response parsing handles gradio v4 (`{"output":{"data":[...]}}` string path) AND
+    gradio v5 (raw array of FileData `{path,url}` objects); nested arrays are unwrapped
+    and the `/mnt/workspace/...` status `value` is never mistaken for audio.
+  - Total Qwen wall-clock budget: 200s on Vercel (fits inside the 300s maxDuration,
+    leaving headroom for ffmpeg + chunk concat) / 900s locally.
+  - On failure each chunk falls back to PaxSenix, so narration never breaks.
+
+### ffmpeg on Vercel
+
+Vercel's Node runtime has NO ffmpeg on PATH, but the whole pipeline (Qwen wav→mp3,
+chunk concat, narration overlay, frame extraction, final combine) shells out to
+`execFile('ffmpeg', …)`. All 19 call sites go through `ffmpegBin()` which resolves:
+`require('ffmpeg-static')` (bundled per-OS binary, installed via npm — linux-x64 on
+Vercel) and falls back to `ffmpeg` on PATH for local dev. `ffmpeg-static` is a regular
+dependency (bundled size ~76MB, well under Vercel's 250MB uncompressed function limit).
+
+### MIMO (with PaxSenix fallback)
 
 Storyboard narration uses **AquaDevs MIMO TTS** (`mimo-v2.5-tts` via `POST /v1/audio/speech`
 on `api.aquadevs.com`):

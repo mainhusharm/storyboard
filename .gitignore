@@ -8,6 +8,7 @@ pipeline/omkar-key.txt
 pipeline/trendsmcp-key.txt
 pipeline/tavily-key.txt
 pipeline/youtube-api-key.txt
+pipeline/modelscope_token.txt
 *.key.txt
 *apikey*
 

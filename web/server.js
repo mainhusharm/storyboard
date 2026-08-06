@@ -7,6 +7,16 @@ const path = require('path');
 const crypto = require('crypto');
 const { execFile } = require('child_process');
 const { URL } = require('url');
+// ffmpeg binary resolver. Vercel's Node runtime has NO ffmpeg on PATH, so we ship
+// the platform binary via the `ffmpeg-static` package (installed per-OS at npm
+// install; linux-x64 on Vercel). Local dev falls back to `ffmpeg` on PATH.
+let FFMPEG_BIN = null;
+function ffmpegBin() {
+  if (FFMPEG_BIN) return FFMPEG_BIN;
+  try { FFMPEG_BIN = require('ffmpeg-static'); } catch {}
+  if (!FFMPEG_BIN) FFMPEG_BIN = 'ffmpeg';
+  return FFMPEG_BIN;
+}
 
 const IS_VERCEL = !!process.env.VERCEL;
 const VERCEL_TIMEOUT = IS_VERCEL ? 5000 : 25000;
@@ -23,6 +33,18 @@ let API_KEY = process.env.PAXSENIX_API_KEY || '';
 if (!IS_VERCEL) { try { API_KEY = API_KEY || fs.readFileSync(path.join(ROOT, 'pipeline', 'apikey.txt'), 'utf8').trim(); } catch {} }
 let AQUA_API_KEY = process.env.AQUA_API_KEY || '';
 if (!IS_VERCEL) { try { AQUA_API_KEY = AQUA_API_KEY || fs.readFileSync(path.join(ROOT, 'pipeline', 'aqua_apikey.txt'), 'utf8').trim(); } catch {} }
+// Qwen3-TTS (ModelScope Gradio space) — optional narration engine. Two hosts:
+// - Tokenless studio host (DEFAULT): https://<owner>-<space>.ms.show — the public
+//   Gradio app. Works with NO token, but requires a browser User-Agent header
+//   (the host anti-bot-gates plain clients with 403).
+// - api-inference host: https://studio-<owner>-<space>.api-inference.modelscope.net
+//   — used automatically when a ModelScope SDK token exists (MODELSCOPE_TOKEN env
+//   or pipeline/modelscope_token.txt). QWEN_TTS_BASE env always wins either way.
+let MODELSCOPE_TOKEN = process.env.MODELSCOPE_TOKEN || '';
+if (!IS_VERCEL) { try { MODELSCOPE_TOKEN = MODELSCOPE_TOKEN || fs.readFileSync(path.join(ROOT, 'pipeline', 'modelscope_token.txt'), 'utf8').trim(); } catch {} }
+const QWEN_BASE = process.env.QWEN_TTS_BASE || (MODELSCOPE_TOKEN
+  ? 'https://studio-mama8054-qwen3-tts-domen.api-inference.modelscope.net'
+  : 'https://mama8054-qwen3-tts-domen.ms.show');
 const API = 'https://api.paxsenix.org';
 const AQUA_API = 'https://api.aquadevs.com';
 const PORT = process.env.PORT || 5173;
@@ -802,9 +824,9 @@ for (const d of [FRAMES_DIR, VIDEO_DIR, STORYBOARD_DIR]) fs.mkdirSync(d, { recur
 const MODELS = ['kimi-k3', 'gpt-5.6-sol', 'gpt-5.6-terra', 'claude-opus-4-8', 'qwen3.8-max', 'gemini-3.1-pro', 'kimi-2.7-code', 'glm-5.2', 'mimo-v2.5', 'claude-sonnet-4-5', 'deepseek-v3.2', 'gemini-2.5-pro'];
 const IMAGE_MODELS = ['nano-banana-pro', 'nano-banana', 'nano-banana-2', 'seedream-5', 'seedream-4', 'seedream-4.5', 'gpt-image-2'];
 const VIDEO_MODELS = [
-  { id: 'grok-video', label: 'Grok Video (fast, cinematic; auto-fallback → Veo 3.1)' },
-  { id: 'omni-flash', label: 'Omni Flash (8s clips, fast; auto-fallback → Veo 3.1)' },
-  { id: 'veo-3.1', label: 'Veo 3.1 (Google, 8s, high quality)' }
+  { id: 'grok-video', label: 'Grok Video — 6s clips, fast' },
+  { id: 'omni-flash', label: 'Omni Flash — 8s clips, fast' },
+  { id: 'veo-3.1', label: 'Veo 3.1 — 8s clips, high quality' }
 ];
 const DEFAULT_VIDEO_MODEL = 'grok-video';
 // Video model auto-fallback chain: grok-video and omni-flash retry a failed frame
@@ -816,6 +838,26 @@ function videoModelChain(videoModel) {
 // Veo 3.1 and Omni Flash take the singular `imageUrl` param; Grok takes plural
 // `imageUrls` (per PaxSenix swagger).
 function videoImgKey(model) { return (model === 'veo-3.1' || model === 'omni-flash') ? 'imageUrl' : 'imageUrls'; }
+// Per-model supported aspect ratios (verified against PaxSenix): Grok accepts
+// 16:9 / 9:16 / 1:1; Omni Flash and Veo 3.1 accept ONLY 16:9 / 9:16. No video
+// model accepts 4:3. Unsupported ratios are snapped to the closest supported
+// one so a frame never dies at submit time (and the Veo fallback can work).
+const VIDEO_RATIOS = {
+  'grok-video': ['16:9', '9:16', '1:1'],
+  'omni-flash': ['16:9', '9:16'],
+  'veo-3.1': ['16:9', '9:16']
+};
+function normalizeVideoRatio(ratio, model, logFn = logLine) {
+  const r = String(ratio || '16:9');
+  const supported = VIDEO_RATIOS[model] || VIDEO_RATIOS['veo-3.1'];
+  if (supported.includes(r)) return r;
+  // Snap unsupported ratios to the closest supported one: portrait-ish → 9:16,
+  // anything else (1:1, 4:3, 21:9…) → 16:9.
+  const [w, h] = r.split(':').map(Number);
+  const snapped = (!isNaN(w) && !isNaN(h) && w < h) ? '9:16' : '16:9';
+  logFn(`video ratio ${r} not supported by ${model} — using ${snapped} (supported: ${supported.join(', ')})`);
+  return snapped;
+}
 // MIMO TTS voices (AquaDevs API) — simple male / female selection
 const VOICES = [
   { id: 'female', label: 'Female narrator (warm, expressive)' },
@@ -846,10 +888,30 @@ const LANGUAGES = [
 ];
 const DEFAULT_LANGUAGE = 'en';
 const NARRATION_MODES = [
-  { id: 'tts', label: 'TTS Voice — MIMO generates spoken narration audio' },
+  { id: 'tts', label: 'TTS Voice — spoken narration audio (pick engine below)' },
   { id: 'prompt', label: 'Prompt Vocalized — narration embedded in video prompts, no separate audio' }
 ];
 const DEFAULT_NARRATION_MODE = 'tts';
+// Narration TTS engines: MIMO (AquaDevs, default), PaxSenix, or Qwen3-TTS (ModelScope).
+const NARRATION_ENGINES = [
+  { id: 'mimo', label: 'MIMO — high quality voices (default)' },
+  { id: 'paxsenix', label: 'PaxSenix — neural voices' },
+  { id: 'qwen', label: 'Qwen3-TTS — ModelScope space (Ryan, Vivian, …)' }
+];
+const DEFAULT_NARRATION_ENGINE = 'mimo';
+// Official Qwen speakers (from the space's 🗣 官方发音人 dropdown).
+const QWEN_SPEAKERS = ['Vivian', 'Ryan', 'Aiden', 'Eric', 'Serena'];
+const QWEN_DEFAULT_SPEAKER = 'Ryan';
+// Qwen space Chinese UI translated to English options — the UI exposes these as
+// English selects and the Chinese values are what gets sent to the API.
+const QWEN_SPEED_OPTIONS = [ { label: 'Default', value: '默认' }, { label: 'Very slow', value: '极慢速' }, { label: 'Slow', value: '慢速' }, { label: 'Fast', value: '快速' }, { label: 'Very fast', value: '极快速' } ];
+const QWEN_PITCH_OPTIONS = [ { label: 'Default', value: '默认' }, { label: 'Very deep', value: '极低沉' }, { label: 'Deep', value: '低沉' }, { label: 'High', value: '高亢' }, { label: 'Very high', value: '极高亢' } ];
+const QWEN_EMOTION_OPTIONS = [ { label: 'Default', value: '默认' }, { label: 'Happy', value: '开心' }, { label: 'Angry', value: '愤怒' }, { label: 'Sad', value: '悲伤' }, { label: 'Fearful', value: '恐惧' }, { label: 'Gentle', value: '温柔' }, { label: 'Serious', value: '严肃' } ];
+const QWEN_DEFAULT_SPEED = '默认', QWEN_DEFAULT_PITCH = '默认', QWEN_DEFAULT_EMOTION = '默认';
+// Qwen generate_tts language dropdown only offers Auto / Chinese / English.
+function qwenLanguage(language) {
+  return language === 'en' ? 'English' : (language === 'zh' ? 'Chinese' : 'Auto');
+}
 
 // Map image model name → PaxSenix API endpoint path
 function imageEndpoint(model) {
@@ -1196,7 +1258,7 @@ async function analyzeTrendVisual(coverUrl, trendDetails, characterDescription, 
       if (video.length > 40 * 1024 * 1024) throw new Error('video exceeds 40MB analysis limit');
       await fsp.writeFile(videoPath, video);
       await new Promise((resolve, reject) => {
-        execFile('ffmpeg', ['-y', '-i', videoPath, '-vf', 'fps=1/2,scale=640:-2', '-frames:v', '3', '-q:v', '5', path.join(tempDir, 'frame_%02d.jpg')], { timeout: 120000 }, err => err ? reject(err) : resolve());
+        execFile(ffmpegBin(), ['-y', '-i', videoPath, '-vf', 'fps=1/2,scale=640:-2', '-frames:v', '3', '-q:v', '5', path.join(tempDir, 'frame_%02d.jpg')], { timeout: 120000 }, err => err ? reject(err) : resolve());
       });
       const frames = (await fsp.readdir(tempDir)).filter(name => /^frame_\d+\.jpg$/i.test(name)).sort().slice(0, 3);
       for (const name of frames) {
@@ -1694,7 +1756,7 @@ function chainRefFile(n) { return path.join(FRAMES_DIR, `chain_${String(n).padSt
 // there instead of freezing black on the exact last frame.
 function extractLastFrame(videoPath, outPng) {
   return new Promise((resolve, reject) => {
-    execFile('ffmpeg', ['-y', '-sseof', '-0.15', '-i', videoPath, '-frames:v', '1', '-q:v', '2', outPng],
+    execFile(ffmpegBin(), ['-y', '-sseof', '-0.15', '-i', videoPath, '-frames:v', '1', '-q:v', '2', outPng],
       { timeout: 60000 }, err => err ? reject(err) : resolve());
   });
 }
@@ -1744,7 +1806,8 @@ async function generateVideos(frames, ratio, videoModel = DEFAULT_VIDEO_MODEL, c
     const mode = img ? 'image-to-video' : 'text-to-video';
     for (const model of modelChain) {
       const imgParam = img ? `&${videoImgKey(model)}=${encodeURIComponent(img)}` : '';
-      const q = `/ai-video/${model}?prompt=${encodeURIComponent(prompt)}&ratio=${encodeURIComponent(ratio)}&type=${mode}${imgParam}`;
+      const mRatio = normalizeVideoRatio(ratio, model);
+      const q = `/ai-video/${model}?prompt=${encodeURIComponent(prompt)}&ratio=${encodeURIComponent(mRatio)}&type=${mode}${imgParam}`;
       const task = await submitTask(q);
       if (!task) { logLine(`frame ${f.frame}: ${model} SUBMIT FAILED`); if (modelChain.length > 1) logLine(`frame ${f.frame}: → falling back to next model`); continue; }
       logLine(`frame ${f.frame}: ${model} submitted (${mode}${anchorImg ? ', anchored to previous scene' : ''})`);
@@ -1825,8 +1888,150 @@ function splitTextIntoChunks(text, maxLen = 1500) {
   return chunks;
 }
 
+// ─── Qwen3-TTS (ModelScope Gradio space) ───────────────────────────────────
+// Gradio flow: POST /gradio_api/call/v2/generate_tts (named params or "data" array
+// [text, language, speaker, speed, pitch, emotion, custom_instruct, preset_name])
+// → {event_id}; then GET /gradio_api/call/generate_tts/{event_id} which streams
+// an SSE payload whose completion block carries the audio file (gradio v4 wraps it
+// as {"output":{"data":[...]}} with a string path; gradio v5 sends a raw array of
+// FileData objects {path, url}); the audio is downloaded from /gradio_api/file=<path>.
+// The tokenless .ms.show host requires a browser User-Agent (403 otherwise); the
+// Authorization header is only sent when a ModelScope token exists.
+function parseGradioOutput(body) {
+  for (const line of String(body || '').split('\n')) {
+    if (!line.startsWith('data:')) continue;
+    const raw = line.slice(5).trim();
+    if (!raw || raw === '[DONE]') continue;
+    try {
+      let j = JSON.parse(raw);
+      if (!j) continue;
+      // Gradio v4: data: {"output": {"data": [...]}} (also unwrap [[...]] nesting)
+      if (!Array.isArray(j)) {
+        let out = j.output;
+        if (Array.isArray(out) && out.length === 1 && Array.isArray(out[0])) out = out[0];
+        if (out && Array.isArray(out.data)) out = out.data;
+        if (Array.isArray(out) && out.length && j.success !== false) return out;
+        continue;
+      }
+      // Gradio v5 (tokenless .ms.show host): data: [FileData, statusMsg, ...] —
+      // the array itself is the output. Unwrap a single extra nesting level
+      // ([[FileData, ...]]) for older v5 variants.
+      if (j.length === 1 && Array.isArray(j[0])) j = j[0];
+      if (j.length) return j;
+    } catch {}
+  }
+  return null;
+}
+
+// Find the audio file path inside a gradio output array. Entries can be a plain
+// string path or a gradio v5 FileData object with `path` / `url` / `value` fields.
+// `value` is only trusted for audio-looking files — the space's status object also
+// carries a `/mnt/workspace/...` value that must not be mistaken for audio.
+function extractQwenAudioPath(out) {
+  if (!Array.isArray(out)) return null;
+  for (const entry of out) {
+    if (typeof entry === 'string') {
+      if (entry.startsWith('/') || entry.startsWith('http')) return entry;
+      continue;
+    }
+    if (Array.isArray(entry)) {
+      // One extra nesting level (e.g. v4 [[FileData]]): descend into it.
+      const inner = extractQwenAudioPath(entry);
+      if (inner) return inner;
+      continue;
+    }
+    if (entry && typeof entry === 'object') {
+      // Prefer the FileData fields first; only fall back to `value` for audio files.
+      for (const key of ['path', 'url']) {
+        const v = entry[key];
+        if (typeof v === 'string' && (v.startsWith('/') || v.startsWith('http'))) return v;
+      }
+      const val = entry.value;
+      if (typeof val === 'string' && /\.(wav|mp3|ogg|flac|m4a|aac)(\?|$)/i.test(val)) return val;
+    }
+  }
+  return null;
+}
+
+async function qwenTTS(text, { speaker = QWEN_DEFAULT_SPEAKER, language = 'en', speed = QWEN_DEFAULT_SPEED, pitch = QWEN_DEFAULT_PITCH, emotion = QWEN_DEFAULT_EMOTION, logFn = logLine, budgetMs } = {}) {
+  const headers = {
+    'Content-Type': 'application/json',
+    // The tokenless .ms.show host anti-bot-gates plain clients with 403 — a browser
+    // User-Agent is required. Harmless on the api-inference host.
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36'
+  };
+  if (MODELSCOPE_TOKEN) headers.Authorization = `Bearer ${MODELSCOPE_TOKEN}`;
+  // Payload shapes: named params first (works on the tokenless v2 path), then the
+  // gradio `data` array (documented for the api-inference host). Both are tried on
+  // each path so either host works regardless of which shape it prefers.
+  const named = { text: String(text), language: qwenLanguage(language), speaker, speed, pitch, emotion, custom_instruct: '', preset_name: '' };
+  const bodies = [
+    { body: JSON.stringify(named), kind: 'named' },
+    { body: JSON.stringify({ data: [named.text, named.language, named.speaker, speed, pitch, emotion, '', ''] }), kind: 'data[]' }
+  ];
+  const postPaths = ['/gradio_api/call/v2/generate_tts', '/gradio_api/call/generate_tts'];
+  // TOTAL wall-clock budget across ALL submit attempts. On Vercel this is supplied
+  // by the narration job (budgetMs) so a multi-chunk narration shares one deadline
+  // inside maxDuration; standalone/auto-pipeline calls default to 200s on Vercel.
+  // Locally we stay generous (per-attempt deadline below still applies).
+  const totalDeadline = Date.now() + (budgetMs || (IS_VERCEL ? 200000 : 900000));
+  const attemptDeadline = () => Math.min(Date.now() + 240000, totalDeadline);
+  for (const postPath of postPaths) {
+    for (const { body, kind } of bodies) {
+      if (Date.now() >= totalDeadline) { logFn('qwen: total time budget exhausted'); return null; }
+      try {
+        const res = await fetch(QWEN_BASE + postPath, {
+          method: 'POST', headers, body, signal: AbortSignal.timeout(60000)
+        });
+        const j = await res.json().catch(() => ({}));
+        if (!res.ok || !j.event_id) {
+          logFn(`qwen submit failed (${postPath} ${kind}): HTTP ${res.status} ${JSON.stringify(j).slice(0, 120)}`);
+          continue;
+        }
+        // Poll the event stream inside a per-attempt budget, never past the total.
+        const streamUrl = `${QWEN_BASE}/gradio_api/call/generate_tts/${j.event_id}`;
+        const deadline = attemptDeadline();
+        while (Date.now() < deadline) {
+          const s = await fetch(streamUrl, { headers, signal: AbortSignal.timeout(60000) }).catch(() => null);
+          if (s) {
+            const streamText = await s.text().catch(() => '');
+            const out = parseGradioOutput(streamText);
+            const audioPath = out ? extractQwenAudioPath(out) : null;
+            if (audioPath) {
+              const fileUrl = audioPath.startsWith('http')
+                ? audioPath
+                : `${QWEN_BASE}/gradio_api/file=${encodeURIComponent(audioPath)}`;
+              const ar = await fetch(fileUrl, { headers, signal: AbortSignal.timeout(180000) });
+              if (!ar.ok) { logFn(`qwen audio download failed: HTTP ${ar.status}`); return null; }
+              logFn(`qwen TTS done (${speaker}, ${qwenLanguage(language)})`);
+              return Buffer.from(await ar.arrayBuffer());
+            }
+          }
+          if (Date.now() >= totalDeadline) { logFn('qwen: total time budget exhausted'); return null; }
+          await new Promise(r => setTimeout(r, 2000));
+        }
+        if (Date.now() >= totalDeadline) { logFn('qwen: total time budget exhausted'); return null; }
+        logFn('qwen event stream timed out');
+      } catch (e) { logFn(`qwen error: ${e.message}`); }
+    }
+  }
+  return null;
+}
+
+// Save a Qwen audio buffer as mp3 (the space returns wav; convert so the
+// -c copy concatenation with other mp3 chunks stays valid).
+async function saveQwenAsMp3(buf, outPath) {
+  const src = outPath + '.src.wav';
+  await fsp.writeFile(src, buf);
+  await new Promise((resolve) => {
+    execFile(ffmpegBin(), ['-y', '-i', src, '-codec:a', 'libmp3lame', '-q:a', '2', outPath],
+      { timeout: 60000 }, () => { try { fs.unlinkSync(src); } catch {} resolve(); });
+  });
+  return fs.existsSync(outPath);
+}
+
 // Generate ONE TTS for the entire film narration and overlay it on the final video
-async function generateFullNarration(frames, voice = DEFAULT_VOICE, language = DEFAULT_LANGUAGE) {
+async function generateFullNarration(frames, voice = DEFAULT_VOICE, language = DEFAULT_LANGUAGE, engine = DEFAULT_NARRATION_ENGINE, qwenSpeaker = QWEN_DEFAULT_SPEAKER, qwenSpeed = QWEN_DEFAULT_SPEED, qwenPitch = QWEN_DEFAULT_PITCH, qwenEmotion = QWEN_DEFAULT_EMOTION) {
   const withSpeech = frames.filter(f => f.narration || f.dialogue);
   if (!withSpeech.length) { logLine('no narration text found'); return false; }
 
@@ -1847,19 +2052,25 @@ async function generateFullNarration(frames, voice = DEFAULT_VOICE, language = D
     return parts.join('. ');
   }).join('. ... ');
 
-  logLine(`full narration: ${fullText.length} chars from ${withSpeech.length} frames — ${voiceLabel} voice, ${langName}`);
+  logLine(`full narration: ${fullText.length} chars from ${withSpeech.length} frames — ${voiceLabel} voice, ${langName} — engine: ${engine}${engine === 'qwen' ? ` (speaker: ${qwenSpeaker})` : ''}`);
 
   // Split into chunks if text is long
   const chunks = splitTextIntoChunks(fullText);
   logLine(`split into ${chunks.length} chunk(s)`);
 
   const chunkFiles = [];
+  // Vercel: the whole narration job must finish inside maxDuration (300s). Give the
+  // Qwen engine a shared, shrinking budget across ALL chunks (240s total, leaving
+  // headroom for ffmpeg conversion + concat + overlay) so a multi-chunk script
+  // degrades gracefully (falls back to PaxSenix per chunk) instead of being killed.
+  const narrationStart = Date.now();
+  const qwenBudgetMs = IS_VERCEL ? 240000 : 0; // 0 = unlimited (per-call default)
   for (let i = 0; i < chunks.length; i++) {
     const chunkPath = path.join(VIDEO_DIR, `narr_chunk_${String(i + 1).padStart(2, '0')}.mp3`);
     if (fs.existsSync(chunkPath)) { chunkFiles.push(chunkPath); logLine(`chunk ${i+1}: exists, skip`); continue; }
 
     let chunkUrl = null;
-    for (let attempt = 1; attempt <= 3; attempt++) {
+    for (let attempt = 1; attempt <= 3 && engine === 'mimo'; attempt++) {
       try {
         logLine(`chunk ${i+1}/${chunks.length}: generating TTS (attempt ${attempt})...`);
         const res = await fetch(`${AQUA_API}/v1/audio/speech`, {
@@ -1923,7 +2134,7 @@ async function generateFullNarration(frames, voice = DEFAULT_VOICE, language = D
           const listPath = path.join(VIDEO_DIR, `narr_pax_${String(i + 1).padStart(2, '0')}.txt`);
           await fsp.writeFile(listPath, pieceFiles.map(p => `file '${path.basename(p)}'`).join('\n'));
           await new Promise((resolve) => {
-            execFile('ffmpeg', ['-y', '-f', 'concat', '-safe', '0', '-i', listPath, '-c', 'copy', chunkPath],
+            execFile(ffmpegBin(), ['-y', '-f', 'concat', '-safe', '0', '-i', listPath, '-c', 'copy', chunkPath],
               { cwd: VIDEO_DIR, timeout: 30000 }, () => { try { fs.unlinkSync(listPath); } catch {} resolve(); });
           });
         }
@@ -1932,18 +2143,38 @@ async function generateFullNarration(frames, voice = DEFAULT_VOICE, language = D
       } catch (e) { logLine(`chunk ${i+1}: PaxSenix fallback error — ${e.message}`); cleanup(); return false; }
     };
 
-    // Download the MIMO chunk; if it fails to download, try the PaxSenix fallback too.
+    // Engine dispatch: Qwen / PaxSenix / MIMO (default) — PaxSenix is the safety net.
     let chunkSaved = false;
-    if (chunkUrl) {
-      chunkSaved = await download(chunkUrl, chunkPath);
-      if (chunkSaved) { chunkFiles.push(chunkPath); logLine(`chunk ${i+1}: DONE`); }
-      else logLine(`chunk ${i+1}: MIMO download failed`);
-    } else {
-      logLine(`chunk ${i+1}: MIMO returned no URL`);
-    }
-
-    if (!chunkSaved) {
+    if (engine === 'qwen') {
+      logLine(`chunk ${i+1}/${chunks.length}: generating Qwen3-TTS (${qwenSpeaker})...`);
+      if (!MODELSCOPE_TOKEN) logLine('qwen: MODELSCOPE_TOKEN not set — the api-inference host may require one (falls back to PaxSenix on failure)');
+      const remaining = qwenBudgetMs ? Math.max(20000, qwenBudgetMs - (Date.now() - narrationStart)) : undefined;
+      const buf = await qwenTTS(chunks[i], { speaker: qwenSpeaker, language, speed: qwenSpeed, pitch: qwenPitch, emotion: qwenEmotion, budgetMs: remaining });
+      if (buf) {
+        chunkSaved = await saveQwenAsMp3(buf, chunkPath);
+        if (chunkSaved) { chunkFiles.push(chunkPath); logLine(`chunk ${i+1}: DONE (Qwen3-TTS)`); }
+        else logLine(`chunk ${i+1}: Qwen mp3 conversion failed`);
+      } else {
+        logLine(`chunk ${i+1}: Qwen returned no audio`);
+      }
+      if (!chunkSaved && await tryPaxSenix()) {
+        chunkFiles.push(chunkPath);
+        logLine(`chunk ${i+1}: DONE (PaxSenix fallback)`);
+      }
+    } else if (engine === 'paxsenix') {
       if (await tryPaxSenix()) {
+        chunkFiles.push(chunkPath);
+        logLine(`chunk ${i+1}: DONE (PaxSenix)`);
+      }
+    } else {
+      if (chunkUrl) {
+        chunkSaved = await download(chunkUrl, chunkPath);
+        if (chunkSaved) { chunkFiles.push(chunkPath); logLine(`chunk ${i+1}: DONE`); }
+        else logLine(`chunk ${i+1}: MIMO download failed`);
+      } else {
+        logLine(`chunk ${i+1}: MIMO returned no URL`);
+      }
+      if (!chunkSaved && await tryPaxSenix()) {
         chunkFiles.push(chunkPath);
         logLine(`chunk ${i+1}: DONE (PaxSenix fallback)`);
       }
@@ -1964,7 +2195,7 @@ async function generateFullNarration(frames, voice = DEFAULT_VOICE, language = D
     const listPath = path.join(VIDEO_DIR, 'narr_concat.txt');
     await fsp.writeFile(listPath, chunkFiles.map(p => `file '${path.basename(p)}'`).join('\n'));
     await new Promise((resolve) => {
-      execFile('ffmpeg', ['-y', '-f', 'concat', '-safe', '0', '-i', listPath, '-c', 'copy', fullAudioPath],
+      execFile(ffmpegBin(), ['-y', '-f', 'concat', '-safe', '0', '-i', listPath, '-c', 'copy', fullAudioPath],
         { cwd: VIDEO_DIR, timeout: 30000 }, () => { try { fs.unlinkSync(listPath); } catch {} resolve(); });
     });
   }
@@ -1989,7 +2220,7 @@ async function generateFullNarration(frames, voice = DEFAULT_VOICE, language = D
   const success = await new Promise((resolve) => {
     if (hasAudio) {
       // Mix original audio + narration
-      execFile('ffmpeg', [
+      execFile(ffmpegBin(), [
         '-y', '-i', finalPath, '-i', fullAudioPath,
         '-filter_complex', '[0:a]volume=0.4[orig];[1:a]volume=1.5[narr];[orig][narr]amix=inputs=2:duration=first[a]',
         '-map', '0:v', '-map', '[a]',
@@ -1998,7 +2229,7 @@ async function generateFullNarration(frames, voice = DEFAULT_VOICE, language = D
       ], {timeout: 120000}, (err) => { resolve(!err); });
     } else {
       // No original audio — just add narration
-      execFile('ffmpeg', [
+      execFile(ffmpegBin(), [
         '-y', '-i', finalPath, '-i', fullAudioPath,
         '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k',
         '-map', '0:v:0', '-map', '1:a:0',
@@ -2022,7 +2253,7 @@ async function generateFullNarration(frames, voice = DEFAULT_VOICE, language = D
 // Overlay TTS audio onto a video clip (returns path to narrated video or null)
 function overlayAudioOnClip(videoPath, audioPath, outPath) {
   return new Promise((resolve) => {
-    execFile('ffmpeg', [
+    execFile(ffmpegBin(), [
       '-y', '-i', videoPath, '-i', audioPath,
       '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k',
       '-map', '0:v:0', '-map', '1:a:0',
@@ -2042,7 +2273,7 @@ function padVideoToDuration(inputPath, targetSec, outputPath) {
       const gap = targetSec - actual;
       if (gap <= 0.5) {
         // Close enough — copy and ensure audio track exists
-        execFile('ffmpeg', ['-y', '-i', inputPath, '-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100',
+        execFile(ffmpegBin(), ['-y', '-i', inputPath, '-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100',
           '-t', String(actual), '-c:v', 'copy', '-c:a', 'aac', '-b:a', '128k',
           '-map', '0:v:0', '-map', '1:a:0', '-shortest', outputPath], { timeout: 60000 }, (e) => {
           if (e) try { fs.copyFileSync(inputPath, outputPath); } catch {}
@@ -2051,7 +2282,7 @@ function padVideoToDuration(inputPath, targetSec, outputPath) {
         return;
       }
       // Pad: freeze last frame for the gap duration
-      execFile('ffmpeg', [
+      execFile(ffmpegBin(), [
         '-y', '-i', inputPath,
         '-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100',
         '-vf', `tpad=stop_mode=clone:stop_duration=${gap.toFixed(1)}`,
@@ -2063,7 +2294,7 @@ function padVideoToDuration(inputPath, targetSec, outputPath) {
         if (e) {
           logLine(`tpad failed for ${path.basename(inputPath)}, trying stream_loop fallback: ${e.message.slice(0,80)}`);
           // Fallback: loop the video
-          execFile('ffmpeg', [
+          execFile(ffmpegBin(), [
             '-y', '-stream_loop', '-1', '-i', inputPath,
             '-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100',
             '-t', String(targetSec),
@@ -2086,7 +2317,7 @@ function padVideoToDuration(inputPath, targetSec, outputPath) {
 // Add a silent audio track to a video (for consistent concat when no TTS available)
 function addSilentAudio(inputPath, outputPath) {
   return new Promise((resolve) => {
-    execFile('ffmpeg', [
+    execFile(ffmpegBin(), [
       '-y', '-i', inputPath,
       '-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100',
       '-c:v', 'copy', '-c:a', 'aac', '-b:a', '128k',
@@ -2102,7 +2333,7 @@ function addSilentAudio(inputPath, outputPath) {
 // Create a video from a still image for a given duration (placeholder for missing video)
 function stillImageToVideo(imagePath, targetSec, outputPath) {
   return new Promise((resolve) => {
-    execFile('ffmpeg', [
+    execFile(ffmpegBin(), [
       '-y', '-loop', '1', '-i', imagePath,
       '-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100',
       '-c:v', 'libx264', '-crf', '18', '-preset', 'fast',
@@ -2161,7 +2392,7 @@ async function combineFilm(frames, ratio = '16:9') {
         logLine(`frame ${f.frame}: no video, creating from still image`);
         // Still image → normalized video with silent audio
         await new Promise((resolve) => {
-          execFile('ffmpeg', [
+          execFile(ffmpegBin(), [
             '-y', '-loop', '1', '-i', img,
             '-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100',
             '-t', String(targetDur), '-vf', vfArgs.join(','),
@@ -2193,7 +2424,7 @@ async function combineFilm(frames, ratio = '16:9') {
     if (hasAudio) {
       logLine(`frame ${f.frame}: normalize + original audio`);
       await new Promise((resolve) => {
-        execFile('ffmpeg', [
+        execFile(ffmpegBin(), [
           '-y', '-i', sourceVideo,
           '-vf', vfArgs.join(','),
           '-c:v', 'libx264', '-crf', '20', '-preset', 'ultrafast',
@@ -2206,7 +2437,7 @@ async function combineFilm(frames, ratio = '16:9') {
     } else {
       logLine(`frame ${f.frame}: normalize + silent audio`);
       await new Promise((resolve) => {
-        execFile('ffmpeg', [
+        execFile(ffmpegBin(), [
           '-y', '-i', sourceVideo,
           '-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100',
           '-vf', vfArgs.join(','),
@@ -2229,7 +2460,7 @@ async function combineFilm(frames, ratio = '16:9') {
   await fsp.writeFile(listPath, normClips.map(p => `file '${path.relative(VIDEO_DIR, p).replace(/\\/g, '/')}'`).join('\n'));
 
   return new Promise((resolve) => {
-    execFile('ffmpeg', [
+    execFile(ffmpegBin(), [
       '-y', '-f', 'concat', '-safe', '0', '-i', listPath,
       '-c', 'copy', '-movflags', '+faststart',
       finalPath
@@ -2244,7 +2475,7 @@ async function combineFilm(frames, ratio = '16:9') {
       } else if (err) {
         logLine(`concat copy failed, trying re-encode: ${err.message.slice(0,80)}`);
         // Fallback: re-encode concat
-        execFile('ffmpeg', ['-y','-f','concat','-safe','0','-i',listPath,
+        execFile(ffmpegBin(), ['-y','-f','concat','-safe','0','-i',listPath,
           '-c:v','libx264','-crf','20','-preset','ultrafast',
           '-c:a','aac','-b:a','128k','-movflags','+faststart', finalPath],
           { cwd: VIDEO_DIR, timeout: 120000 }, async (e2) => {
@@ -2501,7 +2732,8 @@ async function generateInfluencerVideo(infl, contentId, ratio, videoDuration = 6
   // Use custom video prompt if provided, otherwise build from item prompt
   const basePrompt = customVideoPrompt || `animate this exact person with natural subtle movement. Keep the same face, hair, skin, and clothing exactly as shown. ${item.prompt}. Smooth ${videoDuration}-second camera movement, natural animation, maintain visual consistency.`;
   const animPrompt = sanitizePrompt(basePrompt + mandatoryStyle);
-  const q = `/ai-video/grok-video?prompt=${encodeURIComponent(animPrompt)}&ratio=${encodeURIComponent(ratio)}&type=${mode}${imgParam}`;
+  const mRatio = normalizeVideoRatio(ratio, 'grok-video', inflLogLine);
+  const q = `/ai-video/grok-video?prompt=${encodeURIComponent(animPrompt)}&ratio=${encodeURIComponent(mRatio)}&type=${mode}${imgParam}`;
   let url = null;
   for (let attempt = 1; attempt <= 3; attempt++) {
     const task = await submitTask(q, inflLogLine);
@@ -2798,7 +3030,7 @@ const requestHandler = async (req, res) => {
     // --- API ---
     if (p === '/api/status') return sendJson(res, 200, job);
     if (p === '/api/health' || p === '/api/ping') return sendJson(res, 200, { ok: true, vercel: IS_VERCEL, path: p, url: rawUrl, hasKey: !!API_KEY });
-    if (p === '/api/models') return sendJson(res, 200, { chat: MODELS, image: IMAGE_MODELS, video: VIDEO_MODELS, voices: VOICES, languages: LANGUAGES, narrationModes: NARRATION_MODES, styles: STYLE_KEYS.map(k => ({ key: k, label: STYLES[k].label })) });
+    if (p === '/api/models') return sendJson(res, 200, { chat: MODELS, image: IMAGE_MODELS, video: VIDEO_MODELS, voices: VOICES, languages: LANGUAGES, narrationModes: NARRATION_MODES, narrationEngines: NARRATION_ENGINES, qwenSpeakers: QWEN_SPEAKERS, qwenSpeeds: QWEN_SPEED_OPTIONS, qwenPitches: QWEN_PITCH_OPTIONS, qwenEmotions: QWEN_EMOTION_OPTIONS, styles: STYLE_KEYS.map(k => ({ key: k, label: STYLES[k].label })) });
 
     // --- AUTH ---
     if (p === '/api/auth/me' && req.method === 'GET') {
@@ -2957,7 +3189,10 @@ const requestHandler = async (req, res) => {
         steps.push(['combine', () => combineFilm(frames, body.ratio || '16:9')]);
         // After combine: generate full narration TTS and overlay on final video
         if (narrationMode === 'tts') {
-          steps.push(['narration', () => { setPhase('narration', 1); return generateFullNarration(frames, body.voice || DEFAULT_VOICE, language).then(() => { job.phase = 'idle'; }); }]);
+          const engine = body.engine || DEFAULT_NARRATION_ENGINE;
+          const qwenSpeaker = body.qwenSpeaker || QWEN_DEFAULT_SPEAKER;
+          const qwenSpeed = body.qwenSpeed || QWEN_DEFAULT_SPEED, qwenPitch = body.qwenPitch || QWEN_DEFAULT_PITCH, qwenEmotion = body.qwenEmotion || QWEN_DEFAULT_EMOTION;
+          steps.push(['narration', () => { setPhase('narration', 1); return generateFullNarration(frames, body.voice || DEFAULT_VOICE, language, engine, qwenSpeaker, qwenSpeed, qwenPitch, qwenEmotion).then(() => { job.phase = 'idle'; }); }]);
         }
 
         for (const [name, fn] of steps) {
@@ -3042,9 +3277,12 @@ const requestHandler = async (req, res) => {
       for (const f of frames) { try { fs.unlinkSync(ttsFile(f.frame)); } catch {} }
       for (const f of fs.readdirSync(VIDEO_DIR).filter(f => f.startsWith('narr_chunk_') || f.startsWith('narr_pax_') || f === 'full_narration.mp3')) { try { fs.unlinkSync(path.join(VIDEO_DIR, f)); } catch {} }
       setPhase('narration', 1);
-      if (IS_VERCEL) return runJobOnVercel(res, async () => { await generateFullNarration(frames, body.voice || DEFAULT_VOICE, body.language || DEFAULT_LANGUAGE); job.phase = 'idle'; });
+      const engine = body.engine || DEFAULT_NARRATION_ENGINE;
+      const qwenSpeaker = body.qwenSpeaker || QWEN_DEFAULT_SPEAKER;
+      const qwenSpeed = body.qwenSpeed || QWEN_DEFAULT_SPEED, qwenPitch = body.qwenPitch || QWEN_DEFAULT_PITCH, qwenEmotion = body.qwenEmotion || QWEN_DEFAULT_EMOTION;
+      if (IS_VERCEL) return runJobOnVercel(res, async () => { await generateFullNarration(frames, body.voice || DEFAULT_VOICE, body.language || DEFAULT_LANGUAGE, engine, qwenSpeaker, qwenSpeed, qwenPitch, qwenEmotion); job.phase = 'idle'; });
       (async () => {
-        try { await generateFullNarration(frames, body.voice || DEFAULT_VOICE, body.language || DEFAULT_LANGUAGE); }
+        try { await generateFullNarration(frames, body.voice || DEFAULT_VOICE, body.language || DEFAULT_LANGUAGE, engine, qwenSpeaker, qwenSpeed, qwenPitch, qwenEmotion); }
         catch (e) { logLine(`narration crash: ${e.message}`); }
         job.phase = 'idle';
       })();
@@ -4047,7 +4285,7 @@ Return ONLY a JSON object:
         const framesDir = path.join(tempDir, 'frames');
         fs.mkdirSync(framesDir, { recursive: true });
         await new Promise((resolve, reject) => {
-          execFile('ffmpeg', ['-y', '-i', videoPath,
+          execFile(ffmpegBin(), ['-y', '-i', videoPath,
             '-vf', 'fps=0.5,scale=640:-2',
             '-q:v', '3',
             path.join(framesDir, 'frame_%03d.jpg')

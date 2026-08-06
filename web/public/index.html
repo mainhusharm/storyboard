@@ -186,7 +186,7 @@
     <span id="authName" style="display:none;font-size:11px;color:var(--amber2)">👤 </span>
     <button id="btnLogout" style="display:none;font-size:11px;padding:5px 12px" onclick="logout()">Log out</button>
     <div class="pill" id="phasepill"><div class="dot"></div><span id="phasetxt">IDLE</span></div>
-    <div class="pill">GROK ⇄ VEO VIDEO</div>
+    <div class="pill">GROK · OMNI · VEO</div>
   </div>
 </header>
 <div id="gprog"><div></div></div>
@@ -219,7 +219,7 @@ The Director AI will:
       <select id="clipDuration">
         <option value="6" selected>6 seconds — Grok Video default</option>
         <option value="10">10 seconds — Grok Video extended</option>
-        <option value="8">8 seconds — Veo 3.1 / Omni Flash (single duration)</option>
+        <option value="8">8 seconds — Omni Flash / Veo 3.1 (fixed 8s clips)</option>
       </select>
       <label class="f">Narration language</label>
       <select id="language"></select>
@@ -237,21 +237,30 @@ The Director AI will:
       <select id="imageModel"></select>
       <label class="f">Video model</label>
       <select id="videoModel">
-        <option value="grok-video">Grok Video (fast, cinematic; auto-fallback → Veo 3.1)</option>
-        <option value="omni-flash">Omni Flash (8s clips, fast; auto-fallback → Veo 3.1)</option>
-        <option value="veo-3.1">Veo 3.1 (Google, 8s, high quality)</option>
+        <option value="grok-video">Grok Video — 6s clips, fast</option>
+        <option value="omni-flash">Omni Flash — 8s clips, fast</option>
+        <option value="veo-3.1">Veo 3.1 — 8s clips, high quality</option>
       </select>
       <label class="f">Aspect ratio</label>
       <select id="ratio">
         <option value="16:9">16:9 — cinematic</option>
         <option value="9:16">9:16 — vertical</option>
-        <option value="1:1">1:1 — square</option>
-        <option value="4:3">4:3 — classic</option>
+        <option value="1:1">1:1 — square (Grok Video only; Omni Flash / Veo 3.1 use 16:9)</option>
       </select>
       <label class="f">Narration voice</label>
       <select id="voice"></select>
       <label class="f">Narration mode</label>
       <select id="narrationMode"></select>
+      <label class="f">Narration engine</label>
+      <select id="narrationEngine"></select>
+      <label class="f" id="qwenSpeakerLabel" style="display:none">Qwen speaker</label>
+      <select id="qwenSpeaker" style="display:none"></select>
+      <label class="f" id="qwenSpeedLabel" style="display:none">Qwen speed</label>
+      <select id="qwenSpeed" style="display:none"></select>
+      <label class="f" id="qwenPitchLabel" style="display:none">Qwen pitch</label>
+      <select id="qwenPitch" style="display:none"></select>
+      <label class="f" id="qwenEmotionLabel" style="display:none">Qwen emotion</label>
+      <select id="qwenEmotion" style="display:none"></select>
       <label style="display:flex;align-items:flex-start;gap:8px;margin-top:10px;font-size:11px;color:var(--dim);cursor:pointer">
         <input type="checkbox" id="consistency" checked style="accent-color:var(--amber);margin-top:2px">
         <span>Lock character consistency — anchor every frame to the character reference portraits</span>
@@ -349,10 +358,17 @@ async function init(){
   const m=await api('/models');
   $('chatModel').innerHTML=m.chat.map(x=>`<option>${x}</option>`).join('');
   $('imageModel').innerHTML=m.image.map(x=>`<option>${x}</option>`).join('');
-  $('videoModel').innerHTML=(m.video||[{id:'grok-video',label:'Grok Video'},{id:'omni-flash',label:'Omni Flash (8s)'},{id:'veo-3.1',label:'Veo 3.1'}]).map(v=>`<option value="${v.id}">${v.label}</option>`).join('');
+  $('videoModel').innerHTML=(m.video||[{id:'grok-video',label:'Grok Video — 6s'},{id:'omni-flash',label:'Omni Flash — 8s'},{id:'veo-3.1',label:'Veo 3.1 — 8s'}]).map(v=>`<option value="${v.id}">${v.label}</option>`).join('');
   $('voice').innerHTML=(m.voices||[{id:'female',label:'Female narrator'},{id:'male',label:'Male narrator'}]).map(v=>`<option value="${v.id}">${v.label}</option>`).join('');
   $('language').innerHTML=(m.languages||[{id:'en',label:'English'},{id:'hi',label:'Hindi'}]).map(l=>`<option value="${l.id}">${l.label}</option>`).join('');
   $('narrationMode').innerHTML=(m.narrationModes||[{id:'tts',label:'TTS Voice'},{id:'prompt',label:'Prompt Vocalized'}]).map(n=>`<option value="${n.id}">${n.label}</option>`).join('');
+  $('narrationEngine').innerHTML=(m.narrationEngines||[{id:'mimo',label:'MIMO — high quality (default)'},{id:'paxsenix',label:'PaxSenix — neural'},{id:'qwen',label:'Qwen3-TTS — ModelScope'}]).map(e=>`<option value="${e.id}">${e.label}</option>`).join('');
+  $('qwenSpeaker').innerHTML=(m.qwenSpeakers||['Vivian','Ryan','Aiden','Eric','Serena']).map(s=>`<option value="${s}">${s}</option>`).join('');
+  $('qwenSpeed').innerHTML=(m.qwenSpeeds||[{label:'Default',value:'默认'}]).map(o=>`<option value="${o.value}">${o.label}</option>`).join('');
+  $('qwenPitch').innerHTML=(m.qwenPitches||[{label:'Default',value:'默认'}]).map(o=>`<option value="${o.value}">${o.label}</option>`).join('');
+  $('qwenEmotion').innerHTML=(m.qwenEmotions||[{label:'Default',value:'默认'}]).map(o=>`<option value="${o.value}">${o.label}</option>`).join('');
+  const syncQwenUI=()=>{const q=$('narrationEngine').value==='qwen';['qwenSpeaker','qwenSpeakerLabel','qwenSpeed','qwenSpeedLabel','qwenPitch','qwenPitchLabel','qwenEmotion','qwenEmotionLabel'].forEach(id=>{$(id).style.display=q?'':'none';});};
+  $('narrationEngine').onchange=syncQwenUI;syncQwenUI();
   $('style').innerHTML=(m.styles||[{key:'cinematic',label:'Cinematic'}]).map(s=>`<option value="${s.key}">${s.label}</option>`).join('');
   $('modelname').textContent=$('chatModel').value;
   $('chatModel').onchange=()=>$('modelname').textContent=$('chatModel').value;
@@ -522,7 +538,7 @@ $('btnAuto').onclick=async()=>{
   const r=await api('/run-all',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
     script,model:$('chatModel').value,duration:Number($('duration').value),look:$('look').value,
     style:$('style').value,imageModel:$('imageModel').value,videoModel:$('videoModel').value,ratio:$('ratio').value,
-    voice:$('voice').value,consistency:$('consistency').checked,language:$('language').value,narrationMode:$('narrationMode').value,chainContinuity:$('chainContinuity').checked,clipDuration:Number($('clipDuration').value)
+    voice:$('voice').value,consistency:$('consistency').checked,language:$('language').value,narrationMode:$('narrationMode').value,narrationEngine:$('narrationEngine').value,qwenSpeaker:$('qwenSpeaker').value,qwenSpeed:$('qwenSpeed').value,qwenPitch:$('qwenPitch').value,qwenEmotion:$('qwenEmotion').value,chainContinuity:$('chainContinuity').checked,clipDuration:Number($('clipDuration').value)
   })});
   if(r.error)alert(r.error);
 };
@@ -533,7 +549,7 @@ $('btnImages').onclick=async()=>{
   if(r.error)alert(r.error)
 };
 $('btnVideos').onclick=async()=>{const r=await api('/videos',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sbPayload({ratio:$('ratio').value,videoModel:$('videoModel').value,force:true,chainContinuity:$('chainContinuity').checked}))});if(r.error)alert(r.error)};
-$('btnNarration').onclick=async()=>{const r=await api('/narration',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sbPayload({voice:$('voice').value,language:$('language').value,force:true}))});if(r.error)alert(r.error)};
+$('btnNarration').onclick=async()=>{const r=await api('/narration',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sbPayload({voice:$('voice').value,language:$('language').value,narrationEngine:$('narrationEngine').value,qwenSpeaker:$('qwenSpeaker').value,qwenSpeed:$('qwenSpeed').value,qwenPitch:$('qwenPitch').value,qwenEmotion:$('qwenEmotion').value,force:true}))});if(r.error)alert(r.error)};
 $('btnCombine').onclick=async()=>{const r=await api('/combine',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sbPayload({ratio:$('ratio').value}))});if(r.error)alert(r.error)};
 async function regenFrame(n){await api('/images',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sbPayload({frames:[n],imageModel:$('imageModel').value,ratio:$('ratio').value,style:$('style').value,consistency:$('consistency').checked}))})}
 async function regenChar(id){const r=await api('/char-refs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sbPayload({force:[id]}))});if(r.characters){CHARS=r.characters;try{localStorage.setItem('sb_chars',JSON.stringify(CHARS))}catch(e){}}}
