@@ -2,7 +2,9 @@
 # Works with the web server endpoints (starts one automatically if none is running).
 param(
     [string]$BaseUrl = 'http://localhost:5173',
-    [string]$LogFile = "$PSScriptRoot\continue_full.log"
+    [string]$LogFile = "$PSScriptRoot\continue_full.log",
+    [string]$Voice = 'female',
+    [string]$Language = 'en'
 )
 $ErrorActionPreference = 'Stop'
 
@@ -50,7 +52,7 @@ function Backup-OldAssets() {
             Move-Item -LiteralPath $item.FullName -Destination $fb -ErrorAction SilentlyContinue
         }
     }
-    foreach ($pattern in @('frame_*.mp4', 'narrated_*.mp4', 'narration_*.mp3', 'final_story.mp4')) {
+    foreach ($pattern in @('frame_*.mp4', 'narrated_*.mp4', 'narration_*.mp3', 'narr_chunk_*.mp3', 'full_narration.mp3', 'narr_chunk_sig.txt', 'final_story.mp4')) {
         foreach ($item in Get-ChildItem -Path (Join-Path $ROOT 'video') -Filter $pattern -ErrorAction SilentlyContinue) {
             Move-Item -LiteralPath $item.FullName -Destination $vb -ErrorAction SilentlyContinue
         }
@@ -112,6 +114,11 @@ try {
     Write-Log 'starting final combine...'
     Invoke-Api '/api/combine' @{}
     Wait-Phase 'combining' 30 | Out-Null
+
+    # Generate narration TTS and overlay it on the final film (Fish Audio by default)
+    Write-Log 'starting narration...'
+    Invoke-Api '/api/narration' @{ voice = $Voice; language = $Language; narrationEngine = 'fish'; force = $true }
+    Wait-Phase 'narration' 20 | Out-Null
 
     $final = Join-Path $ROOT 'video\final_story.mp4'
     if (Test-Path $final) {

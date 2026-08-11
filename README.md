@@ -12,7 +12,7 @@ Transforms scripts into production-ready cinematic storyboards with **locked cha
 - Grok Video image-to-video animation per frame
 - ffmpeg concatenation into final film
 - Multiple LLM fallbacks (Gemini, Kimi, GLM, Mimo) for reliability
-- TTS narration (multi-language, male/female voices)
+- TTS narration via **Fish Audio** (free s2.1-pro-free, default) or **MIMO** (multi-language, male/female voices)
 
 ### AI Influencer Studio (`/influencer`)
 - Character profile creation with locked description generation
@@ -34,6 +34,18 @@ Transforms scripts into production-ready cinematic storyboards with **locked cha
 node web/server.js
 ```
 
+### Vercel
+
+The API runs as a serverless function (`api/_route.js` → `web/server.js`). Set these env vars
+in the Vercel dashboard (Project → Settings → Environment Variables), or via the CLI:
+
+```
+vercel env add FISH_API_KEY production
+vercel env add PAXSENIX_API_KEY production
+```
+
+Without `FISH_API_KEY`, narration falls back to MIMO instead of Fish Audio.
+
 Opens at `http://localhost:5173`.
 
 ## Requirements
@@ -42,7 +54,8 @@ Opens at `http://localhost:5173`.
 - ffmpeg on PATH (for video combination + frame extraction)
 - API keys in `pipeline/`:
   - `apikey.txt` — PaxSenix (images, video, chat)
-  - `aqua_apikey.txt` — AquaDevs (TTS)
+  - `fish_apikey.txt` — Fish Audio (TTS, default narration engine)
+  - `aqua_apikey.txt` — AquaDevs (MIMO TTS option + fallback)
   - `omkar-key.txt` — TikTok trending API
   - `trendsmcp-key.txt` — TrendsMCP live trends
 

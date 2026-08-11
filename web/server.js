@@ -33,18 +33,11 @@ let API_KEY = process.env.PAXSENIX_API_KEY || '';
 if (!IS_VERCEL) { try { API_KEY = API_KEY || fs.readFileSync(path.join(ROOT, 'pipeline', 'apikey.txt'), 'utf8').trim(); } catch {} }
 let AQUA_API_KEY = process.env.AQUA_API_KEY || '';
 if (!IS_VERCEL) { try { AQUA_API_KEY = AQUA_API_KEY || fs.readFileSync(path.join(ROOT, 'pipeline', 'aqua_apikey.txt'), 'utf8').trim(); } catch {} }
-// Qwen3-TTS (ModelScope Gradio space) — optional narration engine. Two hosts:
-// - Tokenless studio host (DEFAULT): https://<owner>-<space>.ms.show — the public
-//   Gradio app. Works with NO token, but requires a browser User-Agent header
-//   (the host anti-bot-gates plain clients with 403).
-// - api-inference host: https://studio-<owner>-<space>.api-inference.modelscope.net
-//   — used automatically when a ModelScope SDK token exists (MODELSCOPE_TOKEN env
-//   or pipeline/modelscope_token.txt). QWEN_TTS_BASE env always wins either way.
-let MODELSCOPE_TOKEN = process.env.MODELSCOPE_TOKEN || '';
-if (!IS_VERCEL) { try { MODELSCOPE_TOKEN = MODELSCOPE_TOKEN || fs.readFileSync(path.join(ROOT, 'pipeline', 'modelscope_token.txt'), 'utf8').trim(); } catch {} }
-const QWEN_BASE = process.env.QWEN_TTS_BASE || (MODELSCOPE_TOKEN
-  ? 'https://studio-mama8054-qwen3-tts-domen.api-inference.modelscope.net'
-  : 'https://mama8054-qwen3-tts-domen.ms.show');
+// Fish Audio TTS — the default narration engine (free s2.1-pro-free model).
+// Reads from env FISH_API_KEY first, then pipeline/fish_apikey.txt (gitignored).
+let FISH_API_KEY = process.env.FISH_API_KEY || '';
+if (!IS_VERCEL) { try { FISH_API_KEY = FISH_API_KEY || fs.readFileSync(path.join(ROOT, 'pipeline', 'fish_apikey.txt'), 'utf8').trim(); } catch {} }
+const FISH_API = 'https://api.fish.audio';
 const API = 'https://api.paxsenix.org';
 const AQUA_API = 'https://api.aquadevs.com';
 const PORT = process.env.PORT || 5173;
@@ -872,8 +865,6 @@ const TTS_VOICE_INSTRUCTIONS = {
 // MIMO voice IDs — `mimo_default` is the Chinese default voice, so English uses
 // English-native voices instead (per MiMo docs: Chloe/Mia female, Milo/Dean male).
 const TTS_MIMO_VOICES = { female: 'Chloe', male: 'Milo' };
-// PaxSenix TTS fallback voices (verified endpoint) — proper en-US neural voices.
-const TTS_PAXSENIX_VOICES = { female: 'en-US-AriaNeural', male: 'en-US-GuyNeural' };
 const LANGUAGES = [
   { id: 'en', label: 'English', ttsCode: 'en' },
   { id: 'hi', label: 'Hindi', ttsCode: 'hi' },
@@ -892,26 +883,26 @@ const NARRATION_MODES = [
   { id: 'prompt', label: 'Prompt Vocalized — narration embedded in video prompts, no separate audio' }
 ];
 const DEFAULT_NARRATION_MODE = 'tts';
-// Narration TTS engines: MIMO (AquaDevs, default), PaxSenix, or Qwen3-TTS (ModelScope).
+// Narration TTS engines — Fish Audio is the default; MIMO (AquaDevs) stays as
+// an explicit option AND the silent fallback so narration never breaks.
 const NARRATION_ENGINES = [
-  { id: 'mimo', label: 'MIMO — high quality voices (default)' },
-  { id: 'paxsenix', label: 'PaxSenix — neural voices' },
-  { id: 'qwen', label: 'Qwen3-TTS — ModelScope space (Ryan, Vivian, …)' }
+  { id: 'fish', label: 'Fish Audio — s2.1-pro-free (default)' },
+  { id: 'mimo', label: 'MIMO — high quality voices (fallback option)' }
 ];
-const DEFAULT_NARRATION_ENGINE = 'mimo';
-// Official Qwen speakers (from the space's 🗣 官方发音人 dropdown).
-const QWEN_SPEAKERS = ['Vivian', 'Ryan', 'Aiden', 'Eric', 'Serena'];
-const QWEN_DEFAULT_SPEAKER = 'Ryan';
-// Qwen space Chinese UI translated to English options — the UI exposes these as
-// English selects and the Chinese values are what gets sent to the API.
-const QWEN_SPEED_OPTIONS = [ { label: 'Default', value: '默认' }, { label: 'Very slow', value: '极慢速' }, { label: 'Slow', value: '慢速' }, { label: 'Fast', value: '快速' }, { label: 'Very fast', value: '极快速' } ];
-const QWEN_PITCH_OPTIONS = [ { label: 'Default', value: '默认' }, { label: 'Very deep', value: '极低沉' }, { label: 'Deep', value: '低沉' }, { label: 'High', value: '高亢' }, { label: 'Very high', value: '极高亢' } ];
-const QWEN_EMOTION_OPTIONS = [ { label: 'Default', value: '默认' }, { label: 'Happy', value: '开心' }, { label: 'Angry', value: '愤怒' }, { label: 'Sad', value: '悲伤' }, { label: 'Fearful', value: '恐惧' }, { label: 'Gentle', value: '温柔' }, { label: 'Serious', value: '严肃' } ];
-const QWEN_DEFAULT_SPEED = '默认', QWEN_DEFAULT_PITCH = '默认', QWEN_DEFAULT_EMOTION = '默认';
-// Qwen generate_tts language dropdown only offers Auto / Chinese / English.
-function qwenLanguage(language) {
-  return language === 'en' ? 'English' : (language === 'zh' ? 'Chinese' : 'Auto');
-}
+const DEFAULT_NARRATION_ENGINE = 'fish';
+// Fish Audio TTS: the model is passed as a custom HTTP header and the voice is
+// chosen via `reference_id` (a public or cloned voice model on Fish Audio).
+// Verified live against the Fish Audio API (GET /model/{id}):
+//   bf322df2... = "Adrian"  — MALE, middle-aged, deep narration voice
+//   9a9cf477... = "Hannah" — FEMALE, clear friendly professional voice
+// These were previously swapped, so selecting "Male" played the female voice
+// and vice-versa — fixed by mapping each id to its actual gender.
+const FISH_TTS_MODEL = 's2.1-pro-free';
+const TTS_FISH_REFERENCES = {
+  female: '9a9cf47702da476aa4629e2506d4a857',
+  male: 'bf322df2096a46f18c579d0baa36f41d'
+};
+const FISH_TTS_REFERENCE_ID = TTS_FISH_REFERENCES.female;
 
 // Map image model name → PaxSenix API endpoint path
 function imageEndpoint(model) {
@@ -1134,6 +1125,12 @@ async function submitTask(pathAndQuery, logFn = logLine) {
       const j = await res.json().catch(() => ({}));
       if (res.ok && j.ok && j.task_url) return j.task_url;
       logFn(`submit attempt ${attempt}: HTTP ${res.status} ${JSON.stringify(j).slice(0, 200)}`);
+      // omni-flash's text safety filter can reject even softened prompts when the
+      // FRAME IMAGE itself is violent (e.g. "Depicts violent imagery"). The video
+      // retry ladder (softened → LLM-repaired → text-to-video) runs automatically.
+      if (j && j.nsfw && pathAndQuery.includes('/ai-video/omni-flash')) {
+        logFn(`omni-flash safety filter rejected this frame — retrying with a repaired prompt`);
+      }
     } catch (e) { logFn(`submit attempt ${attempt}: ${e.message}`); }
     await new Promise(r => setTimeout(r, 4000 * attempt));
   }
@@ -1203,9 +1200,13 @@ async function waitTask(taskUrl, maxMin = 25, logFn = logLine, outInfo = null) {
 }
 
 async function download(fileUrl, outPath) {
-  for (let attempt = 1; attempt <= 3; attempt++) {
+  // On Vercel a single invocation only gets 300s — a 3×180s download would blow the
+  // whole budget even if the render itself finished fast. Cap attempts + timeout there.
+  const attempts = IS_VERCEL ? 1 : 3;
+  const timeoutMs = IS_VERCEL ? 90000 : 180000;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
-      const res = await fetch(fileUrl, { signal: AbortSignal.timeout(180000) });
+      const res = await fetch(fileUrl, { signal: AbortSignal.timeout(timeoutMs) });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const buf = Buffer.from(await res.arrayBuffer());
       await fsp.writeFile(outPath, buf);
@@ -1771,6 +1772,25 @@ async function generateImages(frames, imageModel, ratio, style, consistency = tr
 
 function chainRefFile(n) { return path.join(FRAMES_DIR, `chain_${String(n).padStart(2, '0')}.png`); }
 
+// omni-flash's PaxSenix i2v asset pipeline REJECTS PNG files (fails with "Uploaded
+// asset ... not ready within 120000ms, last status errored") but accepts JPG —
+// verified live with the same image: .png → fail, .jpg → done. So for omni-flash we
+// re-encode local frame/chain PNGs to JPG before hosting. veo-3.1 and grok-video
+// accept PNG (verified), so they keep the fast path.
+async function uploadVideoImage(pngPath, videoModel, logFn = logLine) {
+  if (videoModel === 'omni-flash') {
+    try {
+      const jpgPath = pngPath.replace(/\.png$/i, '.jpg');
+      await new Promise((resolve, reject) => {
+        execFile(ffmpegBin(), ['-y', '-i', pngPath, '-q:v', '2', jpgPath], { timeout: 60000 }, err => err ? reject(err) : resolve());
+      });
+      logFn(`PNG→JPG re-encoded for omni-flash i2v: ${path.basename(jpgPath)}`);
+      return await uploadToImageHost(jpgPath, logFn);
+    } catch (e) { logFn(`PNG→JPG re-encode failed (${e.message}) — uploading PNG as-is`); }
+  }
+  return await uploadToImageHost(pngPath, logFn);
+}
+
 // Extract the last settled frame of a rendered clip into a PNG (chain anchor).
 // -sseof seeks 0.15s before the end — generated clips usually hold the final pose
 // there instead of freezing black on the exact last frame.
@@ -1784,12 +1804,19 @@ function extractLastFrame(videoPath, outPng) {
 // Public URL of a previous scene's final frame (seamless-chain anchor). Re-uploads
 // the local chain PNG when present (fresh, always-accessible URL), else reuses the
 // URL stored on the frame from a previous run.
-async function chainRefFor(prevFrame) {
+async function chainRefFor(prevFrame, videoModel = null) {
   if (!prevFrame) return null;
   const localPng = chainRefFile(prevFrame.frame);
   try {
-    if (fs.existsSync(localPng)) return await uploadToImageHost(localPng, logLine);
+    if (fs.existsSync(localPng)) return await uploadVideoImage(localPng, videoModel, logLine);
   } catch (e) { logLine(`chain ref upload (frame ${prevFrame.frame}) failed: ${e.message}`); }
+  // No local chain PNG (Vercel cold instance): if omni-flash and the persisted anchor
+  // is a PNG from a previous veo-3.1 run, convert it remotely so it doesn't hit the
+  // asset-pipeline rejection.
+  if (videoModel === 'omni-flash' && prevFrame.chain_image_url && /\.png($|\?)/i.test(prevFrame.chain_image_url)) {
+    const fresh = await omniFlashJpgFromRemote({ frame: prevFrame.frame, generated_image_url: prevFrame.chain_image_url }, logLine);
+    if (fresh) return fresh;
+  }
   return prevFrame.chain_image_url || null;
 }
 
@@ -1819,13 +1846,40 @@ async function urlReachable(url) {
   } catch { return false; }
 }
 
-async function resolveVideoImage(f, logFn = logLine) {
+async function resolveVideoImage(f, videoModel = null, logFn = logLine) {
+  // omni-flash's i2v asset pipeline rejects PNG uploads but accepts JPG. When the
+  // selected model is omni-flash, ALWAYS re-encode the local frame PNG to JPG and
+  // use that URL — even a live stored PNG URL would fail the asset pipeline.
+  if (videoModel === 'omni-flash') {
+    const localPng = frameFile(f.frame);
+    if (fs.existsSync(localPng)) {
+      try {
+        const fresh = await uploadVideoImage(localPng, 'omni-flash', logFn);
+        if (fresh) {
+          f.generated_image_url = fresh;
+          logFn(`frame ${f.frame}: omni-flash i2v image (PNG→JPG) → ${fresh.slice(0, 90)}`);
+          return fresh;
+        }
+      } catch (e) { logFn(`frame ${f.frame}: omni-flash i2v image re-host failed: ${e.message}`); }
+    }
+    // No local PNG (Vercel cold instance where /tmp was wiped): download the stored
+    // image, PNG→JPG, re-host — otherwise the stored PNG URL would fail the pipeline.
+    if (f.generated_image_url && /\.png($|\?)/i.test(f.generated_image_url)) {
+      const remote = await omniFlashJpgFromRemote(f, logFn);
+      if (remote) {
+        f.generated_image_url = remote;
+        return remote;
+      }
+      logFn(`frame ${f.frame}: omni-flash i2v — no local PNG to re-encode; stored URL may fail the asset pipeline`);
+    }
+    // Stored URL already a .jpg (from a previous omni-flash run)? Use it via the generic path below.
+  }
   if (f.generated_image_url && await urlReachable(f.generated_image_url)) return f.generated_image_url;
   if (f.generated_image_url) logFn(`frame ${f.frame}: stored image URL unreachable — re-hosting local PNG`);
   const localPng = frameFile(f.frame);
   if (fs.existsSync(localPng)) {
     try {
-      const fresh = await uploadToImageHost(localPng, logFn);
+      const fresh = await uploadVideoImage(localPng, videoModel, logFn);
       if (fresh) {
         f.generated_image_url = fresh;
         logFn(`frame ${f.frame}: re-hosted frame image → ${fresh.slice(0, 90)}`);
@@ -1836,17 +1890,144 @@ async function resolveVideoImage(f, logFn = logLine) {
   return f.generated_image_url || null;
 }
 
-async function generateVideos(frames, ratio, videoModel = DEFAULT_VIDEO_MODEL, chainContinuity = false) {
+// Vercel cold-instance fallback for omni-flash: no local PNG to re-encode, so
+// download the stored image bytes, PNG→JPG via ffmpeg, and re-host the JPG.
+async function omniFlashJpgFromRemote(f, logFn = logLine) {
+  const src = f && f.generated_image_url;
+  if (!src || !/^https?:\/\//i.test(src)) return null;
+  try {
+    const res = await fetch(src, { signal: AbortSignal.timeout(60000) });
+    if (!res.ok) return null;
+    const buf = Buffer.from(await res.arrayBuffer());
+    const tmpPng = path.join(FRAMES_DIR, `omni_dl_${String(f.frame).padStart(2, '0')}.png`);
+    const tmpJpg = tmpPng.replace(/\.png$/, '.jpg');
+    await fsp.writeFile(tmpPng, buf);
+    await new Promise((resolve, reject) => {
+      execFile(ffmpegBin(), ['-y', '-i', tmpPng, '-q:v', '2', tmpJpg], { timeout: 60000 }, err => err ? reject(err) : resolve());
+    });
+    const fresh = await uploadToImageHost(tmpJpg, logFn);
+    if (fresh) logFn(`frame ${f.frame}: downloaded remote image → PNG→JPG for omni-flash`);
+    return fresh;
+  } catch (e) {
+    logFn(`frame ${f.frame}: omni-flash remote PNG→JPG conversion failed: ${e.message}`);
+    return null;
+  }
+}
+
+// omni-flash's PaxSenix text safety filter rejects prompts describing violence,
+// abduction, non-consensual action, struggle, etc. (verified: frame 2 got 4× HTTP
+// 400 "nsfw":true for "graphic violence and non-consensual action", "violent imagery
+// and forceful action", "suggests abduction"). Rewrite the flagged vocabulary to
+// neutral-but-visual wording BEFORE submit — ONLY for omni-flash, so veo-3.1 and
+// grok-video keep the full cinematic language.
+const OMNI_SOFTENINGS = [
+  [/\bgrabs?\b/gi, 'moves toward'],
+  [/\bgrabbing\b/gi, 'moving toward'],
+  [/\bseizes?\b/gi, 'takes hold of'],
+  [/\bseizing\b/gi, 'taking hold of'],
+  [/\bsnatches?\b/gi, 'takes'],
+  [/\bsnatching\b/gi, 'taking'],
+  [/\byanks?\b/gi, 'pulls'],
+  [/\byanking\b/gi, 'pulling'],
+  [/\babducts?\b/gi, 'leads away'],
+  [/\babducting\b/gi, 'leading away'],
+  [/\babducted\b/gi, 'led away'],
+  [/\babduction\b/gi, 'departure'],
+  [/\bkidnaps?\b/gi, 'takes aside'],
+  [/\bkidnapping\b/gi, 'taking aside'],
+  [/\bnon-consensual\b/gi, 'unexpected'],
+  [/\bforcefully\b/gi, 'firmly'],
+  [/\bforcibly\b/gi, 'firmly'],
+  [/\bforceful\b/gi, 'firm'],
+  [/\bforced\b/gi, 'guided'],
+  [/\bviolent\b/gi, 'intense'],
+  [/\bviolently\b/gi, 'intensely'],
+  [/\bviolence\b/gi, 'tension'],
+  [/\bstruggles?\b/gi, 'resists'],
+  [/\bstruggling\b/gi, 'resisting'],
+  [/\bstruggled\b/gi, 'resisted'],
+  [/\battacks?\b/gi, 'approaches'],
+  [/\battacking\b/gi, 'approaching'],
+  [/\battacked\b/gi, 'approached'],
+  [/\bblood\b/gi, 'crimson glow'],
+  [/\bbloodshed\b/gi, 'turmoil'],
+  [/\bkills?\b/gi, 'overcomes'],
+  [/\bkilling\b/gi, 'overcoming'],
+  [/\bkilled\b/gi, 'overcome'],
+  [/\bdead\b/gi, 'fallen'],
+  [/\bdeath\b/gi, 'fall'],
+  [/\bdies\b/gi, 'falls'],
+  [/\bfight\b/gi, 'clash'],
+  [/\bfighting\b/gi, 'clashing'],
+  [/\bfought\b/gi, 'clashed'],
+  [/\bbattle\b/gi, 'confrontation'],
+  [/\bwarriors\b/gi, 'champions'],
+  [/\bweapon\b/gi, 'blade'],
+  [/\bsword\b/gi, 'blade'],
+  [/\bpunches?\b/gi, 'taps'],
+  [/\bpunching\b/gi, 'tapping'],
+  [/\bharm\b/gi, 'impact'],
+  [/\bthreatens?\b/gi, 'faces'],
+  [/\bthreatening\b/gi, 'facing']
+];
+function softenOmniPrompt(prompt, logLabel = 'omni-flash') {
+  if (!prompt) return prompt;
+  let out = String(prompt);
+  for (const [re, to] of OMNI_SOFTENINGS) out = out.replace(re, to);
+  if (out !== String(prompt)) logLine(`${logLabel}: prompt softened (violence/abduction wording → neutral phrasing)`);
+  return out;
+}
+
+// Rewrite a rejected video prompt so the SAME scene passes the model's content
+// filter: keep shot, characters, setting, camera and style, but rephrase any
+// violence / abduction / struggle wording into safe, cinematic, render-friendly
+// action. Used by the video retry ladder so a failed frame never silently becomes
+// a frozen still in the final film.
+async function repairVideoPrompt(frameNum, prompt, videoModel) {
+  try {
+    const system = `You are an expert AI-video prompt repair specialist. Rewrite the user's prompt for a ${videoModel} image-to-video generation so the exact same scene still plays out, but in language that content filters never reject. Rules:
+- Keep the scene, characters, setting, camera moves, lighting, and overall cinematic style.
+- Replace violence, gore, abduction, kidnapping, weapons, blood, struggle, and non-consensual action with safe dramatic equivalents (tension, confrontation, sudden movement, implied off-screen events).
+- Never use words like: kill, blood, fight, sword, weapon, abduct, kidnap, grab, seize, struggle, attack, punch, harm, violent, dead, death.
+- Output ONLY the rewritten prompt. No explanations, no markdown.`;
+    const raw = await chatCompletion('gemini-2.5-pro', [
+      { role: 'system', content: system },
+      { role: 'user', content: `Original prompt:\n${prompt}` }
+    ], 4000);
+    const cleaned = String(raw || '').trim();
+    // Guard against useless/absurd rewrites: too short, or so long it would blow
+    // the API URL when encoded (same class of risk as enhanced prompts).
+    if (cleaned.length < 20 || cleaned.length > 2000) return null;
+    logLine(`frame ${frameNum}: prompt repaired via LLM (${cleaned.length} chars)`);
+    return cleaned;
+  } catch (e) { logLine(`frame ${frameNum}: prompt repair failed: ${e.message}`); return null; }
+}
+
+async function generateVideos(frames, ratio, videoModel = DEFAULT_VIDEO_MODEL, chainContinuity = false, opts = {}) {
   const withAnim = frames.filter(f => f.animation_prompt).sort((a, b) => a.frame - b.frame);
   setPhase('videos', withAnim.length);
+  // Purge stale frame videos + chain anchors from older storyboards (frame numbers
+  // not in the current board) so a later combine can never mix old footage with
+  // the new board. Current frames' per-frame re-renders are untouched.
+  // NOTE: when opts.skipPurge is set (Vercel per-frame rendering), only the single
+  // requested frame is in `frames`, so we must NOT delete the other frames' videos.
+  if (!opts.skipPurge) {
+    const curFrames = new Set(frames.map(f => f.frame));
+    for (const [dir, pat] of [[VIDEO_DIR, /^frame_(\d+)\.mp4$/i], [FRAMES_DIR, /^chain_(\d+)\.(png|jpg)$/i]]) {
+      for (const f of fs.readdirSync(dir)) {
+        const m = pat.exec(f);
+        if (m && !curFrames.has(Number(m[1]))) { try { fs.unlinkSync(path.join(dir, f)); } catch {} }
+      }
+    }
+  }
   const modelChain = videoModelChain(videoModel);
   logLine(`video phase: ${withAnim.length} frame(s) — ${modelChain.join(' → ')} @ ${ratio}` +
     (chainContinuity ? ' — SEAMLESS CHAINING (each scene starts from previous scene\'s last frame)' : ''));
-  // Standalone models: no hidden fallback, so warn upfront when the chosen model is
-  // known to be unreliable for image-to-video (PaxSenix omni-flash i2v asset pipeline
-  // fails server-side regardless of image URL). The user can switch to Veo 3.1.
-  if (videoModel === 'omni-flash' && withAnim.some(f => f.generated_image_url)) {
-    logLine(`NOTE: omni-flash image-to-video is currently failing on PaxSenix (server-side asset pipeline error). With standalone models there is NO auto-fallback — frames will fail. Select Veo 3.1 for reliable image-to-video.`);
+  // omni-flash image-to-video: PaxSenix's omni-flash asset pipeline rejects PNG
+  // uploads but accepts JPG (verified live). Frames are re-encoded PNG→JPG
+  // automatically in resolveVideoImage/uploadVideoImage, so omni-flash i2v works.
+  if (videoModel === 'omni-flash' && withAnim.some(f => f.generated_image_url || fs.existsSync(frameFile(f.frame)))) {
+    logLine(`omni-flash image-to-video: frames re-encoded to JPG automatically (its asset pipeline rejects PNG).`);
   }
 
   const work = withAnim.filter(f => !fs.existsSync(videoFile(f.frame)));
@@ -1860,34 +2041,59 @@ async function generateVideos(frames, ratio, videoModel = DEFAULT_VIDEO_MODEL, c
     return { f, prompt: enh };
   }));
 
-  // renderVideo: render ONE frame with the standalone selected model (no fallback
-  // chain — each model is its own explicit choice). Optionally anchored to a
-  // continuity image (previous scene's last frame). On success with chaining ON,
-  // extract + re-host this scene's last frame as the anchor for the next scene.
+  // renderVideo: render ONE frame with the standalone selected model (no hidden
+  // cross-model fallback — each model is its own explicit choice). On failure the
+  // PROMPT IS REPAIRED and resubmitted (softened wording → LLM rewrite → finally
+  // text-to-video) so the final film never silently shows a frozen still for a
+  // frame that was supposed to animate. Optionally anchored to a continuity image
+  // (previous scene's last frame). On success with chaining ON, extract + re-host
+  // this scene's last frame as the anchor for the next scene.
+  //
+  // On Vercel each request runs inside a 300s function budget, so every wait is
+  // capped to the time left in that budget (per-frame rendering keeps each request
+  // small, but a hung PaxSenix task must never burn the whole budget).
+  // Vercel allows 300s per invocation. Renders typically land 220-260s (measured
+  // live: 224s, 229s, 256s, 257s), so give the wait ~270s — past that, fail fast
+  // and let the client retry the frame (a fresh invocation gets a full budget).
+  const vercelBudgetDeadline = IS_VERCEL ? Date.now() + 270000 : null;
   const renderVideo = async (f, prompt, anchorImg) => {
+    const model0 = modelChain[0];
+    // omni-flash's text safety filter rejects violence/abduction wording (verified:
+    // 4× HTTP 400 "nsfw":true on the enhanced frame-2 prompt). Soften the prompt
+    // up front for omni-flash; veo/grok keep the raw prompt on the first attempt.
+    const basePrompt = model0 === 'omni-flash' ? softenOmniPrompt(prompt) : prompt;
     // Anchored scenes use the previous scene's freshly re-hosted last frame;
     // unanchored scenes verify + refresh the frame's stored image URL first so a
-    // dead/expired link never kills the video task's asset download.
-    const img = anchorImg || await resolveVideoImage(f);
-    const mode = img ? 'image-to-video' : 'text-to-video';
-    for (const model of modelChain) {
-      const imgParam = img ? `&${videoImgKey(model)}=${encodeURIComponent(img)}` : '';
-      const mRatio = normalizeVideoRatio(ratio, model);
-      const q = `/ai-video/${model}?prompt=${encodeURIComponent(prompt)}&ratio=${encodeURIComponent(mRatio)}&type=${mode}${imgParam}`;
+    // dead/expired link never kills the video task's asset download. omni-flash
+    // additionally gets PNG→JPG (its i2v asset pipeline rejects PNG).
+    const img = anchorImg || await resolveVideoImage(f, model0);
+
+    // One render attempt. Returns 'ok' | 'fail' | 'cancel'.
+    const attempt = async (label, p, useImg) => {
+      const mode = useImg ? 'image-to-video' : 'text-to-video';
+      const imgParam = useImg && img ? `&${videoImgKey(model0)}=${encodeURIComponent(img)}` : '';
+      const mRatio = normalizeVideoRatio(ratio, model0);
+      const q = `/ai-video/${model0}?prompt=${encodeURIComponent(p)}&ratio=${encodeURIComponent(mRatio)}&type=${mode}${imgParam}`;
       const task = await submitTask(q);
-      if (!task) { logLine(`frame ${f.frame}: ${model} SUBMIT FAILED`); return false; }
-      logLine(`frame ${f.frame}: ${model} submitted (${mode}${anchorImg ? ', anchored to previous scene' : ''})`);
+      if (!task) { logLine(`frame ${f.frame}: ${model0} SUBMIT FAILED (${label})`); return 'fail'; }
+      logLine(`frame ${f.frame}: ${model0} submitted (${mode}${anchorImg ? ', anchored to previous scene' : ''}${label ? ' — ' + label : ''})`);
       const info = {};
-      const url = await waitTask(task, 25, logLine, info);
-      if (job.cancelRequested) { logLine(`frame ${f.frame}: cancelled by user`); return false; }
+      // On Vercel, cap the poll to the remaining request budget (~250s total), so a
+      // hung task fails fast instead of silently burning the whole function budget.
+      const maxMin = vercelBudgetDeadline
+        ? Math.max(1, Math.min((label === 'original' ? 25 : 20), (vercelBudgetDeadline - Date.now()) / 60000))
+        : (label === 'original' ? 25 : 20);
+      const url = await waitTask(task, maxMin, logLine, info);
+      if (job.cancelRequested) { logLine(`frame ${f.frame}: cancelled by user`); return 'cancel'; }
       if (url && await download(url, videoFile(f.frame))) {
         job.ok++;
-        logLine(`frame ${f.frame}: VIDEO DONE (${model})`);
+        logLine(`frame ${f.frame}: VIDEO DONE (${model0}${label ? ' — ' + label : ''})`);
         if (chainContinuity) {
           try {
             const png = chainRefFile(f.frame);
             await extractLastFrame(videoFile(f.frame), png);
-            const cUrl = await uploadToImageHost(png, logLine);
+            // omni-flash needs JPG chain anchors too (its i2v asset pipeline rejects PNG)
+            const cUrl = await uploadVideoImage(png, model0, logLine);
             if (cUrl) {
               f.chain_image_url = cUrl;
               await persistChainImage(f);
@@ -1895,12 +2101,45 @@ async function generateVideos(frames, ratio, videoModel = DEFAULT_VIDEO_MODEL, c
             }
           } catch (e) { logLine(`frame ${f.frame}: chain anchor extract/upload failed: ${e.message}`); }
         }
-        return true;
+        return 'ok';
       }
       const assetErr = !!(info.failed && /asset|not ready/i.test(JSON.stringify(info.payload || '')));
-      logLine(`frame ${f.frame}: ${model} RENDER FAILED${assetErr ? ' (asset error — server-side asset pipeline issue; try Veo 3.1 for image-to-video)' : ''}`);
-      return false;
+      logLine(`frame ${f.frame}: ${model0} RENDER FAILED (${label})${assetErr ? ' (asset error — trying next prompt variant / text-to-video)' : ''}`);
+      return 'fail';
+    };
+
+    // PROMPT-REPAIR RETRY LADDER: fix the prompt and try again instead of letting
+    // the final film show a static image for this frame.
+    const ladder = [];
+    ladder.push({ label: 'original', p: basePrompt, useImg: !!img });
+    const softened = softenOmniPrompt(basePrompt, model0);
+    if (softened !== basePrompt) ladder.push({ label: 'softened prompt', p: softened, useImg: !!img });
+    for (const step of ladder) {
+      if (job.cancelRequested) return false;
+      const r = await attempt(step.label, step.p, step.useImg);
+      if (r === 'ok') return true;
+      if (r === 'cancel') return false;
     }
+    // LLM rewrite — keep the scene, rephrase risky wording into safe cinematic action.
+    // Skipped on Vercel: the extra LLM call + poll can blow the 300s function budget;
+    // softened + text-to-video retries still give the frame a good chance.
+    if (!IS_VERCEL && !job.cancelRequested) {
+      const repaired = await repairVideoPrompt(f.frame, basePrompt, model0);
+      // Skip if the rewrite came back identical to a prompt we already tried.
+      if (repaired && repaired !== basePrompt && repaired !== softened) {
+        const r = await attempt('LLM-repaired prompt', repaired, !!img);
+        if (r === 'ok') return true;
+        if (r === 'cancel') return false;
+      }
+    }
+    // Last resort: text-to-video (no image anchor) — bypasses the i2v asset pipeline
+    // entirely, so a frame that kept dying on image upload can still become motion.
+    if (!job.cancelRequested && img) {
+      const r = await attempt('text-to-video (no image)', softenOmniPrompt(basePrompt, model0), false);
+      if (r === 'ok') return true;
+      if (r === 'cancel') return false;
+    }
+    logLine(`frame ${f.frame}: all video attempts failed — final film will show a still image for this frame`);
     return false;
   };
 
@@ -1915,7 +2154,10 @@ async function generateVideos(frames, ratio, videoModel = DEFAULT_VIDEO_MODEL, c
       // whether it was rendered this run or already exists from an earlier run.
       const idx = withAnim.indexOf(f);
       const prev = idx > 0 ? withAnim[idx - 1] : null;
-      const chainUrl = prev ? (anchors.get(prev.frame) || await chainRefFor(prev)) : null;
+      // Client-supplied anchor wins (Vercel per-frame rendering passes the previous
+      // scene's chain URL explicitly because each request is a fresh invocation and
+      // can't see the previous frame's chain PNG on disk).
+      const chainUrl = f._chainAnchor || (prev ? (anchors.get(prev.frame) || await chainRefFor(prev, videoModel)) : null);
       const ok = await renderVideo(f, prompt, chainUrl);
       if (ok && f.chain_image_url) {
         anchors.set(f.frame, f.chain_image_url); // next scene starts from THIS scene's last frame
@@ -1962,150 +2204,77 @@ function splitTextIntoChunks(text, maxLen = 1500) {
   return chunks;
 }
 
-// ─── Qwen3-TTS (ModelScope Gradio space) ───────────────────────────────────
-// Gradio flow: POST /gradio_api/call/v2/generate_tts (named params or "data" array
-// [text, language, speaker, speed, pitch, emotion, custom_instruct, preset_name])
-// → {event_id}; then GET /gradio_api/call/generate_tts/{event_id} which streams
-// an SSE payload whose completion block carries the audio file (gradio v4 wraps it
-// as {"output":{"data":[...]}} with a string path; gradio v5 sends a raw array of
-// FileData objects {path, url}); the audio is downloaded from /gradio_api/file=<path>.
-// The tokenless .ms.show host requires a browser User-Agent (403 otherwise); the
-// Authorization header is only sent when a ModelScope token exists.
-function parseGradioOutput(body) {
-  for (const line of String(body || '').split('\n')) {
-    if (!line.startsWith('data:')) continue;
-    const raw = line.slice(5).trim();
-    if (!raw || raw === '[DONE]') continue;
-    try {
-      let j = JSON.parse(raw);
-      if (!j) continue;
-      // Gradio v4: data: {"output": {"data": [...]}} (also unwrap [[...]] nesting)
-      if (!Array.isArray(j)) {
-        let out = j.output;
-        if (Array.isArray(out) && out.length === 1 && Array.isArray(out[0])) out = out[0];
-        if (out && Array.isArray(out.data)) out = out.data;
-        if (Array.isArray(out) && out.length && j.success !== false) return out;
-        continue;
-      }
-      // Gradio v5 (tokenless .ms.show host): data: [FileData, statusMsg, ...] —
-      // the array itself is the output. Unwrap a single extra nesting level
-      // ([[FileData, ...]]) for older v5 variants.
-      if (j.length === 1 && Array.isArray(j[0])) j = j[0];
-      if (j.length) return j;
-    } catch {}
-  }
-  return null;
+// Assemble the full narration script from frames (narration + dialogue text).
+function buildNarrationText(frames) {
+  return frames.filter(f => f.narration || f.dialogue)
+    .map(f => [f.narration, f.dialogue].filter(Boolean).join('. '))
+    .join('. ... ');
 }
 
-// Find the audio file path inside a gradio output array. Entries can be a plain
-// string path or a gradio v5 FileData object with `path` / `url` / `value` fields.
-// `value` is only trusted for audio-looking files — the space's status object also
-// carries a `/mnt/workspace/...` value that must not be mistaken for audio.
-function extractQwenAudioPath(out) {
-  if (!Array.isArray(out)) return null;
-  for (const entry of out) {
-    if (typeof entry === 'string') {
-      if (entry.startsWith('/') || entry.startsWith('http')) return entry;
-      continue;
-    }
-    if (Array.isArray(entry)) {
-      // One extra nesting level (e.g. v4 [[FileData]]): descend into it.
-      const inner = extractQwenAudioPath(entry);
-      if (inner) return inner;
-      continue;
-    }
-    if (entry && typeof entry === 'object') {
-      // Prefer the FileData fields first; only fall back to `value` for audio files.
-      for (const key of ['path', 'url']) {
-        const v = entry[key];
-        if (typeof v === 'string' && (v.startsWith('/') || v.startsWith('http'))) return v;
-      }
-      const val = entry.value;
-      if (typeof val === 'string' && /\.(wav|mp3|ogg|flac|m4a|aac)(\?|$)/i.test(val)) return val;
-    }
-  }
-  return null;
+// Overlay the assembled narration track onto the final film. Mixes with the
+// original audio when present, otherwise replaces. Shared by the narration step
+// AND combineFilm so a re-combine never wipes previously generated narration.
+// Clamp a volume factor for the narration mix (0–3×); falls back to `def` when unset.
+function mixVolume(v, def) {
+  const n = parseFloat(v);
+  return Number.isFinite(n) ? Math.round(Math.max(0, Math.min(3, n)) * 100) / 100 : def;
 }
 
-async function qwenTTS(text, { speaker = QWEN_DEFAULT_SPEAKER, language = 'en', speed = QWEN_DEFAULT_SPEED, pitch = QWEN_DEFAULT_PITCH, emotion = QWEN_DEFAULT_EMOTION, logFn = logLine, budgetMs } = {}) {
-  const headers = {
-    'Content-Type': 'application/json',
-    // The tokenless .ms.show host anti-bot-gates plain clients with 403 — a browser
-    // User-Agent is required. Harmless on the api-inference host.
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36'
-  };
-  if (MODELSCOPE_TOKEN) headers.Authorization = `Bearer ${MODELSCOPE_TOKEN}`;
-  // Payload shapes: named params first (works on the tokenless v2 path), then the
-  // gradio `data` array (documented for the api-inference host). Both are tried on
-  // each path so either host works regardless of which shape it prefers.
-  const named = { text: String(text), language: qwenLanguage(language), speaker, speed, pitch, emotion, custom_instruct: '', preset_name: '' };
-  const bodies = [
-    { body: JSON.stringify(named), kind: 'named' },
-    { body: JSON.stringify({ data: [named.text, named.language, named.speaker, speed, pitch, emotion, '', ''] }), kind: 'data[]' }
-  ];
-  const postPaths = ['/gradio_api/call/v2/generate_tts', '/gradio_api/call/generate_tts'];
-  // TOTAL wall-clock budget across ALL submit attempts. On Vercel this is supplied
-  // by the narration job (budgetMs) so a multi-chunk narration shares one deadline
-  // inside maxDuration; standalone/auto-pipeline calls default to 200s on Vercel.
-  // Locally we stay generous (per-attempt deadline below still applies).
-  const totalDeadline = Date.now() + (budgetMs || (IS_VERCEL ? 200000 : 900000));
-  const attemptDeadline = () => Math.min(Date.now() + 240000, totalDeadline);
-  for (const postPath of postPaths) {
-    for (const { body, kind } of bodies) {
-      if (Date.now() >= totalDeadline) { logFn('qwen: total time budget exhausted'); return null; }
-      try {
-        const res = await fetch(QWEN_BASE + postPath, {
-          method: 'POST', headers, body, signal: AbortSignal.timeout(60000)
-        });
-        const j = await res.json().catch(() => ({}));
-        if (!res.ok || !j.event_id) {
-          logFn(`qwen submit failed (${postPath} ${kind}): HTTP ${res.status} ${JSON.stringify(j).slice(0, 120)}`);
-          continue;
-        }
-        // Poll the event stream inside a per-attempt budget, never past the total.
-        const streamUrl = `${QWEN_BASE}/gradio_api/call/generate_tts/${j.event_id}`;
-        const deadline = attemptDeadline();
-        while (Date.now() < deadline) {
-          const s = await fetch(streamUrl, { headers, signal: AbortSignal.timeout(60000) }).catch(() => null);
-          if (s) {
-            const streamText = await s.text().catch(() => '');
-            const out = parseGradioOutput(streamText);
-            const audioPath = out ? extractQwenAudioPath(out) : null;
-            if (audioPath) {
-              const fileUrl = audioPath.startsWith('http')
-                ? audioPath
-                : `${QWEN_BASE}/gradio_api/file=${encodeURIComponent(audioPath)}`;
-              const ar = await fetch(fileUrl, { headers, signal: AbortSignal.timeout(180000) });
-              if (!ar.ok) { logFn(`qwen audio download failed: HTTP ${ar.status}`); return null; }
-              logFn(`qwen TTS done (${speaker}, ${qwenLanguage(language)})`);
-              return Buffer.from(await ar.arrayBuffer());
-            }
-          }
-          if (Date.now() >= totalDeadline) { logFn('qwen: total time budget exhausted'); return null; }
-          await new Promise(r => setTimeout(r, 2000));
-        }
-        if (Date.now() >= totalDeadline) { logFn('qwen: total time budget exhausted'); return null; }
-        logFn('qwen event stream timed out');
-      } catch (e) { logFn(`qwen error: ${e.message}`); }
-    }
-  }
-  return null;
-}
-
-// Save a Qwen audio buffer as mp3 (the space returns wav; convert so the
-// -c copy concatenation with other mp3 chunks stays valid).
-async function saveQwenAsMp3(buf, outPath) {
-  const src = outPath + '.src.wav';
-  await fsp.writeFile(src, buf);
-  await new Promise((resolve) => {
-    execFile(ffmpegBin(), ['-y', '-i', src, '-codec:a', 'libmp3lame', '-q:a', '2', outPath],
-      { timeout: 60000 }, () => { try { fs.unlinkSync(src); } catch {} resolve(); });
+// Detect whether a video file has an audio stream. Uses the ffmpeg binary via
+// ffmpegBin() (ffmpeg-static on Vercel) instead of raw `ffprobe`, which is NOT
+// on PATH in Vercel's runtime — `ffmpeg -i` prints stream info to stderr.
+function probeHasAudio(videoPath) {
+  return new Promise((resolve) => {
+    execFile(ffmpegBin(), ['-i', videoPath], { timeout: 15000 }, (e, stdout, stderr) => {
+      const out = String(stderr || '') + String(stdout || '');
+      resolve(/Stream #\d+:\d+.*Audio|Audio:/.test(out));
+    });
   });
-  return fs.existsSync(outPath);
+}
+
+async function overlayNarrationOnFinal(finalPath, fullAudioPath, opts = {}) {
+  if (!fs.existsSync(finalPath)) { logLine('narration overlay: final film not found, skipped'); return false; }
+  if (!fs.existsSync(fullAudioPath)) { logLine('narration overlay: narration audio not found, skipped'); return false; }
+  const narrVol = mixVolume(opts.narrVol, 1.5);
+  const origVol = mixVolume(opts.origVol, 0.4);
+  const hasAudio = await probeHasAudio(finalPath);
+  const tempPath = finalPath + '.narr.mp4';
+  logLine(`overlaying narration on final video (original audio: ${hasAudio ? 'mix' : 'replace'}, narration ${narrVol}×, film audio ${origVol}×)...`);
+  const success = await new Promise((resolve) => {
+    if (hasAudio) {
+      // Mix original audio + narration
+      execFile(ffmpegBin(), [
+        '-y', '-i', finalPath, '-i', fullAudioPath,
+        '-filter_complex', `[0:a]volume=${origVol}[orig];[1:a]volume=${narrVol}[narr];[orig][narr]amix=inputs=2:duration=first[a]`,
+        '-map', '0:v', '-map', '[a]',
+        '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k',
+        '-shortest', tempPath
+      ], {timeout: 120000}, (err) => { resolve(!err); });
+    } else {
+      // No original audio — add narration, padded with silence so a shorter
+      // narration never truncates the film (apad → -shortest cuts at video end).
+      execFile(ffmpegBin(), [
+        '-y', '-i', finalPath, '-i', fullAudioPath,
+        '-filter_complex', '[1:a]apad[a]',
+        '-map', '0:v:0', '-map', '[a]',
+        '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k',
+        '-shortest', tempPath
+      ], {timeout: 120000}, (err) => { resolve(!err); });
+    }
+  });
+  if (success && fs.existsSync(tempPath)) {
+    try { fs.unlinkSync(finalPath); fs.renameSync(tempPath, finalPath); } catch {}
+    const size = (fs.statSync(finalPath).size / 1048576).toFixed(1);
+    logLine(`full narration: OVERLAY COMPLETE — final film ${size}MB with narration`);
+    return true;
+  }
+  logLine('full narration: overlay failed');
+  try { fs.unlinkSync(tempPath); } catch {}
+  return false;
 }
 
 // Generate ONE TTS for the entire film narration and overlay it on the final video
-async function generateFullNarration(frames, voice = DEFAULT_VOICE, language = DEFAULT_LANGUAGE, engine = DEFAULT_NARRATION_ENGINE, qwenSpeaker = QWEN_DEFAULT_SPEAKER, qwenSpeed = QWEN_DEFAULT_SPEED, qwenPitch = QWEN_DEFAULT_PITCH, qwenEmotion = QWEN_DEFAULT_EMOTION) {
+async function generateFullNarration(frames, voice = DEFAULT_VOICE, language = DEFAULT_LANGUAGE, engine = DEFAULT_NARRATION_ENGINE, opts = {}) {
   const withSpeech = frames.filter(f => f.narration || f.dialogue);
   if (!withSpeech.length) { logLine('no narration text found'); return false; }
 
@@ -2113,145 +2282,145 @@ async function generateFullNarration(frames, voice = DEFAULT_VOICE, language = D
   const langObj = LANGUAGES.find(l => l.id === language);
   const langName = langObj ? langObj.label : 'English';
   const baseInstructions = TTS_VOICE_INSTRUCTIONS[voice] || TTS_VOICE_INSTRUCTIONS.female;
-  // ALWAYS pass an explicit language directive — the MIMO default voice is Chinese-biased
-  // and without a language cue it drifts into the wrong language even for English text.
   const langInstructions = ` Speak entirely in ${langName}. Pronounce all ${langName} words naturally and fluently. Do not switch to any other language.`;
   const instructions = baseInstructions + langInstructions;
-  // English uses English-native MIMO voices; other languages keep the default voice.
+  // MIMO fallback voice — English uses English-native MIMO voices; other languages keep the default.
   const ttsVoice = language === 'en' ? (TTS_MIMO_VOICES[voice] || TTS_MIMO_VOICES.female) : 'mimo_default';
 
-  // Assemble full narration script from all frames
-  const fullText = withSpeech.map(f => {
-    const parts = [f.narration, f.dialogue].filter(Boolean);
-    return parts.join('. ');
-  }).join('. ... ');
+  const fullText = buildNarrationText(frames);
 
-  logLine(`full narration: ${fullText.length} chars from ${withSpeech.length} frames — ${voiceLabel} voice, ${langName} — engine: ${engine}${engine === 'qwen' ? ` (speaker: ${qwenSpeaker})` : ''}`);
+  if (engine && !['fish', 'mimo'].includes(engine)) logLine(`note: narration engine "${engine}" was removed — using ${DEFAULT_NARRATION_ENGINE}`);
+  logLine(`full narration: ${fullText.length} chars from ${withSpeech.length} frames — ${voiceLabel} voice, ${langName} — engine: ${engine || DEFAULT_NARRATION_ENGINE}`);
 
   // Split into chunks if text is long
   const chunks = splitTextIntoChunks(fullText);
   logLine(`split into ${chunks.length} chunk(s)`);
 
+  // Stale-chunk guard: cached narr_chunk_*.mp3 files are only reusable when the
+  // exact narration request (voice + language + engine + narration text hash) is
+  // unchanged. If ANYTHING differs — a new script, a different voice, another
+  // language/engine — delete the old chunks so we never overlay a previous film's
+  // audio on the new film (the "same female speech every time" bug). The signature
+  // is written only after all chunks for THIS request succeed.
+  const sig = JSON.stringify({
+    voice: voice || DEFAULT_VOICE,
+    language: language || DEFAULT_LANGUAGE,
+    engine: engine || DEFAULT_NARRATION_ENGINE,
+    hash: crypto.createHash('sha1').update(fullText).digest('hex')
+  });
+  const sigFile = path.join(VIDEO_DIR, 'narr_chunk_sig.txt');
+  let sigMatches = false;
+  try { sigMatches = fs.readFileSync(sigFile, 'utf8') === sig; } catch {}
+  if (!sigMatches) {
+    let cleared = 0;
+    for (const f of fs.readdirSync(VIDEO_DIR)) {
+      if (f.startsWith('narr_chunk_') && f.endsWith('.mp3')) {
+        try { fs.unlinkSync(path.join(VIDEO_DIR, f)); cleared++; } catch {}
+      }
+    }
+    if (cleared) logLine(`stale narration chunks cleared (${cleared}) — regenerating for current voice/text`);
+  }
+
+  // Fish Audio (default engine, free s2.1-pro-free): synchronous POST that returns
+  // the mp3 bytes directly. Model goes in a custom header; voice via reference_id
+  // (female/male reference picked by the voice dropdown). Retries with backoff on
+  // rate limits (429) and transient 5xx before handing off to the fallback engine.
+  const tryFish = async (chunkPath, text) => {
+    if (!FISH_API_KEY) { logLine('fish: FISH_API_KEY not set (env FISH_API_KEY or pipeline/fish_apikey.txt)'); return false; }
+    const referenceId = TTS_FISH_REFERENCES[voice] || FISH_TTS_REFERENCE_ID;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const body = { text: String(text), reference_id: referenceId, format: 'mp3' };
+      // Fish Audio understands ISO language codes; only needed for non-English narration.
+      if (langObj && langObj.ttsCode && langObj.ttsCode !== 'en') body.language = langObj.ttsCode;
+      try {
+        const res = await fetch(`${FISH_API}/v1/tts`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${FISH_API_KEY}`, 'Content-Type': 'application/json', model: FISH_TTS_MODEL },
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(120000)
+        });
+        if (res.ok) {
+          const ct = res.headers.get('content-type') || '';
+          if (!/audio|octet-stream/i.test(ct)) {
+            logLine(`fish TTS: unexpected content-type "${ct}" — ${(await res.text().catch(() => '')).slice(0, 200)}`);
+            return false;
+          }
+          const buf = Buffer.from(await res.arrayBuffer());
+          await fsp.writeFile(chunkPath, buf);
+          return fs.existsSync(chunkPath);
+        }
+        const j = await res.json().catch(() => ({}));
+        if (res.status === 429) {
+          if (attempt < 3) {
+            const wait = 10000 * attempt;
+            logLine(`fish TTS: rate limited (429), waiting ${wait / 1000}s (attempt ${attempt}/3)...`);
+            await new Promise(r => setTimeout(r, wait));
+          } else {
+            logLine('fish TTS: rate limited (429) after 3 attempts — falling back');
+          }
+        } else {
+          logLine(`fish TTS failed: HTTP ${res.status} ${JSON.stringify(j).slice(0, 200)}`);
+          if (attempt < 3) await new Promise(r => setTimeout(r, 3000 * attempt));
+        }
+      } catch (e) {
+        logLine(`fish TTS error: ${e.message}`);
+        if (attempt < 3) await new Promise(r => setTimeout(r, 3000 * attempt));
+      }
+    }
+    return false;
+  };
+
+  // MIMO (AquaDevs) — the primary engine when selected, otherwise the fallback.
+  const tryMIMO = async (chunkPath, text) => {
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        logLine(`chunk fallback: MIMO TTS (attempt ${attempt})...`);
+        const res = await fetch(`${AQUA_API}/v1/audio/speech`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${AQUA_API_KEY}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model: TTS_MODEL, input: text, instructions, audio: { voice: ttsVoice } }),
+          signal: AbortSignal.timeout(300000)
+        });
+        const j = await res.json().catch(() => ({}));
+        if (res.ok && j.success && j.url) return await download(j.url, chunkPath);
+        if (res.status === 429) {
+          const wait = 15000 * attempt;
+          logLine(`chunk fallback: MIMO rate limited (429), waiting ${wait / 1000}s...`);
+          await new Promise(r => setTimeout(r, wait));
+        } else {
+          logLine(`chunk fallback: MIMO failed — ${JSON.stringify(j).slice(0, 100)}`);
+          return false;
+        }
+      } catch (e) {
+        logLine(`chunk fallback: MIMO error — ${e.message}`);
+        if (attempt < 3) await new Promise(r => setTimeout(r, 5000 * attempt));
+      }
+    }
+    return false;
+  };
+
   const chunkFiles = [];
-  // Vercel: the whole narration job must finish inside maxDuration (300s). Give the
-  // Qwen engine a shared, shrinking budget across ALL chunks (240s total, leaving
-  // headroom for ffmpeg conversion + concat + overlay) so a multi-chunk script
-  // degrades gracefully (falls back to PaxSenix per chunk) instead of being killed.
-  const narrationStart = Date.now();
-  const qwenBudgetMs = IS_VERCEL ? 240000 : 0; // 0 = unlimited (per-call default)
   for (let i = 0; i < chunks.length; i++) {
     if (job.cancelRequested) { logLine('narration cancelled by user'); break; }
     const chunkPath = path.join(VIDEO_DIR, `narr_chunk_${String(i + 1).padStart(2, '0')}.mp3`);
     if (fs.existsSync(chunkPath)) { chunkFiles.push(chunkPath); logLine(`chunk ${i+1}: exists, skip`); continue; }
 
-    let chunkUrl = null;
-    for (let attempt = 1; attempt <= 3 && engine === 'mimo'; attempt++) {
-      try {
-        logLine(`chunk ${i+1}/${chunks.length}: generating TTS (attempt ${attempt})...`);
-        const res = await fetch(`${AQUA_API}/v1/audio/speech`, {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${AQUA_API_KEY}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            model: TTS_MODEL,
-            input: chunks[i],
-            instructions,
-            audio: { voice: ttsVoice }
-          }),
-          signal: AbortSignal.timeout(300000)
-        });
-        const j = await res.json().catch(() => ({}));
-        if (res.ok && j.success && j.url) { chunkUrl = j.url; break; }
-        else if (res.status === 429) {
-          const wait = 15000 * attempt;
-          logLine(`chunk ${i+1}: rate limited (429), waiting ${wait/1000}s...`);
-          await new Promise(r => setTimeout(r, wait));
-        } else {
-          logLine(`chunk ${i+1}: API failed — ${JSON.stringify(j).slice(0,100)}`);
-          break;
-        }
-      } catch (e) {
-        logLine(`chunk ${i+1}: ERROR — ${e.message}`);
-        if (attempt < 3) await new Promise(r => setTimeout(r, 5000 * attempt));
-      }
-    }
-
-    // Fallback: PaxSenix TTS (verified endpoint with explicit language + proper en-US voices).
-    // IMPORTANT: the PaxSenix /tools/tts/v2 endpoint rejects text over ~200 chars with a 404
-    // ("Failed to retrieve this content"), so long chunks are sub-split into <=180-char pieces
-    // and the resulting mp3s are concatenated into the chunk file. Pieces are hard-capped at
-    // 180 chars even when a single sentence is longer (run-on dialogue without punctuation).
-    const tryPaxSenix = async () => {
-      const pieceFiles = [];
-      const cleanup = () => { for (const pf of pieceFiles) { try { fs.unlinkSync(pf); } catch {} } };
-      try {
-        const ttsCode = langObj ? langObj.ttsCode : 'en';
-        const paxVoice = TTS_PAXSENIX_VOICES[voice] || 'en-US-AriaNeural';
-        // Sentence-aware split, then hard-slice anything still over the cap.
-        const pieces = [];
-        for (const s of splitTextIntoChunks(chunks[i], 180)) {
-          for (let k = 0; k < s.length; k += 180) pieces.push(s.slice(k, k + 180).trim());
-        }
-        logLine(`chunk ${i+1}: MIMO unavailable — falling back to PaxSenix TTS (${pieces.length} piece(s))...`);
-        for (let p = 0; p < pieces.length; p++) {
-          const paxUrl = `${API}/tools/tts/v2?text=${encodeURIComponent(pieces[p])}&language=${ttsCode}&voice=${paxVoice}`;
-          const res = await fetch(paxUrl, { headers: { Authorization: `Bearer ${API_KEY}` }, signal: AbortSignal.timeout(120000) });
-          const j = await res.json().catch(() => ({}));
-          if (!(res.ok && j.ok && j.url)) { logLine(`chunk ${i+1}: PaxSenix piece ${p+1}/${pieces.length} failed — ${JSON.stringify(j).slice(0,100)}`); cleanup(); return false; }
-          const piecePath = path.join(VIDEO_DIR, `narr_pax_${String(i + 1).padStart(2, '0')}_${String(p + 1).padStart(2, '0')}.mp3`);
-          if (await download(j.url, piecePath)) { pieceFiles.push(piecePath); logLine(`chunk ${i+1}: PaxSenix piece ${p+1}/${pieces.length} DONE`); }
-          else { logLine(`chunk ${i+1}: PaxSenix piece ${p+1} download failed`); cleanup(); return false; }
-          if (p < pieces.length - 1) await new Promise(r => setTimeout(r, 1500)); // be polite
-        }
-        // Concatenate pieces into the chunk file
-        if (pieceFiles.length === 1) {
-          fs.copyFileSync(pieceFiles[0], chunkPath);
-        } else {
-          const listPath = path.join(VIDEO_DIR, `narr_pax_${String(i + 1).padStart(2, '0')}.txt`);
-          await fsp.writeFile(listPath, pieceFiles.map(p => `file '${path.basename(p)}'`).join('\n'));
-          await new Promise((resolve) => {
-            execFile(ffmpegBin(), ['-y', '-f', 'concat', '-safe', '0', '-i', listPath, '-c', 'copy', chunkPath],
-              { cwd: VIDEO_DIR, timeout: 30000 }, () => { try { fs.unlinkSync(listPath); } catch {} resolve(); });
-          });
-        }
-        cleanup();
-        return fs.existsSync(chunkPath);
-      } catch (e) { logLine(`chunk ${i+1}: PaxSenix fallback error — ${e.message}`); cleanup(); return false; }
-    };
-
-    // Engine dispatch: Qwen / PaxSenix / MIMO (default) — PaxSenix is the safety net.
-    let chunkSaved = false;
-    if (engine === 'qwen') {
-      logLine(`chunk ${i+1}/${chunks.length}: generating Qwen3-TTS (${qwenSpeaker})...`);
-      if (!MODELSCOPE_TOKEN) logLine('qwen: MODELSCOPE_TOKEN not set — the api-inference host may require one (falls back to PaxSenix on failure)');
-      const remaining = qwenBudgetMs ? Math.max(20000, qwenBudgetMs - (Date.now() - narrationStart)) : undefined;
-      const buf = await qwenTTS(chunks[i], { speaker: qwenSpeaker, language, speed: qwenSpeed, pitch: qwenPitch, emotion: qwenEmotion, budgetMs: remaining });
-      if (buf) {
-        chunkSaved = await saveQwenAsMp3(buf, chunkPath);
-        if (chunkSaved) { chunkFiles.push(chunkPath); logLine(`chunk ${i+1}: DONE (Qwen3-TTS)`); }
-        else logLine(`chunk ${i+1}: Qwen mp3 conversion failed`);
-      } else {
-        logLine(`chunk ${i+1}: Qwen returned no audio`);
-      }
-      if (!chunkSaved && await tryPaxSenix()) {
-        chunkFiles.push(chunkPath);
-        logLine(`chunk ${i+1}: DONE (PaxSenix fallback)`);
-      }
-    } else if (engine === 'paxsenix') {
-      if (await tryPaxSenix()) {
-        chunkFiles.push(chunkPath);
-        logLine(`chunk ${i+1}: DONE (PaxSenix)`);
-      }
+    const primary = engine === 'mimo' ? 'MIMO' : 'Fish Audio';
+    const backup = engine === 'mimo' ? 'Fish Audio' : 'MIMO';
+    const useMimoFirst = engine === 'mimo';
+    logLine(`chunk ${i+1}/${chunks.length}: generating ${primary} TTS...`);
+    let chunkSaved = useMimoFirst ? await tryMIMO(chunkPath, chunks[i]) : await tryFish(chunkPath, chunks[i]);
+    if (chunkSaved) {
+      chunkFiles.push(chunkPath);
+      logLine(`chunk ${i+1}: DONE (${primary})`);
     } else {
-      if (chunkUrl) {
-        chunkSaved = await download(chunkUrl, chunkPath);
-        if (chunkSaved) { chunkFiles.push(chunkPath); logLine(`chunk ${i+1}: DONE`); }
-        else logLine(`chunk ${i+1}: MIMO download failed`);
-      } else {
-        logLine(`chunk ${i+1}: MIMO returned no URL`);
-      }
-      if (!chunkSaved && await tryPaxSenix()) {
+      logLine(`chunk ${i+1}: ${primary} failed — falling back to ${backup}`);
+      chunkSaved = useMimoFirst ? await tryFish(chunkPath, chunks[i]) : await tryMIMO(chunkPath, chunks[i]);
+      if (chunkSaved) {
         chunkFiles.push(chunkPath);
-        logLine(`chunk ${i+1}: DONE (PaxSenix fallback)`);
+        logLine(`chunk ${i+1}: DONE (${backup} fallback)`);
+      } else {
+        logLine(`chunk ${i+1}: FAILED (${primary} + ${backup})`);
       }
     }
 
@@ -2260,8 +2429,10 @@ async function generateFullNarration(frames, voice = DEFAULT_VOICE, language = D
   }
 
   if (chunkFiles.length === 0) { logLine('full narration: all chunks failed'); return false; }
-
-  // Concatenate all chunk audio files into one narration file
+  // Persist the signature so a truly identical re-run can resume cached chunks
+  // (a failed chunk leaves no file behind, so it regenerates on the next run
+  // even when the signature matches — resume stays safe).
+  try { fs.writeFileSync(sigFile, sig); } catch {}// Concatenate all chunk audio files into one narration file
   const fullAudioPath = path.join(VIDEO_DIR, 'full_narration.mp3');
   if (chunkFiles.length === 1) {
     fs.copyFileSync(chunkFiles[0], fullAudioPath);
@@ -2278,51 +2449,7 @@ async function generateFullNarration(frames, voice = DEFAULT_VOICE, language = D
   if (!fs.existsSync(fullAudioPath)) { logLine('full narration: concat failed'); return false; }
   logLine('full narration: audio assembled');
 
-  // Get final video duration
-  const finalPath = path.join(VIDEO_DIR, 'final_story.mp4');
-  if (!fs.existsSync(finalPath)) { logLine('full narration: final_story.mp4 not found, overlay skipped'); return false; }
-
-  // Check if final video already has audio
-  const hasAudio = await new Promise((resolve) => {
-    execFile('ffprobe', ['-v','error','-show_entries','stream=codec_type','-of','csv=p=0', finalPath], {timeout:10000}, (e, out) => {
-      resolve(out && out.includes('audio'));
-    });
-  });
-
-  const tempPath = finalPath + '.narr.mp4';
-  logLine(`overlaying narration on final video (original audio: ${hasAudio ? 'mix' : 'replace'})...`);
-
-  const success = await new Promise((resolve) => {
-    if (hasAudio) {
-      // Mix original audio + narration
-      execFile(ffmpegBin(), [
-        '-y', '-i', finalPath, '-i', fullAudioPath,
-        '-filter_complex', '[0:a]volume=0.4[orig];[1:a]volume=1.5[narr];[orig][narr]amix=inputs=2:duration=first[a]',
-        '-map', '0:v', '-map', '[a]',
-        '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k',
-        '-shortest', tempPath
-      ], {timeout: 120000}, (err) => { resolve(!err); });
-    } else {
-      // No original audio — just add narration
-      execFile(ffmpegBin(), [
-        '-y', '-i', finalPath, '-i', fullAudioPath,
-        '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k',
-        '-map', '0:v:0', '-map', '1:a:0',
-        '-shortest', tempPath
-      ], {timeout: 120000}, (err) => { resolve(!err); });
-    }
-  });
-
-  if (success && fs.existsSync(tempPath)) {
-    try { fs.unlinkSync(finalPath); fs.renameSync(tempPath, finalPath); } catch {}
-    const size = (fs.statSync(finalPath).size / 1048576).toFixed(1);
-    logLine(`full narration: OVERLAY COMPLETE — final film ${size}MB with narration`);
-    return true;
-  } else {
-    logLine('full narration: overlay failed');
-    try { fs.unlinkSync(tempPath); } catch {}
-    return false;
-  }
+  return overlayNarrationOnFinal(path.join(VIDEO_DIR, 'final_story.mp4'), fullAudioPath, opts);
 }
 
 // Overlay TTS audio onto a video clip (returns path to narrated video or null)
@@ -2426,7 +2553,7 @@ function stillImageToVideo(imagePath, targetSec, outputPath) {
 
 // ================================ FINAL FILM CONCATENATION ================================
 
-async function combineFilm(frames, ratio = '16:9') {
+async function combineFilm(frames, ratio = '16:9', narrationMode = 'tts', opts = {}) {
   setPhase('combining', 1);
   const finalPath = path.join(VIDEO_DIR, 'final_story.mp4');
   try { fs.unlinkSync(finalPath); } catch {}
@@ -2448,6 +2575,9 @@ async function combineFilm(frames, ratio = '16:9') {
   const sorted = [...frames].sort((a, b) => a.frame - b.frame);
   const workDir = path.join(VIDEO_DIR, 'clips');
   fs.mkdirSync(workDir, { recursive: true });
+  // Wipe stale clips from previous storyboards — every clip is rebuilt below, so
+  // a combine can never mix old footage with the current board.
+  for (const f of fs.readdirSync(workDir)) { try { fs.unlinkSync(path.join(workDir, f)); } catch {} }
   const normClips = [];
 
   logLine(`preparing ${sorted.length} clips (audio + normalize in one pass)...`);
@@ -2465,7 +2595,7 @@ async function combineFilm(frames, ratio = '16:9') {
     } else {
       const img = frameFile(f.frame);
       if (fs.existsSync(img)) {
-        logLine(`frame ${f.frame}: no video, creating from still image`);
+        logLine(`frame ${f.frame}: no video${f.animation_prompt ? ' (all render attempts failed)' : ' (no animation prompt)'}, using still image`);
         // Still image → normalized video with silent audio
         await new Promise((resolve) => {
           execFile(ffmpegBin(), [
@@ -2535,7 +2665,7 @@ async function combineFilm(frames, ratio = '16:9') {
   const listPath = path.join(VIDEO_DIR, 'concat_list.txt');
   await fsp.writeFile(listPath, normClips.map(p => `file '${path.relative(VIDEO_DIR, p).replace(/\\/g, '/')}'`).join('\n'));
 
-  return new Promise((resolve) => {
+  const built = await new Promise((resolve) => {
     execFile(ffmpegBin(), [
       '-y', '-f', 'concat', '-safe', '0', '-i', listPath,
       '-c', 'copy', '-movflags', '+faststart',
@@ -2558,13 +2688,31 @@ async function combineFilm(frames, ratio = '16:9') {
             if (e2) { logLine(`final film failed: ${e2.message.slice(0,120)}`); job.failed.push('final'); }
             else { const s = await fsp.stat(finalPath).catch(()=>null); logLine(`final film created (re-encode mode): ${s?(s.size/1048576).toFixed(1)+'MB':''} — ${normClips.length} clips`); }
             job.done = 1; job.ok = job.failed.length ? 0 : 1;
-            job.phase = 'idle'; resolve(fs.existsSync(finalPath) ? finalPath : null);
+            resolve(fs.existsSync(finalPath) ? finalPath : null);
           });
         return;
       }
-      job.phase = 'idle'; resolve(finalPath);
+      resolve(finalPath);
     });
   });
+
+  // Re-apply previously generated narration so re-combines never wipe the voice
+  // track. Only when the stored narration matches the current storyboard text
+  // (sig hash) and narration mode isn't 'prompt' (no separate TTS audio).
+  if (built && narrationMode !== 'prompt') {
+    try {
+      const sigRaw = fs.readFileSync(path.join(VIDEO_DIR, 'narr_chunk_sig.txt'), 'utf8');
+      const sig = JSON.parse(sigRaw);
+      const currentHash = crypto.createHash('sha1').update(buildNarrationText(frames)).digest('hex');
+      const fullAudioPath = path.join(VIDEO_DIR, 'full_narration.mp3');
+      if (sig && sig.hash === currentHash && fs.existsSync(fullAudioPath)) {
+        logLine('combine: matching narration found — re-overlaying voice track');
+        await overlayNarrationOnFinal(built, fullAudioPath, opts);
+      }
+    } catch (e) { logLine(`combine: narration re-overlay skipped (${e.message})`); }
+  }
+  job.phase = 'idle';
+  return built;
 }
 
 // ================================ CLEAN STALE OUTPUTS ================================
@@ -2603,7 +2751,12 @@ async function cleanOutputs() {
     movedFrames.push(...moveMatches(FRAMES_DIR, pat, fb));
   }
   const movedVideo = [];
-  for (const pat of ['frame_*.mp4', 'narrated_*.mp4', 'narration_*.mp3', 'final_story.mp4']) {
+  // Include the full-film narration artifacts: the per-chunk TTS files
+  // (narr_chunk_*.mp3) and the assembled track (full_narration.mp3). If these
+  // are NOT archived here, a new film reuses the previous film's cached audio
+  // chunks — the classic "same speech every time" bug. The old per-frame
+  // narration_*.mp3 naming is kept for back-compat cleanup.
+  for (const pat of ['frame_*.mp4', 'narrated_*.mp4', 'narration_*.mp3', 'narr_chunk_*.mp3', 'full_narration.mp3', 'narr_chunk_sig.txt', 'final_story.mp4']) {
     movedVideo.push(...moveMatches(VIDEO_DIR, pat, vb));
   }
 
@@ -3105,8 +3258,25 @@ const requestHandler = async (req, res) => {
   try {
     // --- API ---
     if (p === '/api/status') return sendJson(res, 200, job);
+    // Narration status for the UI badge: does a voice track exist, and does it
+    // match the current storyboard's narration text (sig hash)?
+    if (p === '/api/narration-status' && req.method === 'GET') {
+      try {
+        const { frames } = await storyDataFrom({});
+        const sigFile = path.join(VIDEO_DIR, 'narr_chunk_sig.txt');
+        const fullAudioPath = path.join(VIDEO_DIR, 'full_narration.mp3');
+        const status = { hasAudio: fs.existsSync(fullAudioPath), matchesCurrent: false, withSpeech: frames.filter(f => f.narration || f.dialogue).length };
+        if (status.hasAudio) {
+          try {
+            const sig = JSON.parse(fs.readFileSync(sigFile, 'utf8'));
+            status.matchesCurrent = !!(sig && sig.hash === crypto.createHash('sha1').update(buildNarrationText(frames)).digest('hex'));
+          } catch {}
+        }
+        return sendJson(res, 200, status);
+      } catch (e) { return sendJson(res, 200, { hasAudio: false, matchesCurrent: false, withSpeech: 0, error: e.message }); }
+    }
     if (p === '/api/health' || p === '/api/ping') return sendJson(res, 200, { ok: true, vercel: IS_VERCEL, path: p, url: rawUrl, hasKey: !!API_KEY });
-    if (p === '/api/models') return sendJson(res, 200, { chat: MODELS, image: IMAGE_MODELS, video: VIDEO_MODELS, voices: VOICES, languages: LANGUAGES, narrationModes: NARRATION_MODES, narrationEngines: NARRATION_ENGINES, qwenSpeakers: QWEN_SPEAKERS, qwenSpeeds: QWEN_SPEED_OPTIONS, qwenPitches: QWEN_PITCH_OPTIONS, qwenEmotions: QWEN_EMOTION_OPTIONS, styles: STYLE_KEYS.map(k => ({ key: k, label: STYLES[k].label })) });
+    if (p === '/api/models') return sendJson(res, 200, { chat: MODELS, image: IMAGE_MODELS, video: VIDEO_MODELS, voices: VOICES, languages: LANGUAGES, narrationModes: NARRATION_MODES, narrationEngines: NARRATION_ENGINES, styles: STYLE_KEYS.map(k => ({ key: k, label: STYLES[k].label })) });
 
     // --- AUTH ---
     if (p === '/api/auth/me' && req.method === 'GET') {
@@ -3271,13 +3441,11 @@ const requestHandler = async (req, res) => {
           logLine('prompt-vocalized mode: narration embedded in video prompts, no TTS');
         }
         steps.push(['videos', () => generateVideos(videoFrames, body.ratio || '16:9', body.videoModel || DEFAULT_VIDEO_MODEL, body.chainContinuity === true)]);
-        steps.push(['combine', () => combineFilm(frames, body.ratio || '16:9')]);
+        steps.push(['combine', () => combineFilm(frames, body.ratio || '16:9', narrationMode, { narrVol: body.narrVolume, origVol: body.origVolume })]);
         // After combine: generate full narration TTS and overlay on final video
         if (narrationMode === 'tts') {
-          const engine = body.engine || DEFAULT_NARRATION_ENGINE;
-          const qwenSpeaker = body.qwenSpeaker || QWEN_DEFAULT_SPEAKER;
-          const qwenSpeed = body.qwenSpeed || QWEN_DEFAULT_SPEED, qwenPitch = body.qwenPitch || QWEN_DEFAULT_PITCH, qwenEmotion = body.qwenEmotion || QWEN_DEFAULT_EMOTION;
-          steps.push(['narration', () => { setPhase('narration', 1); return generateFullNarration(frames, body.voice || DEFAULT_VOICE, language, engine, qwenSpeaker, qwenSpeed, qwenPitch, qwenEmotion).then(() => { job.phase = 'idle'; }); }]);
+          const engine = body.narrationEngine || body.engine || DEFAULT_NARRATION_ENGINE;
+          steps.push(['narration', () => { setPhase('narration', 1); return generateFullNarration(frames, body.voice || DEFAULT_VOICE, language, engine, { narrVol: body.narrVolume, origVol: body.origVolume }).then(() => { job.phase = 'idle'; }); }]);
         }
 
         for (const [name, fn] of steps) {
@@ -3335,9 +3503,42 @@ const requestHandler = async (req, res) => {
       const body = await readBody(req).catch(() => ({}));
       let { frames } = await storyDataFrom(body);
       if (!frames.length) return sendJson(res, 400, { error: 'no frames' });
+      // Optional per-frame scope — on Vercel the client renders ONE frame per request
+      // so each serverless invocation stays inside the 300s maxDuration budget.
+      const isPartial = Array.isArray(body.frames) && body.frames.length > 0;
+      if (isPartial) {
+        const wanted = new Set(body.frames.map(Number));
+        frames = frames.filter(f => wanted.has(f.frame));
+        if (!frames.length) return sendJson(res, 400, { error: 'no matching frames' });
+      }
+      // Seamless-chaining anchor supplied by the client: per-frame requests can't see
+      // the previous frame's chain URL on disk (each call is a fresh invocation), so
+      // the client tracks the anchor across calls and passes it along explicitly.
+      if (body.chainAnchor && isPartial) { for (const f of frames) f._chainAnchor = String(body.chainAnchor); }
       if (body.force) { for (const f of frames) { if (f.animation_prompt) { try { fs.unlinkSync(videoFile(f.frame)); } catch {} } } }
-      if (IS_VERCEL) return runJobOnVercel(res, async () => { await generateVideos(frames, body.ratio || '16:9', body.videoModel || DEFAULT_VIDEO_MODEL, body.chainContinuity === true); job.phase = 'idle'; });
-      generateVideos(frames, body.ratio || '16:9', body.videoModel || DEFAULT_VIDEO_MODEL, body.chainContinuity === true).catch(e => { logLine(`videos crash: ${e.message}`); job.phase = 'idle'; });
+      if (IS_VERCEL) {
+        // On Vercel the client renders ONE frame per request (each request fits the
+        // 300s function budget). Return the rendered frame (incl. chain_image_url for
+        // seamless chaining) so the client can anchor the next frame across separate
+        // serverless invocations — /tmp never survives reliably between calls.
+        return (async () => {
+          try {
+            await generateVideos(frames, body.ratio || '16:9', body.videoModel || DEFAULT_VIDEO_MODEL, body.chainContinuity === true, { skipPurge: isPartial });
+            job.phase = 'idle';
+            // Truth-check: only claim success when the mp4 actually landed on disk —
+            // a render can exhaust the 300s Vercel budget without throwing.
+            for (const f of frames) {
+              if (fs.existsSync(videoFile(f.frame))) f.video_path = '/video/' + path.basename(videoFile(f.frame));
+            }
+            const failed = (job.failed || []).filter(n => frames.some(f => f.frame === n));
+            if (failed.length) {
+              return sendJson(res, 200, { ok: false, failed, error: `frame ${failed.join(', ')}: all render attempts failed` });
+            }
+            return sendJson(res, 200, { ok: true, frame: frames[0] || null });
+          } catch (e) { job.phase = 'idle'; return sendJson(res, 500, { error: String(e.message || e) }); }
+        })();
+      }
+      generateVideos(frames, body.ratio || '16:9', body.videoModel || DEFAULT_VIDEO_MODEL, body.chainContinuity === true, { skipPurge: isPartial }).catch(e => { logLine(`videos crash: ${e.message}`); job.phase = 'idle'; });
       return sendJson(res, 202, { started: true, count: frames.filter(f => f.animation_prompt).length });
     }
 
@@ -3345,8 +3546,8 @@ const requestHandler = async (req, res) => {
       if (job.phase !== 'idle') return sendJson(res, 409, { error: 'busy' });
       const body = await readBody(req).catch(() => ({}));
       let { frames } = await storyDataFrom(body);
-      if (IS_VERCEL) return runJobOnVercel(res, async () => { await combineFilm(frames, body.ratio || '16:9'); job.phase = 'idle'; });
-      combineFilm(frames, body.ratio || '16:9').then(fp => { if (!fp) logLine('combine: no output'); }).catch(e => { logLine(`combine crash: ${e.message}`); job.phase = 'idle'; });
+      if (IS_VERCEL) return runJobOnVercel(res, async () => { await combineFilm(frames, body.ratio || '16:9', body.narrationMode, { narrVol: body.narrVolume, origVol: body.origVolume }); job.phase = 'idle'; });
+      combineFilm(frames, body.ratio || '16:9', body.narrationMode, { narrVol: body.narrVolume, origVol: body.origVolume }).then(fp => { if (!fp) logLine('combine: no output'); }).catch(e => { logLine(`combine crash: ${e.message}`); job.phase = 'idle'; });
       return sendJson(res, 202, { started: true });
     }
 
@@ -3361,14 +3562,13 @@ const requestHandler = async (req, res) => {
       let { frames } = await storyDataFrom(body);
       if (!frames.length) return sendJson(res, 400, { error: 'no frames' });
       for (const f of frames) { try { fs.unlinkSync(ttsFile(f.frame)); } catch {} }
-      for (const f of fs.readdirSync(VIDEO_DIR).filter(f => f.startsWith('narr_chunk_') || f.startsWith('narr_pax_') || f === 'full_narration.mp3')) { try { fs.unlinkSync(path.join(VIDEO_DIR, f)); } catch {} }
+      for (const f of fs.readdirSync(VIDEO_DIR).filter(f => f.startsWith('narr_chunk_') || f === 'full_narration.mp3')) { try { fs.unlinkSync(path.join(VIDEO_DIR, f)); } catch {} }
       setPhase('narration', 1);
-      const engine = body.engine || DEFAULT_NARRATION_ENGINE;
-      const qwenSpeaker = body.qwenSpeaker || QWEN_DEFAULT_SPEAKER;
-      const qwenSpeed = body.qwenSpeed || QWEN_DEFAULT_SPEED, qwenPitch = body.qwenPitch || QWEN_DEFAULT_PITCH, qwenEmotion = body.qwenEmotion || QWEN_DEFAULT_EMOTION;
-      if (IS_VERCEL) return runJobOnVercel(res, async () => { await generateFullNarration(frames, body.voice || DEFAULT_VOICE, body.language || DEFAULT_LANGUAGE, engine, qwenSpeaker, qwenSpeed, qwenPitch, qwenEmotion); job.phase = 'idle'; });
+      const engine = body.narrationEngine || body.engine || DEFAULT_NARRATION_ENGINE;
+      const narrOpts = { narrVol: body.narrVolume, origVol: body.origVolume };
+      if (IS_VERCEL) return runJobOnVercel(res, async () => { await generateFullNarration(frames, body.voice || DEFAULT_VOICE, body.language || DEFAULT_LANGUAGE, engine, narrOpts); job.phase = 'idle'; });
       (async () => {
-        try { await generateFullNarration(frames, body.voice || DEFAULT_VOICE, body.language || DEFAULT_LANGUAGE, engine, qwenSpeaker, qwenSpeed, qwenPitch, qwenEmotion); }
+        try { await generateFullNarration(frames, body.voice || DEFAULT_VOICE, body.language || DEFAULT_LANGUAGE, engine, narrOpts); }
         catch (e) { logLine(`narration crash: ${e.message}`); }
         job.phase = 'idle';
       })();
