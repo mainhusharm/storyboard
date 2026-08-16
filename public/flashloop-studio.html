@@ -121,13 +121,12 @@
     </div>
     <div class="grid2">
       <div class="field">
-        <label for="duration">Duration</label>
+        <label for="duration">Scene Length</label>
         <select id="duration">
-          <option value="15">15 seconds</option>
-          <option value="10">10 seconds</option>
-          <option value="6">6 seconds</option>
-          <option value="30">30 seconds</option>
+          <option value="15">15 sec per scene — 8 scenes (2 min total)</option>
+          <option value="30" selected>30 sec per scene — 4 scenes (2 min total)</option>
         </select>
+        <div class="hint">Fixed rule: 15s → 8 scenes · 30s → 4 scenes. Every scene is written to-the-point with a hook.</div>
       </div>
       <div class="field">
         <label for="ratio">Aspect Ratio</label>
@@ -141,12 +140,13 @@
     <div class="field">
       <label for="model">Model</label>
       <select id="model">
-        <option value="gpt-5.5" selected>GPT-5.5</option>
+        <option value="gemini-2.5-pro" selected>Gemini 2.5 Pro (recommended)</option>
+        <option value="gpt-5.5">GPT-5.5</option>
         <option value="gpt-5.6-sol">GPT-5.6 Sol</option>
         <option value="gpt-5.6-terra">GPT-5.6 Terra</option>
         <option value="kimi-k3">Kimi K3</option>
       </select>
-      <div class="hint">Choose the PaxSenix chat model that will write the prompts.</div>
+      <div class="hint">Choose the PaxSenix chat model. If it fails or times out, the server automatically retries with Gemini 2.5 Pro.</div>
     </div>
     <div class="field">
       <label>Character References</label>
@@ -155,41 +155,39 @@
       <div class="hint">Add characters like @Kairo and @Silas. Their descriptions are injected into both img2img and img2video prompts.</div>
     </div>
     <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center">
-      <button id="btnGenerate" class="generate-btn">✨ Generate Prompts</button>
-      <button id="btnGenerateImage" class="generate-btn" style="background:linear-gradient(135deg,rgba(139,124,246,.25),rgba(34,211,238,.25));border-color:var(--violet);display:none">🖼 Generate Image (i2i)</button>
+      <button id="btnGenerate" class="generate-btn">✨ Generate Full Script</button>
+      <button id="btnGenerateImage" class="generate-btn" style="background:linear-gradient(135deg,rgba(139,124,246,.25),rgba(34,211,238,.25));border-color:var(--violet);display:none">🖼 Generate Image</button>
     </div>
     <div id="loading" class="loading"><div class="spinner"></div> GPT is writing your production-ready prompts…</div>
     <div id="error" class="error"></div>
   </div>
 
   <div id="outputPanel" class="panel output-wrap">
-    <h3>🎬 Generated Scene Prompts</h3>
+    <h3>🎬 Generated Full Script <span id="scriptSummary" style="font-size:12px;color:var(--faint);font-weight:400"></span></h3>
 
-    <div class="prompt-section">
-      <div class="prompt-label">🖼 img2img Prompt — First-Frame / Reference Image</div>
-      <div id="imagePromptOutput" class="prompt-output"></div>
-    </div>
+    <div id="scriptContainer"></div>
 
-    <div class="prompt-section">
-      <div class="prompt-label">🎬 img2video Prompt — Motion / Image-to-Video</div>
-      <div id="videoPromptOutput" class="prompt-output"></div>
-    </div>
-
-    <div class="actions">
-      <button id="btnCopyImage" disabled>📋 Copy img2img Prompt</button>
-      <button id="btnCopyVideo" disabled>📋 Copy img2video Prompt</button>
-      <button id="btnUseVideo" disabled style="background:linear-gradient(135deg,rgba(52,211,153,.2),rgba(34,211,238,.2));border-color:var(--cyan)">🎬 Use img2video Prompt as Script</button>
+    <div class="actions" style="margin-top:20px">
+      <button id="btnCopyScript" disabled>📋 Copy Full Script</button>
+      <button id="btnUseScript" disabled style="background:linear-gradient(135deg,rgba(52,211,153,.2),rgba(34,211,238,.2));border-color:var(--cyan)">🎬 Use Full Script in Storyboard</button>
       <a href="/trends" class="back-btn">← Pick another effect</a>
     </div>
 
     <div id="i2iSection" style="display:none;margin-top:24px;border-top:1px solid var(--line2);padding-top:20px">
-      <div class="prompt-label">🖼 Generated Image (i2i — anchored to trend reference)</div>
+      <div class="prompt-label">🖼 Generated Image</div>
+      <div class="field" style="margin-bottom:14px">
+        <label for="i2iScene">Scene</label>
+        <select id="i2iScene"><option value="0">Scene 1</option></select>
+        <div class="hint">Pick which scene's first-frame image prompt to render.</div>
+      </div>
       <div class="field" style="margin-bottom:14px">
         <label for="i2iModel">i2i Model</label>
         <select id="i2iModel">
           <option value="seedream-5" selected>Seedream 5 (recommended)</option>
           <option value="seedream-4">Seedream 4</option>
           <option value="seedream-4.5">Seedream 4.5</option>
+          <option value="grok-imagine-2">Grok Imagine 2</option>
+          <option value="grok-imagine">Grok Imagine</option>
           <option value="nano-banana-2">Nano Banana 2</option>
           <option value="nano-banana-pro">Nano Banana Pro</option>
           <option value="nano-banana">Nano Banana</option>
@@ -197,7 +195,7 @@
         </select>
         <div class="hint">Choose which PaxSenix img2img model to use. Falls back to Seedream 5 if the selected model fails.</div>
       </div>
-      <div id="i2iLoading" style="display:none;align-items:center;gap:10px;color:var(--dim);font-size:13px;margin:12px 0"><div class="spinner"></div> Generating image via PaxSenix i2i… This may take 1-3 minutes.</div>
+      <div id="i2iLoading" style="display:none;align-items:center;gap:10px;color:var(--dim);font-size:13px;margin:12px 0"><div class="spinner"></div> Generating image via PaxSenix… This may take 1-3 minutes.</div>
       <div id="i2iError" style="display:none;background:rgba(248,113,113,.12);border:1px solid rgba(248,113,113,.3);color:var(--red);padding:12px 14px;border-radius:10px;font-size:13px;margin:12px 0"></div>
       <div id="i2iResult" style="display:none">
         <img id="i2iImage" src="" alt="Generated image" style="max-width:420px;max-height:500px;border-radius:12px;border:1px solid var(--line2);object-fit:contain">
@@ -258,8 +256,8 @@ if (trendThumbnail) {
   $('trendStyleInfo').innerHTML = `The generated prompts will be tuned to match <b>${escapeHtml(name)}</b> visual style. When you click <b>Generate Image</b>, this reference image will be used as the i2i anchor to lock the exact art style, color palette, and composition.`;
 }
 
-let currentImagePrompt = '';
-let currentVideoPrompt = '';
+let scenes = [];
+let scriptTitle = '';
 let references = [];
 
 function renderRefs(){
@@ -287,7 +285,7 @@ function getRefs(){ return references.filter(r => r.name.trim()).map(r => ({ nam
 
 $('btnGenerate').onclick = async () => {
   const idea = $('idea').value.trim();
-  const duration = $('duration').value;
+  const sceneDuration = Number($('duration').value);
   const ratio = $('ratio').value;
   $('error').classList.remove('visible');
   $('outputPanel').classList.remove('visible');
@@ -298,25 +296,22 @@ $('btnGenerate').onclick = async () => {
     const res = await fetch('/api/flashloop/generate-prompt', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ slug, name, tagline, idea, duration: Number(duration), ratio, model: $('model').value, references: getRefs(), trendThumbnail })
+      body: JSON.stringify({ slug, name, tagline, idea, sceneDuration, ratio, model: $('model').value, references: getRefs(), trendThumbnail })
     });
     const rawText = await res.text();
     let j; try { j = JSON.parse(rawText); } catch { j = { error: rawText ? rawText.slice(0, 180) : ('HTTP ' + res.status) }; }
     if (!res.ok || j.error) throw new Error(j.error || ('Failed to generate prompt (HTTP ' + res.status + ')'));
-    currentImagePrompt = j.imagePrompt || '';
-    currentVideoPrompt = j.videoPrompt || j.prompt || 'No video prompt returned.';
-    $('imagePromptOutput').textContent = currentImagePrompt || 'No image prompt returned.';
-    $('videoPromptOutput').textContent = currentVideoPrompt;
-    $('btnCopyImage').disabled = !currentImagePrompt;
-    $('btnCopyVideo').disabled = !currentVideoPrompt;
-    $('btnUseVideo').disabled = !currentVideoPrompt;
+    scenes = Array.isArray(j.scenes) ? j.scenes : [];
+    if (!scenes.length) throw new Error('The script generator returned no scenes.');
+    scriptTitle = j.title || name;
+    $('effectTitle').textContent = scriptTitle;
+    renderScript();
     $('outputPanel').classList.add('visible');
-    if (j.title) $('effectTitle').textContent = j.title;
-    // Show i2i generation button if we have a trend thumbnail and an image prompt
-    if (trendThumbnail && currentImagePrompt) {
-      $('btnGenerateImage').style.display = 'inline-flex';
-      $('i2iSection').style.display = 'block';
-    }
+    // Generate Image works with or without a trend reference: when a thumbnail is
+    // available it is used as the i2i anchor; otherwise the scene prompt runs as
+    // plain text-to-image. So the button always shows after a script is generated.
+    $('btnGenerateImage').style.display = 'inline-flex';
+    $('i2iSection').style.display = 'block';
   } catch (e) {
     $('error').textContent = 'Error: ' + e.message;
     $('error').classList.add('visible');
@@ -326,6 +321,71 @@ $('btnGenerate').onclick = async () => {
   }
 };
 
+function sceneImageText(i){ const el = document.querySelector('.scene-image[data-scene="' + i + '"]'); return el ? el.value : ((scenes[i] && scenes[i].imagePrompt) || ''); }
+function sceneVideoText(i){ const el = document.querySelector('.scene-video[data-scene="' + i + '"]'); return el ? el.value : ((scenes[i] && scenes[i].videoPrompt) || ''); }
+function fmtTime(s){ return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); }
+
+function buildFullScript(){
+  const per = Number($('duration').value) || 15;
+  const lines = ['EFFECT: ' + scriptTitle, 'SCENE LENGTH: ' + per + 's per scene', ''];
+  scenes.forEach((s, i) => {
+    lines.push('SCENE ' + (i + 1) + ' — ' + (s.title || ('Scene ' + (i + 1))) + ' (' + fmtTime(i * per) + '–' + fmtTime((i + 1) * per) + ')');
+    if (s.hook) lines.push('HOOK: ' + s.hook);
+    lines.push('IMAGE: ' + sceneImageText(i));
+    lines.push('VIDEO: ' + sceneVideoText(i));
+    lines.push('');
+  });
+  return lines.join('\n');
+}
+
+function renderScript(){
+  const per = Number($('duration').value) || 15;
+  const c = $('scriptContainer');
+  if (!scenes.length) { c.innerHTML = ''; return; }
+  c.innerHTML = scenes.map((s, i) => `
+    <div class="scene-card" style="border:1px solid var(--line2);border-radius:12px;padding:16px;margin-top:16px;background:var(--bg2)">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <span style="font-size:11px;font-weight:700;color:var(--orange);background:rgba(251,146,60,.12);border:1px solid rgba(251,146,60,.35);border-radius:99px;padding:4px 10px">SCENE ${i + 1} · ${per}s</span>
+        <b style="font-size:14px">${escapeHtml(s.title || ('Scene ' + (i + 1)))}</b>
+        <span style="font-size:11px;color:var(--faint)">${fmtTime(i * per)}–${fmtTime((i + 1) * per)}</span>
+      </div>
+      ${s.hook ? '<div style="font-size:12px;color:var(--cyan);margin-top:8px">⚡ Hook: ' + escapeHtml(s.hook) + '</div>' : ''}
+      <div class="prompt-section" style="margin-top:10px">
+        <div class="prompt-label">🖼 First-Frame Image Prompt</div>
+        <textarea class="prompt-output scene-image" data-scene="${i}" style="min-height:110px">${escapeHtml(s.imagePrompt || '')}</textarea>
+      </div>
+      <div class="prompt-section">
+        <div class="prompt-label">🎬 Scene Video Prompt</div>
+        <textarea class="prompt-output scene-video" data-scene="${i}" style="min-height:150px">${escapeHtml(s.videoPrompt || '')}</textarea>
+      </div>
+      <div class="actions" style="margin-top:10px">
+        <button class="btn-copy-scene-img" data-scene="${i}" style="padding:8px 14px;font-size:12px">📋 Copy Image</button>
+        <button class="btn-copy-scene-vid" data-scene="${i}" style="padding:8px 14px;font-size:12px">📋 Copy Video</button>
+      </div>
+    </div>`).join('');
+  $('scriptSummary').textContent = scenes.length + ' scenes · ' + per + 's each · ' + (scenes.length * per) + 's total';
+  c.querySelectorAll('.btn-copy-scene-img').forEach(b => { b.onclick = () => navigator.clipboard.writeText(sceneImageText(Number(b.dataset.scene))).then(() => showToast('Scene image prompt copied!')); });
+  c.querySelectorAll('.btn-copy-scene-vid').forEach(b => { b.onclick = () => navigator.clipboard.writeText(sceneVideoText(Number(b.dataset.scene))).then(() => showToast('Scene video prompt copied!')); });
+  $('btnCopyScript').disabled = false;
+  $('btnUseScript').disabled = false;
+  // i2i scene picker
+  const picker = $('i2iScene');
+  if (picker) {
+    const prev = picker.value;
+    picker.innerHTML = scenes.map((s, i) => '<option value="' + i + '">Scene ' + (i + 1) + (s.title ? ' — ' + escapeHtml(s.title) : '') + '</option>').join('');
+    picker.value = (prev !== '' && Number(prev) < scenes.length) ? prev : '0';
+  }
+}
+
+$('btnCopyScript').onclick = () => {
+  navigator.clipboard.writeText(buildFullScript()).then(() => showToast('Full script copied!'));
+};
+
+$('btnUseScript').onclick = () => {
+  localStorage.setItem('flashloop_prompt', buildFullScript());
+  location.href = '/?prefill=flashloop_prompt';
+};
+
 function showToast(msg){
   const t = $('toast');
   t.textContent = msg;
@@ -333,22 +393,11 @@ function showToast(msg){
   setTimeout(() => t.classList.remove('show'), 1800);
 }
 
-$('btnCopyImage').onclick = () => {
-  navigator.clipboard.writeText(currentImagePrompt).then(() => showToast('Image prompt copied!'));
-};
 
-$('btnCopyVideo').onclick = () => {
-  navigator.clipboard.writeText(currentVideoPrompt).then(() => showToast('Video prompt copied!'));
-};
-
-$('btnUseVideo').onclick = () => {
-  localStorage.setItem('flashloop_prompt', currentVideoPrompt);
-  location.href = '/?prefill=flashloop_prompt';
-};
 
 // ---- i2i Image Generation ----
 $('btnGenerateImage').onclick = async () => {
-  if (!trendThumbnail || !currentImagePrompt) return;
+  if (!scenes.length) return;
   $('btnGenerateImage').disabled = true;
   $('i2iLoading').style.display = 'flex';
   $('i2iError').style.display = 'none';
@@ -358,7 +407,7 @@ $('btnGenerateImage').onclick = async () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        prompt: currentImagePrompt,
+        prompt: sceneImageText(Number(($('i2iScene') && $('i2iScene').value) || 0)),
         refImageUrl: trendThumbnail,
         ratio: $('ratio').value,
         model: $('i2iModel').value,

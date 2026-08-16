@@ -467,22 +467,42 @@ function sjinnAsVideo(trend) {
 // NOTE: These examples are ONLY for structure, detail level, and tone. The LLM must NOT copy the crystal-fruit subject.
 const FLASHLOOP_EXAMPLE_IMAGE_PROMPT = `A photorealistic macro close-up of a single original imaginary crystal-glass fruit resting motionless on a dark slate cutting board. The fruit has a rounded teardrop shape with five gently twisted ribs, a short curled stem, translucent teal glass skin, thin coral-colored veins inside, and six dark crystal seeds arranged symmetrically around a small central core. A polished steel chef's knife lies beside it on the same board, and the background is a soft neutral grey. Soft controlled studio lighting from the left creates realistic caustics and reflections inside the glass. Shallow but stable depth of field keeps the entire fruit tack sharp. Camera positioned 25 degrees above the board, looking down at the fruit from the front. No hands are visible. Premium photorealistic macro food cinematography, realistic ray-traced glass, physically accurate reflections and refraction, 8K, 16:9, first frame only.`;
 
-const FLASHLOOP_EXAMPLE_VIDEO_PROMPT = `Create an exactly 15-second photorealistic ASMR video featuring one crystal-glass fruit. Use the supplied first-frame image as the strict visual reference. Preserve the fruit's exact shape, colors, position, and transparency in every frame.
+const FLASHLOOP_EXAMPLE_VIDEO_PROMPT = `Create an exactly 15-second photorealistic ASMR video, animated as a time-stamped timeline:
 
-CAMERA: One continuous locked macro shot, no cuts. Camera 25° above the cutting board. Keep the entire fruit visible throughout.
+0–2s: HOOK — a chef's knife taps the crown of a crystal-glass fruit; one crisp crystal clink as the whole fruit shivers.
+2–5s: The knife presses down, splitting the translucent teal glass cleanly along its centerline.
+5–9s: The two halves slide apart with a soft crystalline crackle, revealing coral veins and six dark crystal seeds inside.
+9–12s: A fingertip nudges the right half three centimeters across the dark slate board; the fresh cross-section catches the light with realistic caustics and refraction.
+12–15s: The knife lifts away, the halves rest side by side, and one gentle glass clink closes the scene.
 
-ACTION TIMELINE:
-0.0–2.0s: Fruit rests motionless. A hand enters from the left and gently stabilizes it.
-2.0–4.0s: A chef's knife enters from the right, positions above the fruit's centerline.
-4.0–5.0s: Knife touches the top center. One crystal-tapping sound.
-5.0–10.5s: Slow continuous downward cut. Clean separation beneath the blade. Crystal-slicing sound with subtle crackling.
-10.5–12.0s: Knife lifts straight up. Two halves remain touching.
-12.0–14.0s: Right hand gently slides the right half 3cm right. Reveals clean cross-section with glass flesh, seeds, and veins.
-14.0–15.0s: Hold on separated halves. One soft glass clink.
+Photorealistic macro food cinematography, ray-traced glass, studio lighting, shallow depth of field, 16:9.`;
 
-AUDIO: Close binaural ASMR — fingertip on glass, blade tap, crystal-slice texture, particle sounds, glass clink. No music or voice.
+// Strip camera instructions from generated video prompts so scripts stay to the
+// point (users explicitly asked for NO camera fluff). Removes standalone
+// "CAMERA:" lines and whole sentences that command camera movement/angle/framing.
+function scrubCameraFluff(text) {
+  if (!text) return text;
+  let t = String(text);
+  t = t.replace(/(^|\n)[ \t]*CAMERA\s*[:–—-][^\n]*/gi, '');
+  t = t.replace(/[^.!?\n]*\bcamera\b[^.!?\n]*\b(pan(s|ning)?|tilt(s|ing)?|track(s|ing)?|zoom(s|ing)?|crane(s|ing)?|doll(y|ies|ing)?|follow(s|ing)?|mov(e|es|ing)?|sweep(s|ing)?|glide(s|ing)?|swing(s|ing)?|arc(s|ing)?|ris(e|es|ing)?|descend(s|ing)?|hold(s|ing)?|pull(s|ing)?|push(es|ing)?|angle(s|ing)?|position(s|ed)?|shot|setup|framing|perspective)[^.!?\n]*[.!?]?/gi, '');
+  return t.replace(/[ \t]{2,}/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
+}
 
-STYLE: Photorealistic macro food cinematography, ray-traced glass, studio lighting, shallow DOF, 4K, 16:9.`;
+// Hard-cap a prompt at whole sentences up to maxWords so generated scripts never
+// bloat (LLMs routinely overshoot word targets).
+function capPrompt(text, maxWords) {
+  if (!text) return text;
+  const sentences = String(text).match(/[^.!?\n]+[.!?]?/g) || [];
+  const out = [];
+  let words = 0;
+  for (const s of sentences) {
+    const w = s.trim().split(/\s+/).filter(Boolean).length;
+    if (words + w > maxWords && out.length) break;
+    out.push(s.trim());
+    words += w;
+  }
+  return out.join(' ');
+}
 
 // Ensure a generated prompt actually references the requested effect, not the hardcoded example.
 function enforceEffectRelevance(text, effectName, tagline, userIdea, duration = 15, ratio = '9:16', type = 'image') {
@@ -566,6 +586,31 @@ OUTPUT RULES:
   }
 }
 
+// Random creative directions for one-shot prompt generation. gpt-5.5 on PaxSenix
+// returns byte-identical output for byte-identical input (temperature is ignored),
+// so a bare timestamp variation is NOT enough — we inject a random concrete visual
+// direction (camera + lighting + mood + setting) that forces genuinely different
+// scenes on every click.
+const CREATIVE_ANGLES = ['eye-level medium shot', 'low angle looking up', 'high angle looking down', 'extreme close-up macro detail', 'wide establishing shot', '45-degree over-shoulder', 'top-down flat lay', 'Dutch tilt cinematic angle', 'profile side view', 'POV first-person perspective'];
+const CREATIVE_LIGHTING = ['golden hour warm backlight with lens flare', 'soft overcast diffused daylight', 'dramatic low-key chiaroscuro with deep shadows', 'neon-lit night scene with cyan and magenta practicals', 'candlelit warm intimate glow', 'cold blue moonlight with hard rim light', 'vibrant saturated studio color grading', 'rainy window light with soft haze', 'harsh noon sun with crisp shadows', 'misty dawn with volumetric god rays'];
+const CREATIVE_MOODS = ['cozy and nostalgic', 'mysterious and suspenseful', 'energetic and upbeat', 'serene and meditative', 'luxurious and aspirational', 'gritty and raw documentary', 'whimsical and dreamlike', 'dramatic and epic', 'minimal and elegant', 'chaotic and kinetic'];
+const CREATIVE_SETTINGS = ['a sunlit apartment interior', 'a bustling city street', 'a quiet countryside field', 'a neon-lit urban alley at night', 'a minimalist white studio', 'a cozy cafe with warm lamps', 'a rooftop at dusk overlooking the skyline', 'a rain-soaked sidewalk with reflections', 'a lush botanical garden greenhouse', 'an empty train station platform'];
+function randomCreativeDirection() {
+  const pick = a => a[Math.floor(Math.random() * a.length)];
+  const angle = pick(CREATIVE_ANGLES);
+  const lighting = pick(CREATIVE_LIGHTING);
+  const mood = pick(CREATIVE_MOODS);
+  const setting = pick(CREATIVE_SETTINGS);
+  return `
+
+CREATIVE DIRECTION FOR THIS GENERATION (MANDATORY — pick a DIFFERENT scene than any previous generation for this effect):
+- Setting: ${setting}
+- Camera: ${angle}
+- Lighting: ${lighting}
+- Mood: ${mood}
+- Variation #${Date.now().toString(36)}`;
+}
+
 // Generate only the first-frame / reference image prompt (img2img).
 // styleText is a pre-extracted style description (from analyzeTrendStyle) — the image
 // itself is NOT attached to this call, so the LLM cannot copy the reference's subject.
@@ -588,7 +633,10 @@ ${visionBlock}
 
 Return ONLY a JSON object with "title" and "imagePrompt". Do not output any explanation outside the JSON.`;
 
-  const variation = `Variation #${Date.now().toString(36)} — pick a DIFFERENT specific scene/subject/composition than any previous generation for this effect.`;
+  // Light variation token ONLY — gpt-5.5 ignores temperature and returns identical
+  // output for identical input. NO camera/lighting/mood/setting fluff is injected:
+  // prompts must stay to the point.
+  const variation = `\n\nVariation #${Date.now().toString(36)} — write a fresh, specific scene for this effect. Do NOT repeat a previous generation. Keep it to the point.`;
   const userText = `Effect: ${effectName}${tagline ? ' — ' + tagline : ''}
 The effect "${effectName}" is a viral trend — your scene MUST depict a concept that matches this name. For "Everyday Life", show a cozy relatable daily moment (family, morning routine, cooking together). For "Old Cartoon Style", show a scene in retro cartoon aesthetic.
 ${refBlock}
@@ -602,7 +650,7 @@ A photorealistic macro close-up of a crystal-glass fruit on a dark slate cutting
 
 ${hasStyle ? 'Render your scene in the exact visual style described in the VISUAL STYLE REFERENCE above. Your SUBJECT must be "' + effectName + '" — depict a scene that matches this trend name.' : 'Generate { "title": "...", "imagePrompt": "..." } for "' + effectName + '".'} Keep imagePrompt under 150 words. Do not output any explanation outside the JSON.`;
 
-  const raw = await chatCompletion(model, [{ role: 'system', content: system }, { role: 'user', content: userText }], 4000);
+  const raw = await chatWithFallback(model, [{ role: 'system', content: system }, { role: 'user', content: userText }], 4000, 1.0);
   let parsed = {};
   try { parsed = parseJsonLenient(raw); } catch (e) { parsed = {}; }
   const imagePrompt = enforceEffectRelevance(parsed.imagePrompt || raw, effectName, tagline, userIdea, 0, ratio, 'image');
@@ -625,14 +673,17 @@ CRITICAL RULES:
 - The EFFECT NAME is the core concept. "Everyday Life" means animate a relatable human everyday moment. "Old Cartoon Style" means animate in retro cartoon aesthetic. ALWAYS interpret the effect name as the scene's THEME and subject matter.
 - You MUST describe specific actions, movements, and interactions. Do NOT write generic descriptions. The timeline must have concrete actions like "the mother lifts the coffee pot and pours" not "motion occurs."
 - The example below is ONLY for structure and tone. Do NOT copy its subject.
-- Keep the prompt 200-400 words. Do NOT include negative instructions — only describe what SHOULD happen.
-- MUST include: (1) second-by-second action timeline with specific movements, (2) camera setup and continuity, (3) brief audio description, (4) style/technical specs.
+- Keep it focused but DETAILED (180-280 words). Do NOT include negative instructions — only describe what SHOULD happen.
+- Structure it as a TIMELINE of time-stamped beats that cover the full ${duration} seconds — e.g. "0–5s: ...", "5–10s: ...", "10–15s: ..." — consecutive segments with no gaps, ending exactly at ${duration}s. The FIRST segment must deliver the HOOK. Each segment is one concrete action beat with vivid specifics (textures, scale, lighting, expressions, sounds, miniature-detail observations). NO "CAMERA:" section, no camera-movement instructions, no audio/style filler paragraphs.
 - Preserve the exact subject, position, colors, lighting, and composition of the supplied first-frame image while animating.
 ${visionBlock}
 
 Return ONLY a JSON object with "title" and "videoPrompt". Do not output any explanation outside the JSON.`;
 
-  const variation = `Variation #${Date.now().toString(36)} — pick a DIFFERENT specific scene/subject/composition than any previous generation for this effect.`;
+  // Light variation token ONLY — gpt-5.5 ignores temperature and returns identical
+  // output for identical input. NO camera/lighting/mood/setting fluff is injected:
+  // prompts must stay to the point.
+  const variation = `\n\nVariation #${Date.now().toString(36)} — write a fresh, specific scene for this effect. Do NOT repeat a previous generation. Keep it to the point.`;
   const userText = `Effect: ${effectName}${tagline ? ' — ' + tagline : ''}
 The effect "${effectName}" is a viral trend — your scene MUST depict a concept that matches this name. For "Everyday Life", animate a cozy relatable daily moment. For "Old Cartoon Style", animate in retro cartoon aesthetic.
 ${refBlock}
@@ -645,16 +696,16 @@ First-frame image prompt (your video prompt must describe motion anchored to thi
 
 ${imagePrompt || 'No image prompt provided.'}
 
-Example (match its STRUCTURE and TONE, NOT its subject. 200-400 words, no negative instructions):
+Example (match its STRUCTURE and TONE, NOT its subject. 180-280 words, no negative instructions):
 
 ${FLASHLOOP_EXAMPLE_VIDEO_PROMPT}
 
-${hasStyle ? 'Render in the exact visual style described in the VISUAL STYLE REFERENCE above. Your SUBJECT must be "' + effectName + '" — animate a scene that matches this trend name.' : 'Generate { "title": "...", "videoPrompt": "..." } for "' + effectName + '".'} Keep videoPrompt 200-400 words. No negative instructions. Do not output any explanation outside the JSON.`;
+${hasStyle ? 'Render in the exact visual style described in the VISUAL STYLE REFERENCE above. Your SUBJECT must be "' + effectName + '" — animate a scene that matches this trend name.' : 'Generate { "title": "...", "videoPrompt": "..." } for "' + effectName + '".'} Keep videoPrompt 180-280 words. No negative instructions. Do not output any explanation outside the JSON.`;
 
-  const raw = await chatCompletion(model, [{ role: 'system', content: system }, { role: 'user', content: userText }], 16000);
+  const raw = await chatWithFallback(model, [{ role: 'system', content: system }, { role: 'user', content: userText }], 16000, 1.0);
   let parsed = {};
   try { parsed = parseJsonLenient(raw); } catch (e) { parsed = {}; }
-  const videoPrompt = enforceEffectRelevance(parsed.videoPrompt || raw, effectName, tagline, userIdea, duration, ratio, 'video');
+  const videoPrompt = scrubCameraFluff(capPrompt(enforceEffectRelevance(parsed.videoPrompt || raw, effectName, tagline, userIdea, duration, ratio, 'video'), 420));
   return {
     title: parsed.title || effectName,
     videoPrompt
@@ -687,7 +738,7 @@ async function generateFlashloopScene(effectName, tagline, userIdea, duration, r
 
   // Ensure the image prompt is never empty; if the LLM returned nothing useful, build a minimal anchor.
   if (!imageResult.imagePrompt || !imageResult.imagePrompt.trim()) {
-    imageResult.imagePrompt = `First-frame reference image for "${effectName}"${tagline ? ' — ' + tagline : ''}.${userIdea ? ' User intent: ' + userIdea : ''} Cinematic, photorealistic, high detail, ${ratio}, first frame only.`;
+    imageResult.imagePrompt = `First-frame reference image for "${effectName}"${tagline ? ' — ' + tagline : ''}${userIdea ? ' — ' + userIdea : ''}. A specific, visually striking scene: concrete subjects, a clear action, and a vivid setting. Cinematic, photorealistic, high detail, ${ratio}, first frame only.`;
   }
 
   let videoResult = {};
@@ -697,18 +748,13 @@ async function generateFlashloopScene(effectName, tagline, userIdea, duration, r
 
   // Ensure the video prompt is never empty — build a detailed fallback.
   if (!videoResult.videoPrompt || !videoResult.videoPrompt.trim()) {
-    videoResult.videoPrompt = `Create an exactly ${duration}-second video for "${effectName}"${tagline ? ' — ' + tagline : ''}. Use the supplied first-frame image as the strict visual reference.
-
-CAMERA: One continuous shot, no cuts. Preserve the exact subject, position, colors, lighting, and composition from the first-frame image.
-
-ACTION TIMELINE:
-0.0–${Math.floor(duration * 0.2)}s: Hold on the first-frame composition. Subtle ambient motion.
-${Math.floor(duration * 0.2)}–${Math.floor(duration * 0.6)}s: Primary action unfolds — describe the main motion relevant to "${effectName}". Smooth, natural movement.
-${Math.floor(duration * 0.6)}–${Math.floor(duration * 0.85)}s: Action reaches its peak or turning point.
-${Math.floor(duration * 0.85)}–${duration}s: Settle into the final pose. Gentle deceleration. Hold on concluding frame.
-
-AUDIO: Realistic audio synced to the action. Ambient room tone. No music unless required.
-STYLE: Cinematic, photorealistic, ${ratio}. Preserve visual style from first-frame image. No text or logos.`;
+    const d3 = Math.round(duration * 0.3);
+    const d6 = Math.round(duration * 0.6);
+    videoResult.videoPrompt = `Create an exactly ${duration}-second video for "${effectName}"${tagline ? ' — ' + tagline : ''}${userIdea ? ' — ' + userIdea : ''}, as a time-stamped timeline:
+0–${d3}s: HOOK — the scene's most striking moment, front and center.
+${d3}–${d6}s: The main action unfolds in a few concrete beats with detail.
+${d6}–${duration}s: The action peaks, then settles into a strong final moment.
+Use the supplied first-frame image as the strict visual reference — preserve the exact subject, position, colors, lighting, and composition. Smooth continuous motion. Cinematic, photorealistic, ${ratio}. No text or logos.`;
   }
 
   return {
@@ -716,6 +762,88 @@ STYLE: Cinematic, photorealistic, ${ratio}. Preserve visual style from first-fra
     imagePrompt: imageResult.imagePrompt,
     videoPrompt: videoResult.videoPrompt
   };
+}
+
+// Generate a FULL multi-scene script for a Flashloop effect — to the point, every
+// scene opens with a hook, no camera/lighting/mood fluff. One LLM call writes all
+// scenes so the story flows seamlessly. Scene count is FIXED by the per-scene
+// length: 30s → 4 scenes, 15s → 8 scenes (both add up to 2 minutes of footage).
+async function generateFlashloopScript(effectName, tagline, userIdea, sceneDuration, ratio, model = 'gpt-5.5', references = [], trendThumbnail = '') {
+  const perScene = Number(sceneDuration) >= 30 ? 30 : 15;
+  const sceneCount = perScene === 30 ? 4 : 8;
+  const totalSec = perScene * sceneCount;
+  const cleanRefs = cleanFlashloopRefs(references);
+  const refBlock = formatFlashloopRefs(cleanRefs);
+  const promptModel = IS_VERCEL
+    ? (['gemini-2.5-pro', 'gemini-3.1-pro', 'deepseek-v3.2', 'glm-5.2'].includes(model) ? model : 'gemini-2.5-pro')
+    : model;
+
+  // Optional trend-style analysis (extra LLM call — skipped on Vercel).
+  let styleText = '';
+  if (trendThumbnail && !IS_VERCEL) {
+    try { styleText = await analyzeTrendStyle(trendThumbnail, effectName, promptModel); } catch (e) { styleText = ''; }
+  }
+  const styleBlock = styleText ? `\n\nVISUAL STYLE (from the trend reference — every scene must be rendered in this exact style):\n${styleText}` : '';
+
+  const system = `You are a top short-form video scriptwriter for viral AI formats. Write a complete ${sceneCount}-scene script (${totalSec} seconds total, exactly ${perScene} seconds per scene) for the effect "${effectName}".
+
+OUTPUT FORMAT — return ONLY a JSON object, nothing else:
+{
+  "title": "short film title",
+  "scenes": [
+    { "scene": 1, "title": "punchy scene title", "hook": "one sentence — the attention-grabbing moment this scene opens with", "imagePrompt": "first-frame image prompt", "videoPrompt": "0–5s: ...; 5–10s: ...; 10–15s: ... (time-stamped beats covering the full scene length)" }
+  ]
+}
+
+RULES:
+- EXACTLY ${sceneCount} scenes. Every scene is exactly ${perScene} seconds.
+- TO THE POINT, zero filler. NO "CAMERA:" sections, NO camera-angle/movement instructions, NO lighting/mood/setting bullet lists, NO audio or style paragraphs inside the prompts, NO negative instructions.
+- Each scene's "imagePrompt": 80-140 words — the first-frame reference image for that scene. Concrete subject, exact action, setting, colors, materials. End with: ${ratio}.
+- Each scene's "videoPrompt": 180-280 words — a TIMELINE of 5-7 time-stamped beats that covers the full ${perScene} seconds. Format: "0–5s: ...", "5–10s: ..." — consecutive segments with no gaps, ending exactly at ${perScene}s. The FIRST segment must deliver the hook. Each segment is one concrete action beat with vivid specifics (textures, scale, lighting, expressions, sounds, miniature-detail observations). NO "CAMERA:" section, no camera-movement instructions, no audio/style filler paragraphs.
+- Hit the word targets above exactly — count your words as you write. If a videoPrompt is under 180 words, add more detail to each time-stamped beat until it fits. Be vivid and specific so a video model can animate it precisely, but never pad with filler.
+- STORY: Scene 1 opens with the strongest hook (cold open). Scenes flow seamlessly — each scene starts exactly where the previous one ended (same characters, same place, same light, continuous motion). The last scene ends on a satisfying payoff.
+- Interpret "${effectName}" as the theme and write a specific, vivid, viral-worthy scene — never generic filler.${tagline ? '\n- Trend tagline: ' + tagline : ''}${userIdea ? '\n- User idea (honor it): ' + userIdea : ''}${styleBlock}${refBlock}
+- Keep every prompt tight and concrete.`;
+
+  let promptText = `Write the full ${sceneCount}-scene script for "${effectName}"${tagline ? ' — ' + tagline : ''}. ${perScene}s per scene, ${ratio}.${userIdea ? '\nUser idea: ' + userIdea : ''}\nReturn ONLY the JSON object described in your instructions.`;
+  let parsed = {};
+  let raw = '';
+  for (let attempt = 0; attempt < 2 && !Array.isArray(parsed.scenes); attempt++) {
+    try {
+      raw = await chatWithFallback(promptModel, [{ role: 'system', content: system }, { role: 'user', content: promptText }], 20000, 1.0);
+      parsed = parseJsonLenient(raw);
+    } catch (e) { logLine(`flashloop script attempt ${attempt + 1} failed: ${e.message}`); }
+    if (!Array.isArray(parsed.scenes)) {
+      promptText += '\n\nIMPORTANT: your previous response was not valid JSON. Return ONLY the JSON object — no markdown, no commentary, no extra text.';
+    }
+  }
+
+  // Sanitize parsed scenes (accept both camelCase and snake_case keys).
+  let scenes = Array.isArray(parsed.scenes) ? parsed.scenes : [];
+  scenes = scenes
+    .filter(s => s && (String(s.imagePrompt || s.image_prompt || '').trim() || String(s.videoPrompt || s.video_prompt || '').trim()))
+    .map((s, i) => ({
+      scene: i + 1,
+      title: String(s.title || s.sceneTitle || `Scene ${i + 1}`).slice(0, 80),
+      hook: String(s.hook || s.hookline || '').slice(0, 200),
+      imagePrompt: capPrompt(enforceEffectRelevance(String(s.imagePrompt || s.image_prompt || '').trim(), effectName, tagline, userIdea, perScene, ratio, 'image'), 200),
+      videoPrompt: scrubCameraFluff(capPrompt(enforceEffectRelevance(String(s.videoPrompt || s.video_prompt || '').trim(), effectName, tagline, userIdea, perScene, ratio, 'video'), 420))
+    }));
+
+  // Fallback: fill any missing scenes one-by-one so the scene count is always right.
+  if (scenes.length < sceneCount) {
+    logLine(`flashloop script: got ${scenes.length}/${sceneCount} scenes — filling the rest individually`);
+    for (let i = scenes.length; i < sceneCount; i++) {
+      try {
+        const prevEnd = scenes[i - 1] ? ` Previous scene ends here: ${scenes[i - 1].videoPrompt}` : '';
+        const sceneIdea = String(userIdea || '') + prevEnd;
+        const one = await generateFlashloopScene(effectName, tagline, sceneIdea, perScene, ratio, promptModel, references, '');
+        scenes.push({ scene: i + 1, title: `Scene ${i + 1}`, hook: '', imagePrompt: one.imagePrompt, videoPrompt: one.videoPrompt });
+      } catch (e) { logLine(`flashloop per-scene fill failed: ${e.message}`); break; }
+    }
+  }
+
+  return { title: parsed.title || effectName, sceneDuration: perScene, sceneCount: scenes.length, scenes };
 }
 
 // TikWM direct trending feed (free, no login). Returns real trending TikTok videos.
@@ -815,7 +943,11 @@ function parseIsoDuration(dur) {
 for (const d of [FRAMES_DIR, VIDEO_DIR, STORYBOARD_DIR]) fs.mkdirSync(d, { recursive: true });
 
 const MODELS = ['kimi-k3', 'gpt-5.6-sol', 'gpt-5.6-terra', 'claude-opus-4-8', 'qwen3.8-max', 'gemini-3.1-pro', 'kimi-2.7-code', 'glm-5.2', 'mimo-v2.5', 'claude-sonnet-4-5', 'deepseek-v3.2', 'gemini-2.5-pro'];
-const IMAGE_MODELS = ['nano-banana-pro', 'nano-banana', 'nano-banana-2', 'seedream-5', 'seedream-4', 'seedream-4.5', 'gpt-image-2'];
+const IMAGE_MODELS = ['nano-banana-pro', 'nano-banana', 'nano-banana-2', 'seedream-5', 'seedream-4', 'seedream-4.5', 'grok-imagine-2', 'grok-imagine', 'gpt-image-2'];
+// Grok Imagine is xAI's image model on PaxSenix: GET /ai-image/grok-imagine
+// (text-to-image, params: prompt + ratio) and POST /ai-img2img/grok-imagine
+// (image-to-image, body: prompt/model/ratio/image_urls — same shape as seedream,
+// verified live against api.paxsenix.org v3.3.1).
 const VIDEO_MODELS = [
   { id: 'grok-video', label: 'Grok Video — 6s clips, fast' },
   { id: 'omni-flash', label: 'Omni Flash — 8s clips, fast' },
@@ -907,11 +1039,13 @@ const FISH_TTS_REFERENCE_ID = TTS_FISH_REFERENCES.female;
 // Map image model name → PaxSenix API endpoint path
 function imageEndpoint(model) {
   if (model.startsWith('seedream')) return '/ai-image/seedream';
+  if (model.startsWith('grok-imagine')) return '/ai-image/grok-imagine';
   if (model.startsWith('gpt-image')) return '/ai-image/gpt-image-2';
   return '/ai-image/nano-banana';
 }
 function img2ImgEndpoint(model) {
   if (model.startsWith('seedream')) return '/ai-img2img/seedream';
+  if (model.startsWith('grok-imagine')) return '/ai-img2img/grok-imagine';
   if (model.startsWith('gpt-image')) return '/ai-img2img/gpt-image-2';
   return '/ai-img2img/nano-banana';
 }
@@ -1217,13 +1351,15 @@ async function download(fileUrl, outPath) {
 }
 
 // ---------------- streaming chat ----------------
-async function chatCompletion(model, messages, maxTokens = 16384) {
+async function chatCompletion(model, messages, maxTokens = 16384, temperature = 0.7) {
   // Use non-streaming mode — streaming was causing ECONNRESET on local
   // On Vercel (fluid compute allows maxDuration up to 300s) give LLM calls real
   // headroom: allow up to 12k output tokens and wait up to 250s. The old 22s/2500
   // budget made storyboard generation abort mid-phase ("This operation was aborted").
+  // `temperature` is optional; prompt-generation call sites pass ~1.0 so each
+  // click produces a visibly different creative output.
   const cappedTokens = IS_VERCEL ? Math.min(maxTokens, 12000) : maxTokens;
-  const body = { model, messages, temperature: 0.7, max_tokens: cappedTokens, stream: false };
+  const body = { model, messages, temperature, max_tokens: cappedTokens, stream: false };
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), IS_VERCEL ? 250000 : 120000);
   let raw = '';
@@ -1252,6 +1388,23 @@ async function chatCompletion(model, messages, maxTokens = 16384) {
   }
   logLine(`chat: ${content.length} chars from ${raw.length}B`);
   return content;
+}
+
+// Try the requested model first, then fall back to reliable models if it fails or
+// times out (e.g. gpt-5.5 on PaxSenix can exceed the local 120s budget, which used
+// to dump users into the generic fallback prompts). Returns the raw LLM text.
+async function chatWithFallback(model, messages, maxTokens = 16000, temperature = 0.7) {
+  const chain = [model, 'gemini-2.5-pro', 'deepseek-v3.2'].filter((m, i, a) => m && a.indexOf(m) === i);
+  let lastErr = null;
+  for (const m of chain) {
+    try {
+      const raw = await chatCompletion(m, messages, maxTokens, temperature);
+      if (raw && raw.trim()) return raw;
+      lastErr = new Error(`empty response from ${m}`);
+      logLine(`chatWithFallback: ${m} returned empty — trying next model`);
+    } catch (e) { lastErr = e; logLine(`chatWithFallback: ${m} failed (${e.message}) — trying next model`); }
+  }
+  throw lastErr || new Error('all chat models failed');
 }
 
 // Gemini visual analysis for a trend. Actual MP4 frames are preferred; the
@@ -4359,13 +4512,16 @@ Return ONLY a JSON object:
     if (p === '/api/flashloop/generate-prompt' && req.method === 'POST') {
       try {
         const body = await readBody(req);
-        const { slug = '', name = '', tagline = '', idea = '', duration = 15, ratio = '9:16', model = 'gpt-5.5', references = [], trendThumbnail = '' } = body || {};
+        const { slug = '', name = '', tagline = '', idea = '', duration = 15, sceneDuration = 0, ratio = '9:16', model = 'gpt-5.5', references = [], trendThumbnail = '' } = body || {};
         const effectName = String(name || slug).trim();
         if (!effectName) return sendJson(res, 400, { error: 'effect name or slug required' });
         const selectedModel = MODELS.includes(model) ? model : 'gpt-5.5';
         const refs = Array.isArray(references) ? references.filter(r => r && String(r.name || '').trim()) : [];
-        const scene = await generateFlashloopScene(effectName, String(tagline || ''), String(idea || ''), Number(duration), String(ratio), selectedModel, refs, String(trendThumbnail || ''));
-        return sendJson(res, 200, { ok: true, slug, name: effectName, duration, ratio, model: selectedModel, ...scene });
+        // sceneDuration = seconds per scene (15 → 8 scenes, 30 → 4 scenes); falls
+        // back to `duration` for older clients.
+        const perScene = Number(sceneDuration) || Number(duration) || 15;
+        const script = await generateFlashloopScript(effectName, String(tagline || ''), String(idea || ''), perScene, String(ratio), selectedModel, refs, String(trendThumbnail || ''));
+        return sendJson(res, 200, { ok: true, slug, name: effectName, sceneDuration: perScene, ratio, model: selectedModel, ...script });
       } catch (e) { logLine('flashloop prompt: ' + e.message); return sendJson(res, 500, { error: e.message }); }
     }
 
@@ -4375,10 +4531,22 @@ Return ONLY a JSON object:
         const body = await readBody(req);
         const { prompt = '', refImageUrl = '', ratio = '9:16', model = 'seedream-5', trendName = '', tagline = '' } = body || {};
         if (!prompt) return sendJson(res, 400, { error: 'prompt required' });
-        if (!refImageUrl) return sendJson(res, 400, { error: 'refImageUrl required (trend reference image)' });
 
         // Respect the selected image model; fall back to seedream-5 if invalid
         const selectedModel = (model && IMAGE_MODELS.includes(model)) ? model : 'seedream-5';
+
+        // No reference image? Fall back to plain text-to-image so the Generate
+        // Image button ALWAYS works — the scene's first-frame image prompt is
+        // enough on its own. The returned task polls exactly like i2i.
+        if (!refImageUrl) {
+          const sanitized = sanitizePrompt(String(prompt));
+          const q = `${imageEndpoint(selectedModel)}?prompt=${encodeURIComponent(sanitized)}&model=${encodeURIComponent(selectedModel)}&ratio=${encodeURIComponent(String(ratio))}`;
+          logLine(`flashloop image: text-to-image ${selectedModel} (no trend reference)`);
+          const taskUrl = await submitTask(q);
+          if (!taskUrl) return sendJson(res, 500, { error: `Failed to submit image task with ${selectedModel} after retries` });
+          return sendJson(res, 200, { ok: true, taskUrl, model: selectedModel, mode: 't2i' });
+        }
+
         const endpoint = img2ImgEndpoint(selectedModel);
 
         // Re-host external reference images (e.g. SJinn thumbnails on edit.comfyonline.app)
@@ -4453,7 +4621,7 @@ Return ONLY a JSON object:
         }
 
         if (!taskUrl) return sendJson(res, 500, { error: `Failed to submit i2i task with ${selectedModel} after 5 attempts` });
-        return sendJson(res, 200, { ok: true, taskUrl, model: selectedModel });
+        return sendJson(res, 200, { ok: true, taskUrl, model: selectedModel, mode: 'i2i' });
       } catch (e) { logLine('flashloop i2i: ' + e.message); return sendJson(res, 500, { error: e.message }); }
     }
 
@@ -4743,10 +4911,10 @@ cartoon, CGI, painting, anime, overprocessed skin, beauty filter, doll face, pla
 
         let imgPrompt = '';
         const selectedModel = MODELS.includes(model) ? model : 'gemini-2.5-pro';
-        const inflVariation = `\n\nVARIATION #${Date.now().toString(36)}: Pick a DIFFERENT specific scene/composition/pose than any previous generation for this activity. Be creative and avoid repeating the same setup.`;
+        const inflVariation = randomCreativeDirection();
         for (const m of [selectedModel, 'gemini-2.5-pro', 'gemini-3.1-pro']) {
           try {
-            const raw = await chatCompletion(m, [{ role: 'user', content: imgSystem + inflVariation }], 12000);
+            const raw = await chatCompletion(m, [{ role: 'user', content: imgSystem + inflVariation }], 12000, 1.0);
             imgPrompt = raw.trim();
             if (imgPrompt.length > 50) break;
           } catch (e) { inflLogLine('img prompt gen ' + m + ' failed: ' + e.message); }
@@ -4831,10 +4999,10 @@ Negative Prompt:
 AI motion, robotic movement, jitter, morphing face, frozen smile, bad lip-sync, extra fingers, deformed hands, flickering, warped anatomy, unrealistic physics, low quality, beauty filter, CGI appearance, still life, no people, object-only shot, empty scene`;
 
         let vidPrompt = '';
-        const vidVariation = `\n\nVARIATION #${Date.now().toString(36)}: Pick a DIFFERENT specific action sequence/composition than any previous generation. Be creative and avoid repeating the same movements.`;
+        const vidVariation = randomCreativeDirection();
         for (const m of [selectedModel, 'gemini-2.5-pro', 'gemini-3.1-pro']) {
           try {
-            const raw = await chatCompletion(m, [{ role: 'user', content: vidSystem + vidVariation }], 16000);
+            const raw = await chatCompletion(m, [{ role: 'user', content: vidSystem + vidVariation }], 16000, 1.0);
             vidPrompt = raw.trim();
             if (vidPrompt.length > 50) break;
           } catch (e) { inflLogLine('vid prompt gen ' + m + ' failed: ' + e.message); }
