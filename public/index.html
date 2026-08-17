@@ -581,7 +581,7 @@ $('btnStoryboard').onclick=async()=>{
   LOCAL_BUSY=true;poll();
   try{
     await api('/clean-outputs',{method:'POST'});
-    const r=await api('/storyboard',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({script,model:$('chatModel').value,duration:Number($('duration').value),look:$('look').value,language:$('language').value,clipDuration:Number($('clipDuration').value)})});
+    const r=await api('/storyboard',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({script,model:$('chatModel').value,duration:Number($('duration').value),look:$('look').value,language:$('language').value,style:$('style').value,clipDuration:Number($('clipDuration').value)})});
     if(r.error){alert(r.error);return}
     // On Vercel the storyboard comes back inline (ephemeral /tmp) — render it directly.
     if(r.characters&&r.frames){OFFLINE_BOARD=true;await refresh({characters:r.characters,frames:r.frames});}

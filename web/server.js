@@ -1071,8 +1071,15 @@ const STYLE_KEYS = Object.keys(STYLES);
 
 function applyStyle(prompt, styleKey) {
   const s = STYLES[styleKey] || STYLES.cinematic;
+  let p = String(prompt || '');
+  // Stylized looks (anime, ghibli, watercolor, noir...) LOSE the style fight when
+  // the LLM-baked prompt screams "photorealistic" — strip contradicting realism
+  // keywords first so the selected style actually wins.
+  if (!['cinematic', 'realistic', 'vintage'].includes(styleKey)) {
+    p = p.replace(/\b(photorealistic|hyper-?realistic|photoreal|ultra[- ]realistic|realistic skin texture|RAW photo(?:graph)?|live[- ]action)\b/gi, ' ').replace(/\s{2,}/g, ' ');
+  }
   // Style keywords at the END (image models weight the end more heavily)
-  return prompt + ' — ' + s.suffix.slice(2) + ', ' + s.prefix.trim().slice(0, -2);
+  return p.trim() + ' — ' + s.suffix.slice(2) + ', ' + s.prefix.trim().slice(0, -2);
 }
 
 // ---------------- in-memory job state ----------------
@@ -1694,7 +1701,7 @@ async function parseOrSalvage(content, label) {
   }
 }
 
-async function generateStoryboard(script, model, targetDuration = 120, look = '', language = DEFAULT_LANGUAGE, secPerFrame = 6) {
+async function generateStoryboard(script, model, targetDuration = 120, look = '', language = DEFAULT_LANGUAGE, secPerFrame = 6, style = 'cinematic') {
   const frameCount = Math.max(3, Math.ceil(targetDuration / secPerFrame));
   const modelsToTry = [model];
   const lookBlock = look && look.trim()
@@ -1702,8 +1709,21 @@ async function generateStoryboard(script, model, targetDuration = 120, look = ''
     : '';
   const langObj = LANGUAGES.find(l => l.id === language);
   const langName = langObj ? langObj.label : 'English';
+  // The language directive goes into the SYSTEM prompts AND the user content —
+  // a single trailing block after the script was routinely ignored, so the
+  // narration came back in English even with Hindi selected.
+  const langSystem = language !== 'en'
+    ? `\n\nNARRATION LANGUAGE (MANDATORY — OVERRIDES THE SCRIPT'S OWN LANGUAGE): Write the "narration" and "dialogue" values of EVERY frame in ${langName}, transliterated into ROMAN/ENGLISH LETTERS ONLY (never the native script — Hindi must be "aur ek raat gayi", not "एक रात गई") because the text-to-speech system only reads Latin letters. Every other field (image_prompt, animation_prompt, summary...) stays in English.`
+    : '';
   const langBlock = language !== 'en'
     ? `\n\nLANGUAGE: Write ALL narration and dialogue in ${langName}. IMPORTANT: Write the ${langName} text using ROMAN/ENGLISH LETTERS ONLY (transliterated romanized ${langName}), NOT the native script. For example, Hindi should be "aur ek raat gayi" not "एक रात गई". This is needed for the text-to-speech system. All other fields (image_prompt, animation_prompt, etc.) remain in English.`
+    : '';
+  // Style directive — the LLM shapes lighting/mood/image_prompt wording to the
+  // selected visual style so it never bakes in a contradicting "photorealistic"
+  // look when the user picked anime/ghibli/watercolor/etc.
+  const styleObj = STYLES[style] || STYLES.cinematic;
+  const styleSystem = style && style !== 'cinematic'
+    ? `\n\nVISUAL STYLE (MANDATORY): The entire film is rendered in "${styleObj.label}" style (${styleObj.prefix.trim().replace(/, $/, '')}). Write every image_prompt, reference_prompt, lighting and mood to MATCH this style. NEVER use wording that contradicts it — for a stylized look do NOT write "photorealistic", "realistic", or "live-action".`
     : '';
 
   logLine(`target: ${targetDuration}s → ${frameCount} frames × ${secPerFrame}s each${lookBlock ? ' — with creative direction' : ''}${langBlock ? ` — narration in ${langName}` : ''}`);
@@ -1711,7 +1731,7 @@ async function generateStoryboard(script, model, targetDuration = 120, look = ''
   // ---- PHASE 1: Generate characters ----
   logLine('phase 1: generating characters...');
   const charMsgs = [
-    { role: 'system', content: CHARACTERS_PROMPT },
+    { role: 'system', content: CHARACTERS_PROMPT + langSystem + styleSystem },
     { role: 'user', content: `SCRIPT:\n${script}${lookBlock}${langBlock}\n\nReturn ONLY the JSON object with "characters" key. Nothing else.` }
   ];
   let characters = [], charModel = model;
@@ -1735,7 +1755,7 @@ async function generateStoryboard(script, model, targetDuration = 120, look = ''
     name: c.name || `Character ${String.fromCharCode(65 + i)}`,
     age: c.age || null,
     description: c.description,
-    reference_prompt: c.reference_prompt || `cinematic portrait of ${c.description}, neutral background, 85mm lens, 8K photorealistic`
+    reference_prompt: c.reference_prompt || `character portrait of ${c.description}, waist-up 3/4 view, neutral background, soft directional key light, 85mm portrait lens`
   }));
   logLine(`phase 1 done: ${characters.length} characters locked (model: ${charModel})`);
   await writeJson(CHARS_JSON, characters);
@@ -1744,7 +1764,7 @@ async function generateStoryboard(script, model, targetDuration = 120, look = ''
   logLine(`phase 2: generating ${frameCount} frames...`);
   const charSummary = characters.map(c => `[${c.id}] ${c.name}: ${c.description}`).join('\n');
   const frameMsgs = [
-    { role: 'system', content: buildFramesPrompt(frameCount, secPerFrame) },
+    { role: 'system', content: buildFramesPrompt(frameCount, secPerFrame) + langSystem + styleSystem },
     { role: 'user', content: `SCRIPT:\n${script}${lookBlock}${langBlock}\n\nLOCKED CHARACTERS:\n${charSummary}\n\nReturn ONLY the JSON object with "frames" key. Generate exactly ${frameCount} frames. Nothing else.` }
   ];
   let frames = [], frameModel = model;
@@ -3518,14 +3538,14 @@ const requestHandler = async (req, res) => {
 
     if (p === '/api/storyboard' && req.method === 'POST') {
       if (job.phase !== 'idle') return sendJson(res, 409, { error: 'busy' });
-      const { script, model, duration, look, language, clipDuration } = await readBody(req);
+      const { script, model, duration, look, language, clipDuration, style } = await readBody(req);
       if (!script || script.trim().length < 10) return sendJson(res, 400, { error: 'script too short' });
       const targetDuration = Math.max(10, Math.min(600, Number(duration) || 120));
       const secPerFrame = Number(clipDuration) || 6;
-      setPhase('storyboard', 1); logLine(`storyboard generation: ${model || MODELS[0]} — target ${targetDuration}s — ${secPerFrame}s per clip`);
+      setPhase('storyboard', 1); logLine(`storyboard generation: ${model || MODELS[0]} — target ${targetDuration}s — ${secPerFrame}s per clip — style: ${STYLES[style]?.label || 'Cinematic'} — language: ${LANGUAGES.find(l => l.id === language)?.label || 'English'}`);
       if (IS_VERCEL) return (async () => {
         try {
-          const { characters, frames } = await generateStoryboard(script, model || MODELS[0], targetDuration, look || '', language || DEFAULT_LANGUAGE, secPerFrame);
+          const { characters, frames } = await generateStoryboard(script, model || MODELS[0], targetDuration, look || '', language || DEFAULT_LANGUAGE, secPerFrame, style);
           job.ok = 1; job.done = 1;
           const totalDur = frames.reduce((s, f) => s + (f.duration_sec || 0), 0);
           logLine(`storyboard ready: ${characters.length} characters, ${frames.length} frames (${totalDur}s total)`);
@@ -3540,7 +3560,7 @@ const requestHandler = async (req, res) => {
       })();
       (async () => {
         try {
-          const { characters, frames } = await generateStoryboard(script, model || MODELS[0], targetDuration, look || '', language || DEFAULT_LANGUAGE, secPerFrame);
+          const { characters, frames } = await generateStoryboard(script, model || MODELS[0], targetDuration, look || '', language || DEFAULT_LANGUAGE, secPerFrame, style);
           job.ok = 1; job.done = 1;
           const totalDur = frames.reduce((s, f) => s + (f.duration_sec || 0), 0);
           logLine(`storyboard ready: ${characters.length} characters, ${frames.length} frames (${totalDur}s total)`);
@@ -3566,7 +3586,7 @@ const requestHandler = async (req, res) => {
           await cleanOutputs(); job.done = 1; job.ok = 1;
 
           setPhase('storyboard', 1); logLine(`auto pipeline: storyboard — ${body.model || MODELS[0]} — target ${targetDuration}s — ${secPerFrame}s per clip — narration: ${narrationMode} — language: ${language}`);
-          const sb = await generateStoryboard(script, body.model || MODELS[0], targetDuration, body.look || '', language, secPerFrame);
+          const sb = await generateStoryboard(script, body.model || MODELS[0], targetDuration, body.look || '', language, secPerFrame, body.style);
           characters = sb.characters; frames = sb.frames;
           job.done = 1; job.ok = 1;
           logLine(`auto pipeline: storyboard ready — ${characters.length} characters, ${frames.length} frames`);
