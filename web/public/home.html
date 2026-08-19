@@ -477,11 +477,13 @@ async function init(){
       $('userName').textContent=j.user.name||j.user.email;
       $('btnLogout').style.display='';
       $('statusText').textContent='LOGGED IN';
-      // Trial banner + remaining credits
+      // Trial banner + remaining credits (Vercel/production only — localhost is unlimited)
+      let isVercel=false;try{const h=await fetch('/api/health',{cache:'no-store'});if(h.ok){const hj=await h.json();isVercel=!!hj.vercel;}}catch(e){}
       const credits=j.user.credits!=null?j.user.credits:j.user.trialCredits||0;
       const tc=$('trialCredits');
-      if(tc){tc.textContent=credits;$('trialBanner').style.display='';if(credits<=10)$('trialLow').style.display='inline';if(credits<=0)$('statusText').textContent='NO CREDITS';}
-      const cp=document.createElement('div');cp.className='status-pill user-pill';cp.innerHTML='⚡ '+credits+' credits';document.querySelector('.header-actions').insertBefore(cp,$('btnLogout'));
+      if(tc&&isVercel){tc.textContent=credits;$('trialBanner').style.display='';if(credits<=10)$('trialLow').style.display='inline';if(credits<=0)$('statusText').textContent='NO CREDITS';
+        const cp=document.createElement('div');cp.className='status-pill user-pill';cp.innerHTML='⚡ '+credits+' credits';document.querySelector('.header-actions').insertBefore(cp,$('btnLogout'));
+      }
     }
   }catch(e){}
 }

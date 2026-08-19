@@ -3567,6 +3567,9 @@ async function requireApiAuth(req, res) {
 // balance is too low. Returns true when the debit succeeded (caller proceeds),
 // false when it sent the 402 and the caller should `return`.
 async function requireCredits(req, res, amount, label) {
+  // Local dev is unlimited — the trial/credit system only enforces on Vercel
+  // (production). This keeps localhost friction-free for development.
+  if (!IS_VERCEL) { req.user.credits = Infinity; return true; }
   const { ok, remaining } = await chargeCredits(req.user.id, amount);
   if (ok) { req.user.credits = remaining; return true; }
   req.user.credits = remaining;
