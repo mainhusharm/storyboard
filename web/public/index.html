@@ -184,6 +184,7 @@
     <a href="/trends" style="font-size:11px;padding:6px 14px;border:1px solid var(--line2);border-radius:99px;background:linear-gradient(135deg,rgba(251,146,60,.15),rgba(239,68,68,.15));color:var(--orange);cursor:pointer;text-decoration:none;display:flex;align-items:center;gap:5px;font-weight:600;letter-spacing:.5px">🔥 Trends</a>
     <a href="/influencer" style="font-size:11px;padding:6px 14px;border:1px solid var(--line2);border-radius:99px;background:linear-gradient(135deg,rgba(244,114,182,.15),rgba(139,124,246,.15));color:var(--pink);cursor:pointer;text-decoration:none;display:flex;align-items:center;gap:5px;font-weight:600;letter-spacing:.5px">✨ Create AI Influencer</a>
     <span id="authName" style="display:none;font-size:11px;color:var(--amber2)">👤 </span>
+    <div id="creditPill" class="pill" style="display:none;background:linear-gradient(135deg,rgba(240,163,46,.12),rgba(45,212,191,.08));border-color:rgba(240,163,46,.3);color:var(--amber2);font-weight:700;cursor:default" title="Generation credits remaining">⚡ <span id="creditCount">—</span></div>
     <button id="btnLogout" style="display:none;font-size:11px;padding:5px 12px" onclick="logout()">Log out</button>
     <div class="pill" id="phasepill"><div class="dot"></div><span id="phasetxt">IDLE</span></div>
     <button id="btnCancel" style="display:none;font-size:11px;padding:5px 12px;border:1px solid #f87171;color:#f87171;background:rgba(248,113,113,.1);border-radius:99px;cursor:pointer;font-weight:600;letter-spacing:.5px" onclick="cancelJob()">✕ Cancel</button>
@@ -340,8 +341,10 @@ The Director AI will:
       document.getElementById('authName').style.display='';
       document.getElementById('authName').textContent='👤 '+(j.user.name||j.user.email);
       document.getElementById('btnLogout').style.display='';
+      const cnt=document.getElementById('creditCount');
+      if(cnt){cnt.textContent=(j.user.credits!=null?j.user.credits+' credits':'—');document.getElementById('creditPill').style.display='';}
     }
-  }catch(e){location.replace('/login?next='+encodeURIComponent(location.pathname));}
+   }catch(e){location.replace('/login?next='+encodeURIComponent(location.pathname));}
 })();
 function logout(){fetch('/api/auth/logout',{method:'POST'}).then(()=>location.replace('/login'));}
 
@@ -355,7 +358,34 @@ let IS_VERCEL_CLIENT=false; // set from /api/health — Vercel renders videos on
 let LOCAL_LOG=[];
 function logLocal(msg,cls=''){LOCAL_LOG.push({t:new Date().toLocaleTimeString(),m:String(msg),c:cls});if(LOCAL_LOG.length>200)LOCAL_LOG.shift();const el=$('log');if(el){el.innerHTML=LOCAL_LOG.map(l=>`<span class="${l.c}"><span class="t">[${esc(l.t)}]</span> ${esc(l.m)}</span>`).join('\n');el.scrollTop=el.scrollHeight;}}
 
-async function api(p,opts){const r=await fetch('/api'+p,opts);const t=await r.text();try{return JSON.parse(t)}catch(e){throw new Error('API '+r.status+': '+(t||'').slice(0,120))}}
+async function api(p,opts){
+  const r=await fetch('/api'+p,opts);
+  const t=await r.text();
+  let j;try{j=JSON.parse(t)}catch(e){throw new Error('API '+r.status+': '+(t||'').slice(0,120))}
+  // 402 = out of trial credits — surface a clear upgrade prompt instead of a
+  // cryptic error, and refresh the header pill so the new balance shows.
+  if(r.status===402&&j&&j.error==='out of credits'){
+    refreshCredits();
+    const need=j.needed||0,have=j.credits||0;
+    throw new Error('Out of credits — this action needs '+need+' but you have '+have+' left. Your free trial covers one ~30s film; contact support to top up.');
+  }
+  return j;
+}
+// Header credits pill — fetched after every generation + on load.
+async function refreshCredits(){
+  try{
+    const m=await fetch('/api/credits',{cache:'no-store'});
+    if(!m.ok)return;
+    const c=await m.json();
+    const pill=$('creditPill'),cnt=$('creditCount');
+    if(pill&&cnt){
+      cnt.textContent=c.credits+' credits';
+      pill.style.display='';
+      pill.style.borderColor = c.credits>0 ? 'rgba(240,163,46,.3)' : 'rgba(248,113,113,.4)';
+      pill.style.color = c.credits>0 ? 'var(--amber2)' : 'var(--red)';
+    }
+  }catch(e){}
+}
 // Narration status badge — whether the current storyboard has a matching voice track
 async function refreshNarrStatus(){
   try{
@@ -562,15 +592,15 @@ async function guardBusy(){
 }
 let SUBMITTING=false;
 // POST a run with busy-guard + double-click lock; alerts on server errors.
-async function postJob(path, body){
+ async function postJob(path, body){
   if(SUBMITTING) return null;
   if(!(await guardBusy())) return null;
   SUBMITTING=true;
   try{
     const r=await api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-    if(r.error)alert(r.error);
+    if(r&&r.error)alert(r.error);
     return r;
-  } finally { SUBMITTING=false; }
+  } finally { SUBMITTING=false; refreshCredits(); }
 }
 
 $('btnStoryboard').onclick=async()=>{

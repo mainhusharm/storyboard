@@ -1035,6 +1035,20 @@ const TTS_FISH_REFERENCES = {
   male: 'bf322df2096a46f18c579d0baa36f41d'
 };
 const FISH_TTS_REFERENCE_ID = TTS_FISH_REFERENCES.female;
+// Language-NATIVE Fish Audio voices — an English reference voice reading Hindi
+// text produces a British-accented Hindi that sounds wrong. These were found via
+// GET /model?language=hi&sort_by=task_count and VERIFIED LIVE against
+// POST /v1/tts with romanized Hindi text (all returned valid mp3 bytes):
+//   fc53c5a8... = "Gentle Hindi Female" (464 tasks — most-used Hindi female)
+//   f7154c5b... = "Hindi Narrator" (male, 56 tasks)
+const TTS_FISH_LANGUAGE_REFERENCES = {
+  hi: { female: 'fc53c5a8a3fd4e2aaa1d4b7eded7ef3f', male: 'f7154c5b34df41b7a30361a1cf390991' }
+};
+function fishReferenceId(voice, language) {
+  const byLang = TTS_FISH_LANGUAGE_REFERENCES[language];
+  if (byLang) return byLang[voice] || byLang.female;
+  return TTS_FISH_REFERENCES[voice] || FISH_TTS_REFERENCE_ID;
+}
 
 // Map image model name → PaxSenix API endpoint path
 function imageEndpoint(model) {
@@ -1875,6 +1889,39 @@ async function generateCharRefs(characters, imageModel = 'seedream-5', style = '
   job.phase = 'idle';
 }
 
+// Local, zero-cost prompt sanitizer for failed image renders: strips risky
+// wording (violence/gore/weapons) without an LLM call so a rejected frame can be
+// retried immediately with the same scene.
+const IMAGE_RISKY_WORDS = /\b(kill|kills|killed|killing|blood|blooded|bloody|bleeding|gore|gory|brutal|brutally|stab|stabs|stabbed|sword|swords|dagger|blade|weapon|weapons|gun|guns|rifle|pistol|arrow|arrows|pierc\w*|corpse|corpses|dead|death|dying|murder|murdered|slaughter|strangl\w*|choke|chokes|choking|sever\w*|disembowel\w*|behead\w*|tortur\w*|wound(ed)?|injur\w*|mutilat\w*|nude|naked|nudity)\b/gi;
+function sanitizeImagePrompt(prompt) {
+  if (!prompt) return prompt;
+  return String(prompt)
+    .replace(IMAGE_RISKY_WORDS, ' ')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
+// Rewrite a rejected IMAGE prompt so the SAME frame still renders: keep subject,
+// composition, characters and style, but rephrase risky wording. Mirrors
+// repairVideoPrompt for the image pipeline.
+async function repairImagePrompt(frameNum, prompt, imageModel) {
+  try {
+    const system = `You are an expert AI-image prompt repair specialist. Rewrite the user's prompt for a ${imageModel} text-to-image generation so the exact same scene is still depicted, but in language that content filters never reject. Rules:
+- Keep the subject, characters, poses, setting, composition, lighting, and style.
+- Replace violence, gore, weapons, blood, injury detail, and suggestive wording with safe dramatic equivalents (tension, confrontation, implied off-screen events).
+- Never use words like: kill, blood, sword, weapon, stab, wound, corpse, dead, death, gore, brutal.
+- Output ONLY the rewritten prompt. No explanations, no markdown.`;
+    const raw = await chatCompletion('gemini-2.5-pro', [
+      { role: 'system', content: system },
+      { role: 'user', content: `Original prompt:\n${prompt}` }
+    ], 4000);
+    const cleaned = String(raw || '').trim();
+    if (cleaned.length < 20 || cleaned.length > 2000) return null;
+    logLine(`frame ${frameNum}: image prompt repaired via LLM (${cleaned.length} chars)`);
+    return cleaned;
+  } catch (e) { logLine(`frame ${frameNum}: image prompt repair failed: ${e.message}`); return null; }
+}
+
 async function generateImages(frames, imageModel, ratio, style, consistency = true, characters = []) {
   const styleLabel = STYLES[style]?.label || 'Cinematic';
   setPhase('images', frames.length);
@@ -1894,36 +1941,80 @@ async function generateImages(frames, imageModel, ratio, style, consistency = tr
     return { f, prompt: enh };
   }));
 
-  // Submit all tasks in parallel (no delays)
-  logLine(`submitting ${enhanced.length} image tasks in parallel...`);
-  const submitted = await Promise.all(enhanced.map(async ({ f, prompt }) => {
-    if (job.cancelRequested) return null;
-    let task = null;
-    if (useRefs) {
-      const refs = (f.characters_present || []).map(id => refById.get(id)).filter(Boolean).slice(0, 3);
-      if (refs.length) {
-        const anchorPrompt = `${prompt} — IMPORTANT: keep the exact same faces, hair, skin tone and wardrobe as the reference portrait(s). Do not change character identity.`;
-        task = await submitImg2ImgTask(anchorPrompt, refs, imageModel, ratio);
+  // renderFrameImage: render ONE frame image through a PROMPT-REPAIR RETRY LADDER
+  // so a failed frame never stays blank: (1) original prompt, (2) sanitized prompt
+  // (risky words stripped), (3) LLM rewrite of the scene, (4) stripped-down
+  // essentials-only prompt. Character-consistency refs are kept when possible and
+  // dropped as a last resort (a face that matches the movie beats no frame at all).
+  const renderFrameImage = async (f, prompt) => {
+    // On Vercel the whole board's images render inside ONE 300s invocation, so the
+    // retry ladder is time-capped (~150s per frame) — past that, jump straight to
+    // the essentials fallback instead of burning the function budget.
+    const ladderStart = Date.now();
+    const outOfBudget = () => IS_VERCEL && (Date.now() - ladderStart > 150000);
+    const refsFor = () => (f.characters_present || []).map(id => refById.get(id)).filter(Boolean).slice(0, 3);
+    const imgAttempt = async (label, p, useRef) => {
+      let task = null;
+      if (useRef) {
+        const refs = refsFor();
+        if (refs.length) {
+          const anchorPrompt = `${p} — IMPORTANT: keep the exact same faces, hair, skin tone and wardrobe as the reference portrait(s). Do not change character identity.`;
+          task = await submitImg2ImgTask(anchorPrompt, refs, imageModel, ratio);
+        }
+      }
+      if (!task) {
+        const q = `${imageEndpoint(imageModel)}?prompt=${encodeURIComponent(p)}&model=${encodeURIComponent(imageModel)}&ratio=${encodeURIComponent(ratio)}`;
+        task = await submitTask(q);
+      }
+      if (!task) { logLine(`frame ${f.frame}: image SUBMIT FAILED (${label})`); return false; }
+      logLine(`frame ${f.frame}: image submitted (${label}${useRef && refsFor().length ? ', img2img anchored' : ', t2i'})`);
+      const url = await waitTask(task);
+      if (job.cancelRequested) return 'cancel';
+      if (url && await download(url, frameFile(f.frame))) {
+        f.generated_image_url = url;
+        urlMap.set(f.frame, url);
+        job.ok++;
+        logLine(`frame ${f.frame}: IMAGE DONE (${label})`);
+        return true;
+      }
+      logLine(`frame ${f.frame}: image RENDER FAILED (${label}) — repairing prompt and retrying`);
+      return false;
+    };
+
+    const usedRefs = useRefs;
+    // 1) original prompt (img2img when consistency refs exist)
+    let r = await imgAttempt('original', prompt, usedRefs);
+    if (r === true) return true; if (r === 'cancel') return false;
+    // 2) sanitized prompt — strip risky wording locally, keep everything else
+    const sanitized = sanitizeImagePrompt(prompt);
+    if (!outOfBudget() && sanitized !== prompt) {
+      r = await imgAttempt('sanitized prompt', sanitized, usedRefs);
+      if (r === true) return true; if (r === 'cancel') return false;
+    }
+    // 3) LLM rewrite of the same scene (local only — extra LLM call + poll can
+    // blow Vercel's 300s function budget; the cheap local variants still run)
+    if (!IS_VERCEL && !job.cancelRequested && !outOfBudget()) {
+      const repaired = await repairImagePrompt(f.frame, prompt, imageModel);
+      if (repaired && repaired !== prompt) {
+        r = await imgAttempt('LLM-repaired prompt', repaired, usedRefs);
+        if (r === true) return true; if (r === 'cancel') return false;
       }
     }
-    if (!task) {
-      const q = `${imageEndpoint(imageModel)}?prompt=${encodeURIComponent(prompt)}&model=${encodeURIComponent(imageModel)}&ratio=${encodeURIComponent(ratio)}`;
-      task = await submitTask(q);
-    }
-    if (task) { logLine(`frame ${f.frame}: submitted (${useRefs && f.characters_present?.length ? 'img2img' : 't2i'})`); return { f, task }; }
-    else { job.failed.push(f.frame); job.done++; logLine(`frame ${f.frame}: SUBMIT FAILED`); return null; }
-  }));
+    // 4) last resort: essentials-only prompt without character refs — a plain
+    // on-model frame beats a blank hole in the final film
+    const essentials = `cinematic film still of ${f.summary || 'the scene'}${(f.characters_present || []).length ? `, featuring ${f.characters_present.join(' and ')}` : ''}, dramatic lighting, ${ratio}`;
+    r = await imgAttempt('essentials fallback', essentials, false);
+    return r === true;
+  };
 
-  // Wait for all renders in parallel
-  const results = submitted.filter(Boolean);
-  logLine(`waiting for ${results.length} image renders in parallel...`);
+  // Submit + wait per frame (the ladder runs submit→wait→retry sequentially
+  // inside each frame; frames themselves render in parallel).
+  logLine(`rendering ${enhanced.length} frame images (prompt-repair ladder active)...`);
   const urlMap = new Map();
-  await Promise.all(results.map(async ({ f, task }) => {
+  await Promise.all(enhanced.map(async ({ f, prompt }) => {
     if (job.cancelRequested) return;
-    const url = await waitTask(task);
-    if (job.cancelRequested) { logLine('cancelled'); return; }
-    if (url && await download(url, frameFile(f.frame))) { f.generated_image_url = url; urlMap.set(f.frame, url); job.ok++; logLine(`frame ${f.frame}: DONE`); }
-    else { job.failed.push(f.frame); logLine(`frame ${f.frame}: FAILED`); }
+    const ok = await renderFrameImage(f, prompt);
+    if (!ok && !job.cancelRequested) { job.failed.push(f.frame); logLine(`frame ${f.frame}: IMAGE FAILED (all attempts)`); }
     job.done++;
   }));
 
@@ -2500,7 +2591,7 @@ async function generateFullNarration(frames, voice = DEFAULT_VOICE, language = D
   // rate limits (429) and transient 5xx before handing off to the fallback engine.
   const tryFish = async (chunkPath, text) => {
     if (!FISH_API_KEY) { logLine('fish: FISH_API_KEY not set (env FISH_API_KEY or pipeline/fish_apikey.txt)'); return false; }
-    const referenceId = TTS_FISH_REFERENCES[voice] || FISH_TTS_REFERENCE_ID;
+    const referenceId = fishReferenceId(voice, language);
     for (let attempt = 1; attempt <= 3; attempt++) {
       const body = { text: String(text), reference_id: referenceId, format: 'mp3' };
       // Fish Audio understands ISO language codes; only needed for non-English narration.
@@ -2766,7 +2857,22 @@ async function combineFilm(frames, ratio = '16:9', narrationMode = 'tts', opts =
     if (fs.existsSync(vf)) {
       sourceVideo = vf;
     } else {
-      const img = frameFile(f.frame);
+      let img = frameFile(f.frame);
+      // LAST-RESORT BLANK GUARD: the frame has neither video nor image (all render
+      // attempts failed). Instead of skipping the frame — a blank hole in the film —
+      // generate a simple on-model still from the frame summary and use that.
+      if (!fs.existsSync(img)) {
+        logLine(`frame ${f.frame}: no video AND no image — generating emergency fallback still`);
+        const essPrompt = `cinematic film still of ${f.summary || f.image_prompt?.slice(0, 200) || 'the scene'}${(f.characters_present || []).length ? `, featuring ${f.characters_present.join(' and ')}` : ''}, dramatic lighting, ${ratio}`;
+        try {
+          const q = `${imageEndpoint('nano-banana')}?prompt=${encodeURIComponent(sanitizeImagePrompt(essPrompt))}&model=nano-banana&ratio=${encodeURIComponent(ratio)}`;
+          const task = await submitTask(q);
+          if (task) {
+            const url = await waitTask(task, 10);
+            if (url) await download(url, img);
+          }
+        } catch (e) { logLine(`frame ${f.frame}: emergency image failed: ${e.message}`); }
+      }
       if (fs.existsSync(img)) {
         logLine(`frame ${f.frame}: no video${f.animation_prompt ? ' (all render attempts failed)' : ' (no animation prompt)'}, using still image`);
         // Still image → normalized video with silent audio
@@ -3199,6 +3305,10 @@ async function initAuthStore() {
           id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, name TEXT NOT NULL,
           pass_hash TEXT NOT NULL, created_at BIGINT NOT NULL
         )`);
+        // Credits / trial columns — added lazily so existing deployments get them
+        // without a manual migration (ADD COLUMN IF NOT EXISTS is no-op once present).
+        await authPool.query(`ALTER TABLE sb_users ADD COLUMN IF NOT EXISTS credits INT NOT NULL DEFAULT 0`);
+        await authPool.query(`ALTER TABLE sb_users ADD COLUMN IF NOT EXISTS plan TEXT NOT NULL DEFAULT 'trial'`);
         await authPool.query(`CREATE TABLE IF NOT EXISTS sb_sessions (
           token TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires_at BIGINT NOT NULL
         )`);
@@ -3243,6 +3353,95 @@ async function findUserByEmail(email) {
   return users.find(u => u.email === e) || null;
 }
 
+// ================================ CREDITS / TRIAL ================================
+// Every new account gets a one-time trial allowance (TRIAL_CREDITS) — enough to
+// generate roughly ONE short (~30s) film end-to-end. After that, generation
+// routes refuse with 402 'out of credits' until an admin grants more (real
+// billing plugs into the same chargeCredits / grantCredits seam later).
+const TRIAL_CREDITS = 60;             // ≈ one 30s film: storyboard(0) + images(15) + videos(30) + narration/combine(0)
+const CREDIT_COSTS = {
+  // video seconds are the base unit — 1 credit ≈ 1s of generated motion
+  videosPerSec: 1,
+  imagesPerSec: 0.5,
+  flashloopI2I: 15,                  // one 15s scene first-frame image
+  influencerImage: 3,
+  influencerRefs: 3,                 // per portrait, but capped inside the handler
+  influencerVideo: 6,
+  influencerAutoCreate: 30,
+  generateFromTrend: 30,
+  trendPrompts: 10,
+  flashloopScript: 5                 // multi-scene LLM script (cheap but real)
+};
+
+async function loadUserMeta(userId) {
+  await initAuthStore();
+  if (authMode === 'pg') {
+    const r = await authPool.query('SELECT credits, plan FROM sb_users WHERE id = $1', [userId]);
+    if (!r.rows[0]) return { credits: 0, plan: 'trial' };
+    return { credits: Number(r.rows[0].credits) || 0, plan: r.rows[0].plan || 'trial' };
+  }
+  const users = await readJson(USERS_FILE) || [];
+  const u = users.find(x => x.id === userId);
+  if (!u) return { credits: 0, plan: 'trial' };
+  // Backfill older file users that predate the credits field.
+  if (typeof u.credits !== 'number') { u.credits = TRIAL_CREDITS; u.plan = u.plan || 'trial'; await writeJson(USERS_FILE, users); }
+  return { credits: Number(u.credits) || 0, plan: u.plan || 'trial' };
+}
+
+// Atomically check + decrement credits. Returns {ok, remaining} — ok:false when
+// the balance is too low (caller must abort BEFORE doing any generation work).
+// Idempotent-ish: on failure nothing is debited.
+async function chargeCredits(userId, amount) {
+  await initAuthStore();
+  const amt = Math.max(0, Math.round(Number(amount) || 0));
+  if (amt === 0) return { ok: true, remaining: (await loadUserMeta(userId)).credits };
+  if (authMode === 'pg') {
+    const r = await authPool.query(
+      'UPDATE sb_users SET credits = credits - $1 WHERE id = $2 AND credits >= $1 RETURNING credits',
+      [amt, userId]);
+    if (!r.rows.length) return { ok: false, remaining: (await loadUserMeta(userId)).credits };
+    return { ok: true, remaining: Number(r.rows[0].credits) || 0 };
+  }
+  // file mode — best-effort atomic via read-modify-write (single local user, fine)
+  const users = await readJson(USERS_FILE) || [];
+  const u = users.find(x => x.id === userId);
+  if (!u) return { ok: false, remaining: 0 };
+  if (typeof u.credits !== 'number') { u.credits = TRIAL_CREDITS; u.plan = u.plan || 'trial'; }
+  if (u.credits < amt) return { ok: false, remaining: u.credits };
+  u.credits -= amt;
+  await writeJson(USERS_FILE, users);
+  return { ok: true, remaining: u.credits };
+}
+
+// Refund credits (e.g. when a pre-charged async pipeline aborts before working).
+async function refundCredits(userId, amount) {
+  await initAuthStore();
+  const amt = Math.max(0, Math.round(Number(amount) || 0));
+  if (amt === 0) return;
+  if (authMode === 'pg') {
+    await authPool.query('UPDATE sb_users SET credits = credits + $1 WHERE id = $2', [amt, userId]).catch(() => {});
+    return;
+  }
+  const users = await readJson(USERS_FILE) || [];
+  const u = users.find(x => x.id === userId);
+  if (u) { if (typeof u.credits !== 'number') u.credits = 0; u.credits += amt; await writeJson(USERS_FILE, users); }
+}
+
+// Admin grant (no real billing yet — operator grants credits manually via
+// POST /api/admin/topup with the ADMIN_TOPUP_SECRET).
+async function grantCredits(userId, amount) {
+  await initAuthStore();
+  const amt = Math.max(0, Math.round(Number(amount) || 0));
+  if (authMode === 'pg') {
+    await authPool.query('UPDATE sb_users SET credits = credits + $1 WHERE id = $2', [amt, userId]).catch(() => {});
+    return loadUserMeta(userId);
+  }
+  const users = await readJson(USERS_FILE) || [];
+  const u = users.find(x => x.id === userId);
+  if (u) { if (typeof u.credits !== 'number') u.credits = 0; u.credits += amt; await writeJson(USERS_FILE, users); return loadUserMeta(userId); }
+  return { credits: 0, plan: 'trial' };
+}
+
 async function createUser(email, name, password) {
   await initAuthStore();
   const e = String(email || '').toLowerCase().trim();
@@ -3250,11 +3449,13 @@ async function createUser(email, name, password) {
     id: crypto.randomBytes(16).toString('hex'),
     email: e, name: String(name || '').trim(),
     pass_hash: await hashPassword(password),
-    created_at: Date.now()
+    created_at: Date.now(),
+    credits: TRIAL_CREDITS,
+    plan: 'trial'
   };
   if (authMode === 'pg') {
-    await authPool.query('INSERT INTO sb_users (id, email, name, pass_hash, created_at) VALUES ($1,$2,$3,$4,$5)',
-      [user.id, e, user.name, user.pass_hash, user.created_at]);
+    await authPool.query('INSERT INTO sb_users (id, email, name, pass_hash, created_at, credits, plan) VALUES ($1,$2,$3,$4,$5,$6,$7)',
+      [user.id, e, user.name, user.pass_hash, user.created_at, TRIAL_CREDITS, 'trial']);
   } else {
     const users = await readJson(USERS_FILE) || [];
     users.push(user);
@@ -3352,11 +3553,30 @@ async function requirePageAuth(req, res) {
   return user;
 }
 
-// Reject API calls without a valid session (returns 401).
+// Reject API calls without a valid session (returns 401). Also attaches the
+// user's current credit balance + plan to req.user so the request can be gated
+// downstream.
 async function requireApiAuth(req, res) {
   const user = await getUserBySessionToken(readCookie(req, AUTH_COOKIE));
   if (!user) { sendJson(res, 401, { error: 'auth required' }); return null; }
+  try { const meta = await loadUserMeta(user.id); user.credits = meta.credits; user.plan = meta.plan; } catch (e) { user.credits = 0; user.plan = 'trial'; }
   return user;
+}
+
+// Charge `amount` credits to req.user. Aborts the request with 402 if the
+// balance is too low. Returns true when the debit succeeded (caller proceeds),
+// false when it sent the 402 and the caller should `return`.
+async function requireCredits(req, res, amount, label) {
+  const { ok, remaining } = await chargeCredits(req.user.id, amount);
+  if (ok) { req.user.credits = remaining; return true; }
+  req.user.credits = remaining;
+  const need = Math.max(0, Math.round(Number(amount) || 0));
+  sendJson(res, 402, {
+    error: `Out of credits — this action needs ${need} but you have ${remaining} left. Your free trial covers one ~30s film. Contact support to top up.`,
+    credits: remaining, needed: need, label: label || '',
+    outOfCredits: true
+  });
+  return false;
 }
 
 // API clients can also authenticate with `Authorization: Bearer <token>` (the browser
@@ -3451,11 +3671,28 @@ const requestHandler = async (req, res) => {
     if (p === '/api/health' || p === '/api/ping') return sendJson(res, 200, { ok: true, vercel: IS_VERCEL, path: p, url: rawUrl, hasKey: !!API_KEY });
     if (p === '/api/models') return sendJson(res, 200, { chat: MODELS, image: IMAGE_MODELS, video: VIDEO_MODELS, voices: VOICES, languages: LANGUAGES, narrationModes: NARRATION_MODES, narrationEngines: NARRATION_ENGINES, styles: STYLE_KEYS.map(k => ({ key: k, label: STYLES[k].label })) });
 
+    // --- CREDITS ---
+    if (p === '/api/credits' && req.method === 'GET') {
+      const meta = await loadUserMeta(req.user.id);
+      return sendJson(res, 200, { credits: meta.credits, plan: meta.plan, trialCredits: TRIAL_CREDITS });
+    }
+    // Operator-only manual grant (real billing plugs in here later). Requires the
+    // ADMIN_TOPUP_SECRET env var (defaults to a local dev string).
+    if (p === '/api/admin/topup' && req.method === 'POST') {
+      const adminSecret = process.env.ADMIN_TOPUP_SECRET || 'sb-local-admin';
+      if ((req.headers['x-admin-secret'] || '') !== adminSecret) return sendJson(res, 403, { error: 'forbidden' });
+      const { userId, amount } = await readBody(req);
+      if (!userId || !Number(amount)) return sendJson(res, 400, { error: 'userId + amount required' });
+      const meta = await grantCredits(String(userId), Number(amount));
+      return sendJson(res, 200, { ok: true, ...meta });
+    }
+
     // --- AUTH ---
     if (p === '/api/auth/me' && req.method === 'GET') {
       const user = await getUserBySessionToken(readCookie(req, AUTH_COOKIE)) || (await getUserBySessionToken(bearerToken(req)));
       if (!user) return sendJson(res, 401, { error: 'not logged in' });
-      return sendJson(res, 200, { user });
+      const meta = await loadUserMeta(user.id);
+      return sendJson(res, 200, { user: { id: user.id, email: user.email, name: user.name, credits: meta.credits, plan: meta.plan, trialCredits: TRIAL_CREDITS } });
     }
     if (p === '/api/auth/signup' && req.method === 'POST') {
       const b = await readBody(req).catch(() => ({}));
@@ -3579,6 +3816,11 @@ const requestHandler = async (req, res) => {
       const narrationMode = body.narrationMode || DEFAULT_NARRATION_MODE;
       const language = body.language || DEFAULT_LANGUAGE;
       const secPerFrame = Number(body.clipDuration) || 6;
+      // Pre-charge the whole pipeline up front (storyboard is free; images +
+      // videos make up the bulk). Refunded if the pipeline aborts at storyboard.
+      const pipelineCost = Math.ceil(targetDuration * (CREDIT_COSTS.imagesPerSec + CREDIT_COSTS.videosPerSec));
+      if (!(await requireCredits(req, res, pipelineCost, 'create full film'))) return;
+      const chargedAmount = pipelineCost;
       (async () => {
         let characters = [], frames = [];
         try {
@@ -3590,7 +3832,7 @@ const requestHandler = async (req, res) => {
           characters = sb.characters; frames = sb.frames;
           job.done = 1; job.ok = 1;
           logLine(`auto pipeline: storyboard ready — ${characters.length} characters, ${frames.length} frames`);
-        } catch (e) { logLine(`auto pipeline FAILED at storyboard: ${e.message}`); job.phase = 'idle'; return; }
+        } catch (e) { logLine(`auto pipeline FAILED at storyboard: ${e.message}`); await refundCredits(req.user.id, chargedAmount); job.phase = 'idle'; return; }
 
         // If prompt-vocalized mode: embed narration into video animation prompts
         let videoFrames = frames;
@@ -3665,8 +3907,19 @@ const requestHandler = async (req, res) => {
         frames = frames.filter(f => wanted.has(f.frame));
         for (const f of frames) { try { fs.unlinkSync(frameFile(f.frame)); } catch {} }
       }
+      // Credit gate: ~1 image per second of footage (imagesPerSec).
+      const imgCost = Math.max(1, Math.round(frames.reduce((s, f) => s + (f.duration_sec || 6), 0) * CREDIT_COSTS.imagesPerSec));
+      if (!(await requireCredits(req, res, imgCost, 'generate images'))) return;
       const { chars } = await storyDataFrom(body);
-      if (IS_VERCEL) return runJobOnVercel(res, async () => { await generateImages(frames, body.imageModel || IMAGE_MODELS[0], body.ratio || '16:9', body.style || 'cinematic', body.consistency !== false, chars); job.phase = 'idle'; });
+      if (IS_VERCEL) return runJobOnVercel(res, async () => {
+        await generateImages(frames, body.imageModel || IMAGE_MODELS[0], body.ratio || '16:9', body.style || 'cinematic', body.consistency !== false, chars);
+        job.phase = 'idle';
+        // Truth-check: only claim success for frames whose PNG actually landed on
+        // disk — report the rest as `failed` so the client retries them.
+        const failed = frames.map(f => f.frame).filter(n => !fs.existsSync(frameFile(n)));
+        if (failed.length) return sendJson(res, 200, { ok: false, failed });
+        return sendJson(res, 200, { ok: true });
+      });
       generateImages(frames, body.imageModel || IMAGE_MODELS[0], body.ratio || '16:9', body.style || 'cinematic', body.consistency !== false, chars).catch(e => { logLine(`images crash: ${e.message}`); job.phase = 'idle'; });
       return sendJson(res, 202, { started: true, count: frames.length });
     }
@@ -3689,6 +3942,9 @@ const requestHandler = async (req, res) => {
       // the client tracks the anchor across calls and passes it along explicitly.
       if (body.chainAnchor && isPartial) { for (const f of frames) f._chainAnchor = String(body.chainAnchor); }
       if (body.force) { for (const f of frames) { if (f.animation_prompt) { try { fs.unlinkSync(videoFile(f.frame)); } catch {} } } }
+      // Credit gate: 1 credit per second of generated motion (videosPerSec).
+      const vidCost = Math.max(1, Math.round(frames.reduce((s, f) => s + (f.duration_sec || 6), 0) * CREDIT_COSTS.videosPerSec));
+      if (!(await requireCredits(req, res, vidCost, 'generate videos'))) return;
       if (IS_VERCEL) {
         // On Vercel the client renders ONE frame per request (each request fits the
         // 300s function budget). Return the rendered frame (incl. chain_image_url for
@@ -3803,6 +4059,8 @@ const requestHandler = async (req, res) => {
       const body = await readBody(req);
       const { profile, model } = body;
       if (!profile || !profile.name) return sendJson(res, 400, { error: 'profile.name required' });
+      // Credit gate: LLM description expansion (cheap but real).
+      if (!(await requireCredits(req, res, 1, 'expand profile'))) return;
       inflSetPhase('infl-expand', 1);
       inflLogLine(`expanding character description for "${profile.name}"`);
       if (IS_VERCEL) return runJobOnVercel(res, async () => {
@@ -3839,6 +4097,8 @@ const requestHandler = async (req, res) => {
       const infl = await findInfluencer(body.id);
       if (!infl) return sendJson(res, 404, { error: 'not found' });
       if (!infl.description) return sendJson(res, 400, { error: 'no description — expand profile first' });
+      // Credit gate: 4 character reference portraits.
+      if (!(await requireCredits(req, res, CREDIT_COSTS.influencerRefs, 'generate refs'))) return;
       if (body.force) { for (let i = 1; i <= 4; i++) { try { fs.unlinkSync(inflRefFile(body.id, i)); } catch {} } infl.refs = []; }
       if (IS_VERCEL) return runJobOnVercel(res, async () => { await generateInfluencerRefs(infl); inflJob.phase = 'idle'; });
       generateInfluencerRefs(infl).catch(e => { inflLogLine(`infl-refs crash: ${e.message}`); inflJob.phase = 'idle'; });
@@ -3885,6 +4145,8 @@ const requestHandler = async (req, res) => {
       const infl = await findInfluencer(body.id);
       if (!infl) return sendJson(res, 404, { error: 'not found' });
       if (!infl.description) return sendJson(res, 400, { error: 'no description' });
+      // Credit gate: one content image.
+      if (!(await requireCredits(req, res, CREDIT_COSTS.influencerImage, 'generate image'))) return;
       const refUrl = body.refUrl || await resolveInfluencerRefUrl(infl);
       if (IS_VERCEL) return runJobOnVercel(res, async () => {
         if (refUrl) { await generateInfluencerContentImg2Img(infl, refUrl, body.prompt, body.style || 'realistic', body.ratio || '1:1', body.imageModel || IMAGE_MODELS[0]); }
@@ -3933,6 +4195,8 @@ const requestHandler = async (req, res) => {
       if (!body.id || !body.contentId) return sendJson(res, 400, { error: 'id and contentId required' });
       const infl = await findInfluencer(body.id);
       if (!infl) return sendJson(res, 404, { error: 'not found' });
+      // Credit gate: one influencer video render.
+      if (!(await requireCredits(req, res, CREDIT_COSTS.influencerVideo, 'generate video'))) return;
       if (IS_VERCEL) return runJobOnVercel(res, async () => { await generateInfluencerVideo(infl, body.contentId, body.ratio || '1:1', 6, body.videoPrompt || ''); inflJob.phase = 'idle'; });
       generateInfluencerVideo(infl, body.contentId, body.ratio || '1:1', 6, body.videoPrompt || '').catch(e => { inflLogLine(`infl-video crash: ${e.message}`); inflJob.phase = 'idle'; });
       return sendJson(res, 202, { started: true });
@@ -3945,6 +4209,8 @@ const requestHandler = async (req, res) => {
       if (!body.id) return sendJson(res, 400, { error: 'id required' });
       const infl = await findInfluencer(body.id);
       if (!infl) return sendJson(res, 404, { error: 'not found' });
+      // Credit gate (pre-charged for the whole auto pipeline: desc + 4 refs + image + video).
+      if (!(await requireCredits(req, res, CREDIT_COSTS.influencerAutoCreate, 'auto-create influencer'))) return;
       const style = body.style || 'realistic';
       const ratio = body.ratio || '1:1';
       const imageModel = body.imageModel || IMAGE_MODELS[0];
@@ -4537,6 +4803,8 @@ Return ONLY a JSON object:
         if (!effectName) return sendJson(res, 400, { error: 'effect name or slug required' });
         const selectedModel = MODELS.includes(model) ? model : 'gpt-5.5';
         const refs = Array.isArray(references) ? references.filter(r => r && String(r.name || '').trim()) : [];
+        // Credit gate: writing a full multi-scene script is a real multi-LLM call.
+        if (!(await requireCredits(req, res, CREDIT_COSTS.flashloopScript, 'generate script'))) return;
         // sceneDuration = seconds per scene (15 → 8 scenes, 30 → 4 scenes); falls
         // back to `duration` for older clients.
         const perScene = Number(sceneDuration) || Number(duration) || 15;
@@ -4551,6 +4819,8 @@ Return ONLY a JSON object:
         const body = await readBody(req);
         const { prompt = '', refImageUrl = '', ratio = '9:16', model = 'seedream-5', trendName = '', tagline = '' } = body || {};
         if (!prompt) return sendJson(res, 400, { error: 'prompt required' });
+        // Credit gate: one first-frame image render.
+        if (!(await requireCredits(req, res, CREDIT_COSTS.flashloopI2I, 'generate image'))) return;
 
         // Respect the selected image model; fall back to seedream-5 if invalid
         const selectedModel = (model && IMAGE_MODELS.includes(model)) ? model : 'seedream-5';
@@ -4816,6 +5086,8 @@ Return ONLY a JSON object:
       const body = await readBody(req);
       const { id, activity = '', idea = '', ratio = '1:1', model = 'gemini-2.5-pro' } = body || {};
       if (!id) return sendJson(res, 400, { error: 'influencer id required' });
+      // Credit gate: two LLM prompt generations (cheap but real).
+      if (!(await requireCredits(req, res, 2, 'generate prompts'))) return;
 
       const randomActivities = [
         'morning skincare routine in bathroom mirror — applying moisturizer and serum, natural window light, messy bun hair, cozy robe',
@@ -5054,6 +5326,8 @@ AI motion, robotic movement, jitter, morphing face, frozen smile, bad lip-sync, 
       const platform = body.platform || 'tiktok';
       const videoUrl = body.videoUrl || '';
       if (!caption && !body.cover && !videoUrl) return sendJson(res, 400, { error: 'No trend data provided' });
+      // Credit gate: video analysis (yt-dlp + multi Gemini vision) + prompt gen.
+      if (!(await requireCredits(req, res, CREDIT_COSTS.trendPrompts, 'analyze trend video'))) return;
 
       try {
         // 1. Analyze the actual video if URL is available
@@ -5193,6 +5467,8 @@ Return ONLY valid JSON: {"imgPrompt":"...","vidPrompt":"..."}
       if (!body.id) return sendJson(res, 400, { error: 'influencer id required' });
       const infl = await findInfluencer(body.id);
       if (!infl) return sendJson(res, 404, { error: 'influencer not found' });
+      // Credit gate (pre-charged: tavily + vision analysis + scene LLM + image + video).
+      if (!(await requireCredits(req, res, CREDIT_COSTS.generateFromTrend, 'generate from trend'))) return;
       const style = body.style || 'realistic';
       const ratio = body.ratio || '1:1';
       const imageModel = body.imageModel || IMAGE_MODELS[0];

@@ -406,6 +406,10 @@
     </div>
   </div>
 
+  <div id="trialBanner" style="display:none;margin-bottom:var(--space-md);padding:var(--space-sm) var(--space-md);background:linear-gradient(135deg,rgba(56,189,248,.08),rgba(16,185,129,.06));border:1px solid rgba(56,189,248,.25);border-radius:var(--radius-md);text-align:center;font-size:var(--font-body);color:var(--txt-dim);transition:all .2s">
+    <strong style="color:var(--accent-bright)">Free Trial Active</strong> — you have <strong id="trialCredits">60</strong> generation credits (≈ one 30s film). <span id="trialLow" style="display:none;color:var(--rose)">Running low — top up to keep creating.</span>
+  </div>
+
   <div class="tools-grid">
     <a class="tool-card c1" href="/storyboard">
       <div class="tool-icon">🎬</div>
@@ -473,6 +477,11 @@ async function init(){
       $('userName').textContent=j.user.name||j.user.email;
       $('btnLogout').style.display='';
       $('statusText').textContent='LOGGED IN';
+      // Trial banner + remaining credits
+      const credits=j.user.credits!=null?j.user.credits:j.user.trialCredits||0;
+      const tc=$('trialCredits');
+      if(tc){tc.textContent=credits;$('trialBanner').style.display='';if(credits<=10)$('trialLow').style.display='inline';if(credits<=0)$('statusText').textContent='NO CREDITS';}
+      const cp=document.createElement('div');cp.className='status-pill user-pill';cp.innerHTML='⚡ '+credits+' credits';document.querySelector('.header-actions').insertBefore(cp,$('btnLogout'));
     }
   }catch(e){}
 }
