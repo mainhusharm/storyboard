@@ -604,7 +604,8 @@ let SUBMITTING=false;
     const r=await api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     if(r&&r.error)alert(r.error);
     return r;
-  } finally { SUBMITTING=false; refreshCredits(); }
+  } catch(e) { alert('Error: '+e.message); return null; }
+  finally { SUBMITTING=false; refreshCredits(); }
 }
 
 $('btnStoryboard').onclick=async()=>{
@@ -631,12 +632,13 @@ $('btnAuto').onclick=async()=>{
     script,model:$('chatModel').value,duration:Number($('duration').value),look:$('look').value,
     style:$('style').value,imageModel:$('imageModel').value,videoModel:$('videoModel').value,ratio:$('ratio').value,
     voice:$('voice').value,consistency:$('consistency').checked,language:$('language').value,narrationMode:$('narrationMode').value,narrationEngine:$('narrationEngine').value,narrVolume:Number($('narrVolume').value),origVolume:Number($('origVolume').value),chainContinuity:$('chainContinuity').checked,clipDuration:Number($('clipDuration').value)
-  })});
+  })}).catch(e=>{alert('Error: '+e.message);return{error:e.message}});
   if(r.error)alert(r.error);
 };
 $('btnCharRefs').onclick=async()=>{const r=await postJob('/char-refs',sbPayload({imageModel:$('imageModel').value,style:$('style').value,force:true}));if(r&&r.characters){CHARS=r.characters;try{localStorage.setItem('sb_chars',JSON.stringify(CHARS))}catch(e){}}};
 $('btnImages').onclick=async()=>{
   const frameNumbers=FRAMES.map(f=>f.frame);
+  if(!frameNumbers.length) return alert('Generate a storyboard first.');
   await postJob('/images',sbPayload({frames:frameNumbers,imageModel:$('imageModel').value,ratio:$('ratio').value,style:$('style').value,consistency:$('consistency').checked}));
 };
 // On Vercel, render videos ONE FRAME PER REQUEST — a serverless invocation dies at

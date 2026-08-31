@@ -3401,9 +3401,18 @@ async function loadUserMeta(userId) {
     if (!r.rows[0]) return { credits: 0, plan: 'trial' };
     return { credits: Number(r.rows[0].credits) || 0, plan: r.rows[0].plan || 'trial' };
   }
+  // FILE MODE on Vercel: /tmp/users.json is per-instance and wiped on cold
+  // starts, so a user who signed up on instance A is INVISIBLE on instance B —
+  // loadUserMeta returned 0 credits and every gated route 402'd, freezing the
+  // app after the storyboard phase. Fix: a missing user in file mode gets the
+  // fresh trial allowance (stateless tokens carry identity; the store can be
+  // rebuilt). This is permissive but never blocks a paying flow incorrectly.
   const users = await readJson(USERS_FILE) || [];
   const u = users.find(x => x.id === userId);
-  if (!u) return { credits: 0, plan: 'trial' };
+  if (!u) {
+    if (IS_VERCEL) return { credits: TRIAL_CREDITS, plan: 'trial' };
+    return { credits: 0, plan: 'trial' };
+  }
   // Backfill older file users that predate the credits field.
   if (typeof u.credits !== 'number') { u.credits = TRIAL_CREDITS; u.plan = u.plan || 'trial'; await writeJson(USERS_FILE, users); }
   return { credits: Number(u.credits) || 0, plan: u.plan || 'trial' };
@@ -3423,10 +3432,17 @@ async function chargeCredits(userId, amount) {
     if (!r.rows.length) return { ok: false, remaining: (await loadUserMeta(userId)).credits };
     return { ok: true, remaining: Number(r.rows[0].credits) || 0 };
   }
-  // file mode — best-effort atomic via read-modify-write (single local user, fine)
+  // FILE MODE on Vercel: user may legitimately be missing from this instance's
+  // /tmp users.json (see loadUserMeta). Allow the charge and re-seed the record
+  // locally so the balance tracks from here on.
   const users = await readJson(USERS_FILE) || [];
-  const u = users.find(x => x.id === userId);
-  if (!u) return { ok: false, remaining: 0 };
+  let u = users.find(x => x.id === userId);
+  if (!u) {
+    if (IS_VERCEL) {
+      u = { id: userId, credits: TRIAL_CREDITS, plan: 'trial' };
+      users.push(u);
+    } else return { ok: false, remaining: 0 };
+  }
   if (typeof u.credits !== 'number') { u.credits = TRIAL_CREDITS; u.plan = u.plan || 'trial'; }
   if (u.credits < amt) return { ok: false, remaining: u.credits };
   u.credits -= amt;
