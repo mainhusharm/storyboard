@@ -1776,13 +1776,25 @@ async function generateStoryboard(script, model, targetDuration = 120, look = ''
   }
   if (!characters.length) throw new Error('all models failed for characters');
 
-  characters = characters.filter(c => c.description).map((c, i) => ({
-    id: c.id || `Character ${String.fromCharCode(65 + i)}`,
-    name: c.name || `Character ${String.fromCharCode(65 + i)}`,
-    age: c.age || null,
-    description: c.description,
-    reference_prompt: c.reference_prompt || `character portrait of ${c.description}, waist-up 3/4 view, neutral background, soft directional key light, 85mm portrait lens`
-  }));
+  characters = characters
+    // Keep characters even when the model omitted `description` — synthesize one
+    // from the other fields. Previously dropping them silently produced boards
+    // with 0 characters, which then failed char-refs with a confusing 400.
+    .map((c, i) => {
+      const description = (typeof c.description === 'string' && c.description.trim())
+        ? c.description.trim()
+        : [c.name, c.age ? `${c.age} years old` : '', c.appearance, c.clothing, c.personality]
+            .filter(Boolean).map(s => String(s).trim()).filter(Boolean).join(', ')
+            || `${c.name || 'Character'} — a key figure in the story`;
+      return {
+        id: c.id || `Character ${String.fromCharCode(65 + i)}`,
+        name: c.name || `Character ${String.fromCharCode(65 + i)}`,
+        age: c.age || null,
+        description,
+        reference_prompt: c.reference_prompt || `character portrait of ${description}, waist-up 3/4 view, neutral background, soft directional key light, 85mm portrait lens`
+      };
+    });
+  if (!characters.length) throw new Error('all models failed for characters');
   logLine(`phase 1 done: ${characters.length} characters locked (model: ${charModel})`);
   await writeJson(CHARS_JSON, characters);
 
@@ -3820,21 +3832,21 @@ const requestHandler = async (req, res) => {
       const targetDuration = Math.max(10, Math.min(600, Number(duration) || 120));
       const secPerFrame = Number(clipDuration) || 6;
       setPhase('storyboard', 1); logLine(`storyboard generation: ${model || MODELS[0]} — target ${targetDuration}s — ${secPerFrame}s per clip — style: ${STYLES[style]?.label || 'Cinematic'} — language: ${LANGUAGES.find(l => l.id === language)?.label || 'English'}`);
-      if (IS_VERCEL) return (async () => {
-        try {
-          const { characters, frames } = await generateStoryboard(script, model || MODELS[0], targetDuration, look || '', language || DEFAULT_LANGUAGE, secPerFrame, style);
-          job.ok = 1; job.done = 1;
-          const totalDur = frames.reduce((s, f) => s + (f.duration_sec || 0), 0);
-          logLine(`storyboard ready: ${characters.length} characters, ${frames.length} frames (${totalDur}s total)`);
-          job.phase = 'idle';
-          // Return the storyboard inline — on Vercel the /tmp files may not survive
-          // an instance switch, so the client renders this directly + keeps a copy.
-          return sendJson(res, 200, { ok: true, characters, frames });
-        } catch (e) {
-          job.phase = 'idle';
-          return sendJson(res, 500, { error: String(e.message || e) });
-        }
-      })();
+  if (IS_VERCEL) return (async () => {
+    try {
+      const { characters, frames } = await generateStoryboard(script, model || MODELS[0], targetDuration, look || '', language || DEFAULT_LANGUAGE, secPerFrame, style);
+      job.ok = 1; job.done = 1;
+      const totalDur = frames.reduce((s, f) => s + (f.duration_sec || 0), 0);
+      logLine(`storyboard ready: ${characters.length} characters, ${frames.length} frames (${totalDur}s total)`);
+      job.phase = 'idle';
+      // Vercel: also persist to /tmp so /api/frames can serve status; client also
+      // gets the payload inline (surviving instance switches).
+      return sendJson(res, 200, { ok: true, characters, frames });
+    } catch (e) {
+      job.phase = 'idle';
+      return sendJson(res, 500, { error: String(e.message || e) });
+    }
+  })();
       (async () => {
         try {
           const { characters, frames } = await generateStoryboard(script, model || MODELS[0], targetDuration, look || '', language || DEFAULT_LANGUAGE, secPerFrame, style);
