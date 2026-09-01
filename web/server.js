@@ -1386,7 +1386,10 @@ async function chatCompletion(model, messages, maxTokens = 16384, temperature = 
   const cappedTokens = IS_VERCEL ? Math.min(maxTokens, 12000) : maxTokens;
   const body = { model, messages, temperature, max_tokens: cappedTokens, stream: false };
   const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), IS_VERCEL ? 250000 : 120000);
+  // Vercel: cap each LLM call at 100s. A model silent for 100s is effectively
+  // dead — waiting 250s meant a single slow model burned the whole 300s function
+  // budget and the request timed out mid-storyboard ("phase 1/6 stuck").
+  const timer = setTimeout(() => ac.abort(), IS_VERCEL ? 100000 : 120000);
   let raw = '';
   try {
     const res = await fetch(`${API}/v1/chat/completions`, {
@@ -1725,6 +1728,12 @@ async function generateStoryboard(script, model, targetDuration = 120, look = ''
   // model returning malformed JSON used to kill the whole storyboard phase
   // ("no valid characters JSON, next" → nothing next → "all models failed").
   const modelsToTry = [model, 'gemini-2.5-pro', 'deepseek-v3.2'].filter((m, i, a) => m && a.indexOf(m) === i);
+  // Vercel deadline: the whole storyboard (2 phases × retries) must fit inside
+  // the 300s function budget with margin. Once past the deadline, stop trying
+  // new models and fail fast instead of letting Vercel kill the function
+  // mid-phase (the request then hangs with no response — "stuck at storyboard").
+  const sbDeadline = IS_VERCEL ? Date.now() + 240000 : Infinity;
+  const outOfTime = () => Date.now() > sbDeadline;
   const lookBlock = look && look.trim()
     ? `\n\nDIRECTOR'S CREATIVE DIRECTION (MANDATORY — the entire film must match this look):\n${look.trim()}`
     : '';
@@ -1758,6 +1767,7 @@ async function generateStoryboard(script, model, targetDuration = 120, look = ''
   let characters = [], charModel = model;
   for (const m of modelsToTry) {
     if (job.cancelRequested) { logLine('storyboard cancelled by user'); return { characters: [], frames: [] }; }
+    if (outOfTime()) { logLine('storyboard: Vercel time budget exhausted during characters — aborting model chain'); break; }
     try {
       let rawContent = await chatCompletion(m, charMsgs);
       if (!rawContent) { logLine(`${m}: empty response, next`); continue; }
@@ -1765,7 +1775,7 @@ async function generateStoryboard(script, model, targetDuration = 120, look = ''
       let found = Array.isArray(parsed?.characters) ? parsed.characters : [];
       // One strict re-ask on the SAME model when the JSON is unusable — cheaper
       // than burning a fallback model and often fixes fence/prose wrapping.
-      if (!found.length) {
+      if (!found.length && !outOfTime()) {
         logLine(`${m}: characters JSON unusable — re-asking with strict JSON-only instruction`);
         const strictMsgs = [...charMsgs, { role: 'user', content: 'Your previous response was NOT valid JSON. Return ONLY the raw JSON object now — no markdown fences, no explanations, no text before or after. Start with { and end with }.' }];
         rawContent = await chatCompletion(m, strictMsgs);
@@ -1812,6 +1822,7 @@ async function generateStoryboard(script, model, targetDuration = 120, look = ''
   let frames = [], frameModel = model;
   for (const m of modelsToTry) {
     if (job.cancelRequested) { logLine('storyboard cancelled by user'); return { characters: [], frames: [] }; }
+    if (outOfTime()) { logLine('storyboard: Vercel time budget exhausted during frames — aborting model chain'); break; }
     try {
       let rawContent = await chatCompletion(m, frameMsgs);
       if (!rawContent) { logLine(`${m}: empty response, next`); continue; }
@@ -1819,7 +1830,7 @@ async function generateStoryboard(script, model, targetDuration = 120, look = ''
       let found = Array.isArray(parsed?.frames) ? parsed.frames : [];
       if (!found.length && Array.isArray(parsed)) found = parsed;
       // One strict re-ask on the SAME model when the JSON is unusable.
-      if (!found.length) {
+      if (!found.length && !outOfTime()) {
         logLine(`${m}: frames JSON unusable — re-asking with strict JSON-only instruction`);
         const strictMsgs = [...frameMsgs, { role: 'user', content: 'Your previous response was NOT valid JSON. Return ONLY the raw JSON object now — no markdown fences, no explanations, no text before or after. Start with { and end with }.' }];
         rawContent = await chatCompletion(m, strictMsgs);
@@ -3630,6 +3641,10 @@ async function requireCredits(req, res, amount, label) {
   // Local dev is unlimited — the trial/credit system only enforces on Vercel
   // (production). This keeps localhost friction-free for development.
   if (!IS_VERCEL) { req.user.credits = Infinity; return true; }
+  // Owner bypass: ADMIN_EMAILS (comma-separated env) never runs out — the site
+  // operator tests the full pipeline constantly and shouldn't trip their own trial.
+  const admins = (process.env.ADMIN_EMAILS || '').split(',').map(e => e.trim().toLowerCase()).filter(Boolean);
+  if (admins.length && admins.includes((req.user.email || '').toLowerCase())) { req.user.credits = Infinity; return true; }
   const { ok, remaining } = await chargeCredits(req.user.id, amount);
   if (ok) { req.user.credits = remaining; return true; }
   req.user.credits = remaining;
