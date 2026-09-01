@@ -3413,7 +3413,7 @@ async function findUserByEmail(email) {
 // generate roughly ONE short (~30s) film end-to-end. After that, generation
 // routes refuse with 402 'out of credits' until an admin grants more (real
 // billing plugs into the same chargeCredits / grantCredits seam later).
-const TRIAL_CREDITS = 60;             // ≈ one 30s film: storyboard(0) + images(15) + videos(30) + narration/combine(0)
+const TRIAL_CREDITS = Number(process.env.TRIAL_CREDITS || 60); // ≈ one 30s film; operator can raise via env
 const CREDIT_COSTS = {
   // video seconds are the base unit — 1 credit ≈ 1s of generated motion
   videosPerSec: 1,
@@ -3637,14 +3637,31 @@ async function requireApiAuth(req, res) {
 // Charge `amount` credits to req.user. Aborts the request with 402 if the
 // balance is too low. Returns true when the debit succeeded (caller proceeds),
 // false when it sent the 402 and the caller should `return`.
+// True for the site owner: either their email is in ADMIN_EMAILS (comma-separated
+// env), OR they are the FIRST account ever created (owner = whoever signed up first).
+// Owners never hit the credit limiter — the trial model is for new users only.
+async function isOwnerUser(reqUser) {
+  try {
+    const admins = (process.env.ADMIN_EMAILS || '').split(',').map(e => e.trim().toLowerCase()).filter(Boolean);
+    if (admins.length && admins.includes((reqUser.email || '').toLowerCase())) return true;
+    // First-created account = owner
+    if (authMode === 'pg') {
+      const r = await authPool.query('SELECT id FROM sb_users ORDER BY created_at ASC LIMIT 1');
+      return r.rows[0] && r.rows[0].id === reqUser.id;
+    }
+    const users = await readJson(USERS_FILE) || [];
+    if (!users.length) return false;
+    const first = [...users].sort((a, b) => (a.created_at || 0) - (b.created_at || 0))[0];
+    return first && first.id === reqUser.id;
+  } catch (e) { return false; }
+}
+
 async function requireCredits(req, res, amount, label) {
   // Local dev is unlimited — the trial/credit system only enforces on Vercel
   // (production). This keeps localhost friction-free for development.
   if (!IS_VERCEL) { req.user.credits = Infinity; return true; }
-  // Owner bypass: ADMIN_EMAILS (comma-separated env) never runs out — the site
-  // operator tests the full pipeline constantly and shouldn't trip their own trial.
-  const admins = (process.env.ADMIN_EMAILS || '').split(',').map(e => e.trim().toLowerCase()).filter(Boolean);
-  if (admins.length && admins.includes((req.user.email || '').toLowerCase())) { req.user.credits = Infinity; return true; }
+  // Owner bypass: ADMIN_EMAILS env OR first-created account never runs out.
+  if (await isOwnerUser(req.user)) { req.user.credits = Infinity; return true; }
   const { ok, remaining } = await chargeCredits(req.user.id, amount);
   if (ok) { req.user.credits = remaining; return true; }
   req.user.credits = remaining;
