@@ -942,7 +942,11 @@ function parseIsoDuration(dur) {
 // Back-compat wrapper used by older call sites
 for (const d of [FRAMES_DIR, VIDEO_DIR, STORYBOARD_DIR]) fs.mkdirSync(d, { recursive: true });
 
-const MODELS = ['kimi-k3', 'gpt-5.6-sol', 'gpt-5.6-terra', 'claude-opus-4-8', 'qwen3.8-max', 'gemini-3.1-pro', 'kimi-2.7-code', 'glm-5.2', 'mimo-v2.5', 'claude-sonnet-4-5', 'deepseek-v3.2', 'gemini-2.5-pro'];
+// PaxSenix chat models — verified against GET /v1/models (2026-09). The dropdown
+// renders from this list; chatCompletion falls over to gemini-2.5-pro →
+// deepseek-v3.2 when a model 502s/empty-responds, so a "broken" model never kills
+// a storyboard.
+const MODELS = ['gemini-2.5-pro', 'gemini-3.1-pro', 'gemini-3.1-flash-lite', 'gpt-5.5', 'gpt-5', 'gpt-5.2', 'gpt-4.1', 'claude-opus-4-8', 'claude-sonnet-4-5', 'kimi-k3', 'kimi-k2.6', 'glm-5.2', 'glm-5.3', 'deepseek-v3.2', 'deepseek-v4-flash', 'mimo-v2.5', 'qwen3.8-max', 'qwen3.7-plus', 'grok-4.6', 'minimax-m3'];
 const IMAGE_MODELS = ['nano-banana-pro', 'nano-banana', 'nano-banana-2', 'seedream-5', 'seedream-4', 'seedream-4.5', 'grok-imagine-2', 'grok-imagine', 'gpt-image-2'];
 // Grok Imagine is xAI's image model on PaxSenix: GET /ai-image/grok-imagine
 // (text-to-image, params: prompt + ratio) and POST /ai-img2img/grok-imagine
@@ -3868,6 +3872,42 @@ const requestHandler = async (req, res) => {
       const narrationMode = body.narrationMode || DEFAULT_NARRATION_MODE;
       const language = body.language || DEFAULT_LANGUAGE;
       const secPerFrame = Number(body.clipDuration) || 6;
+
+      // ==================== VERCEL AUTO PIPELINE ====================
+      // On Vercel the 202 + background-async pattern DOES NOT WORK: the function
+      // gets killed at 300s and the "auto pipeline" silently stops right after the
+      // storyboard phase (the user's "stuck at storyboard ready" bug). So on Vercel
+      // run the whole pipeline through per-phase synchronous calls inside ONE
+      // request: storyboard → char-refs → images → (return early with
+      // remainingPhase), letting the client drive the remaining phases with the
+      // exact same per-frame /api/* requests the manual buttons use. No background
+      // jobs, no 300s budget blowups.
+      if (IS_VERCEL) {
+        const pipelineCost = Math.ceil(targetDuration * (CREDIT_COSTS.imagesPerSec + CREDIT_COSTS.videosPerSec));
+        if (!(await requireCredits(req, res, pipelineCost, 'create full film'))) return;
+        const chargedAmount = pipelineCost;
+        return (async () => {
+          try {
+            setPhase('storyboard', 1);
+            logLine(`auto pipeline (vercel): storyboard — ${body.model || MODELS[0]} — target ${targetDuration}s — ${secPerFrame}s per clip`);
+            const sb = await generateStoryboard(script, body.model || MODELS[0], targetDuration, body.look || '', language, secPerFrame, body.style);
+            const characters = sb.characters, frames = sb.frames;
+            logLine(`auto pipeline: storyboard ready — ${characters.length} characters, ${frames.length} frames`);
+            job.phase = 'idle';
+            return sendJson(res, 200, {
+              ok: true, phase: 'storyboard-done', characters, frames,
+              remaining: ['char-refs', 'images', 'videos', 'narration', 'combine'],
+              pipelineCost: chargedAmount
+            });
+          } catch (e) {
+            await refundCredits(req.user.id, chargedAmount);
+            job.phase = 'idle';
+            return sendJson(res, 500, { error: String(e.message || e) });
+          }
+        })();
+      }
+
+      // ==================== LOCAL / SELF-HOSTED AUTO PIPELINE ====================
       // Pre-charge the whole pipeline up front (storyboard is free; images +
       // videos make up the bulk). Refunded if the pipeline aborts at storyboard.
       const pipelineCost = Math.ceil(targetDuration * (CREDIT_COSTS.imagesPerSec + CREDIT_COSTS.videosPerSec));

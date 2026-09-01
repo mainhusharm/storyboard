@@ -628,6 +628,7 @@ $('btnAuto').onclick=async()=>{
   if(script.length<10)return alert('Paste a script first.');
   if(!confirm(`Full auto pipeline: archives old renders, then builds storyboard → character refs → images → ${$('narrationMode').value==='tts'?'TTS narration → ':''}videos → final film. Language: ${$('language').selectedOptions[0]?.text||'English'}. This can take 20–60 minutes. Start?`))return;
   if(!(await guardBusy()))return;
+  if(IS_VERCEL_CLIENT) return runAutoVercel(script);
   const r=await api('/run-all',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
     script,model:$('chatModel').value,duration:Number($('duration').value),look:$('look').value,
     style:$('style').value,imageModel:$('imageModel').value,videoModel:$('videoModel').value,ratio:$('ratio').value,
@@ -635,6 +636,74 @@ $('btnAuto').onclick=async()=>{
   })}).catch(e=>{alert('Error: '+e.message);return{error:e.message}});
   if(r.error)alert(r.error);
 };
+// VERCEL AUTO PIPELINE — the whole pipeline must NOT run inside one serverless
+// invocation (300s kill → "stuck at storyboard ready"). Instead the client drives
+// each phase with separate requests, exactly like the manual buttons do:
+// storyboard → char-refs → images → videos (one frame per request) → narration → combine.
+async function runAutoVercel(script){
+  SUBMITTING=true;LOCAL_BUSY=true;LOCAL_LOG=[];poll();
+  const opts={ratio:$('ratio').value,imageModel:$('imageModel').value,videoModel:$('videoModel').value,style:$('style').value,voice:$('voice').value,consistency:$('consistency').checked,language:$('language').value,narrationMode:$('narrationMode').value,narrationEngine:$('narrationEngine').value,narrVolume:Number($('narrVolume').value),origVolume:Number($('origVolume').value),chainContinuity:$('chainContinuity').checked,clipDuration:Number($('clipDuration').value)};
+  try{
+    // ---- Phase 1: storyboard (one request, returns inline) ----
+    logLocal('phase 1/6: storyboard…','');
+    const sb=await api('/run-all',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({script,model:$('chatModel').value,duration:Number($('duration').value),look:$('look').value,...opts})});
+    if(sb.error)throw new Error(sb.error);
+    if(!sb.frames||!sb.frames.length)throw new Error('storyboard returned no frames');
+    CHARS=sb.characters||[];FRAMES=sb.frames||[];OFFLINE_BOARD=true;
+    try{localStorage.setItem('sb_chars',JSON.stringify(CHARS));localStorage.setItem('sb_frames',JSON.stringify(FRAMES))}catch(e){}
+    logLocal(`storyboard ready: ${CHARS.length} characters, ${FRAMES.length} frames`,'ok');
+    await refresh({characters:CHARS,frames:FRAMES});
+
+    // ---- Phase 2: character refs ----
+    if(CHARS.length){
+      logLocal('phase 2/6: character reference portraits…','');
+      const cr=await api('/char-refs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sbPayload({imageModel:opts.imageModel,style:opts.style,force:true}))});
+      if(cr&&cr.characters){CHARS=cr.characters;try{localStorage.setItem('sb_chars',JSON.stringify(CHARS))}catch(e){}}
+      if(cr&&cr.error)logLocal('char-refs: '+cr.error,'err'); else logLocal('char-refs done','ok');
+    }
+
+    // ---- Phase 3: frame images ----
+    logLocal(`phase 3/6: frame images (${FRAMES.length})…`,'');
+    const frameNumbers=FRAMES.map(f=>f.frame);
+    const im=await api('/images',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sbPayload({frames:frameNumbers,imageModel:opts.imageModel,ratio:opts.ratio,style:opts.style,consistency:opts.consistency}))});
+    if(im&&im.error)logLocal('images: '+im.error,'err'); else if(im&&im.failed&&im.failed.length)logLocal('images: '+im.failed.length+' failed — continuing','err'); else logLocal('images done','ok');
+
+    // ---- Phase 4: videos (one frame per request) ----
+    const targets=FRAMES.filter(f=>f.animation_prompt).sort((a,b)=>a.frame-b.frame);
+    logLocal(`phase 4/6: videos (${targets.length})…`,'');
+    let prevChain='';
+    for(let i=0;i<targets.length;i++){
+      const f=targets[i];
+      logLocal(`video ${i+1}/${targets.length}: frame ${f.frame}…`);
+      let j;
+      try{
+        const body=sbPayload({frames:[f.frame],ratio:opts.ratio,videoModel:opts.videoModel,chainContinuity:opts.chainContinuity});
+        if(prevChain)body.chainAnchor=prevChain;
+        j=await api('/videos',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+      }catch(e){j={error:e.message}}
+      if(j&&j.error)logLocal(`frame ${f.frame}: ${j.error}`,'err');
+      else if(j&&j.frame){
+        FRAMES=FRAMES.map(x=>x.frame===f.frame?{...x,...j.frame}:x);
+        if(j.frame.chain_image_url)prevChain=j.frame.chain_image_url;
+        logLocal(`frame ${f.frame}: video done`,'ok');
+      }
+      try{localStorage.setItem('sb_frames',JSON.stringify(FRAMES))}catch(e){}
+    }
+
+    // ---- Phase 5: narration ----
+    if(opts.narrationMode==='tts'){
+      logLocal('phase 5/6: narration TTS…','');
+      const nr=await api('/narration',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sbPayload({voice:opts.voice,language:opts.language,narrationEngine:opts.narrationEngine,narrVolume:opts.narrVolume,origVolume:opts.origVolume,force:true}))});
+      if(nr&&nr.error)logLocal('narration: '+nr.error,'err'); else logLocal('narration done','ok');
+    }
+
+    // ---- Phase 6: combine ----
+    logLocal('phase 6/6: combining final film…','');
+    const cb=await api('/combine',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sbPayload({ratio:opts.ratio,narrationMode:opts.narrationMode,narrVolume:opts.narrVolume,origVolume:opts.origVolume}))});
+    if(cb&&cb.error)logLocal('combine: '+cb.error,'err'); else logLocal('🎬 FINAL FILM READY','ok');
+  }catch(e){logLocal('pipeline failed: '+e.message,'err');alert('Pipeline failed: '+e.message)}
+  finally{SUBMITTING=false;LOCAL_BUSY=false;poll();refresh();refreshCredits()}
+}
 $('btnCharRefs').onclick=async()=>{const r=await postJob('/char-refs',sbPayload({imageModel:$('imageModel').value,style:$('style').value,force:true}));if(r&&r.characters){CHARS=r.characters;try{localStorage.setItem('sb_chars',JSON.stringify(CHARS))}catch(e){}}};
 $('btnImages').onclick=async()=>{
   const frameNumbers=FRAMES.map(f=>f.frame);
