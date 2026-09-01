@@ -3346,6 +3346,13 @@ async function initAuthStore() {
         // without a manual migration (ADD COLUMN IF NOT EXISTS is no-op once present).
         await authPool.query(`ALTER TABLE sb_users ADD COLUMN IF NOT EXISTS credits INT NOT NULL DEFAULT 0`);
         await authPool.query(`ALTER TABLE sb_users ADD COLUMN IF NOT EXISTS plan TEXT NOT NULL DEFAULT 'trial'`);
+        // One-time backfill: users created BEFORE the credits system shipped get
+        // credits=0 from the column default and are locked out of every gated route
+        // ("stuck after storyboard" for existing accounts). Grant the trial
+        // allowance to any trial-plan user created before the credits launch.
+        const CREDITS_LAUNCH_TS = 1756000000000; // ~2026-08-19 — credits system ship date
+        const bf = await authPool.query(`UPDATE sb_users SET credits = $1 WHERE plan = 'trial' AND credits = 0 AND created_at < $2`, [TRIAL_CREDITS, CREDITS_LAUNCH_TS]);
+        if (bf.rowCount) console.log(`[Auth] backfilled trial credits for ${bf.rowCount} legacy user(s)`);
         await authPool.query(`CREATE TABLE IF NOT EXISTS sb_sessions (
           token TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires_at BIGINT NOT NULL
         )`);
