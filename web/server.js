@@ -3410,6 +3410,14 @@ async function initAuthStore() {
     } else {
       authMode = 'file';
       console.log('[Auth] file store (no DATABASE_URL)');
+      if (IS_VERCEL) {
+        // LAUNCH CRITICAL: on Vercel without Postgres, users.json lives in
+        // per-instance /tmp — accounts VANISH across instances/cold starts and the
+        // credit ledger is per-instance only, so the free-trial limit cannot
+        // actually enforce. Logins still work (stateless tokens) but set up
+        // Vercel Postgres/Neon + DATABASE_URL before launch.
+        console.log('[Auth] ⚠ WARNING: no DATABASE_URL on Vercel — the free-trial credit system is per-instance only and user accounts do not persist. Add a Postgres database (Vercel Storage → Postgres) and set DATABASE_URL before launching.');
+      }
     }
     await fsp.mkdir(STORYBOARD_DIR, { recursive: true }).catch(() => {});
   })();
@@ -3447,7 +3455,10 @@ async function findUserByEmail(email) {
 // generate roughly ONE short (~30s) film end-to-end. After that, generation
 // routes refuse with 402 'out of credits' until an admin grants more (real
 // billing plugs into the same chargeCredits / grantCredits seam later).
-const TRIAL_CREDITS = Number(process.env.TRIAL_CREDITS || 60); // ≈ one 30s film; operator can raise via env
+// FREE TRIAL: every new user gets enough credits for ONE ~30s film generated
+// with omni-flash (8s clips): a 30s board = 4 frames → 4 images (16) + 4 videos
+// (32) = 48 credits, plus headroom for one failed retry. Override via env.
+const TRIAL_CREDITS = Number(process.env.TRIAL_CREDITS || 60);
 const CREDIT_COSTS = {
   // video seconds are the base unit — 1 credit ≈ 1s of generated motion
   videosPerSec: 1,
@@ -3701,7 +3712,7 @@ async function requireCredits(req, res, amount, label) {
   req.user.credits = remaining;
   const need = Math.max(0, Math.round(Number(amount) || 0));
   sendJson(res, 402, {
-    error: `Out of credits — this action needs ${need} but you have ${remaining} left. Your free trial covers one ~30s film. Contact support to top up.`,
+    error: `Free trial used up — this action needs ${need} more credits. Your trial covered one free 30s video (omni-flash). Upgrade to keep creating.`,
     credits: remaining, needed: need, label: label || '',
     outOfCredits: true
   });

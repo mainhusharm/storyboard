@@ -369,8 +369,7 @@ async function api(p,opts){
   // Surface a clear upgrade prompt and refresh the header pill.
   if(r.status===402&&j&&j.outOfCredits){
     refreshCredits();
-    const need=j.needed||0,have=j.credits||0;
-    throw new Error('Out of credits — this action needs '+need+' but you have '+have+' left. Your free trial covers one ~30s film; contact support to top up.');
+    throw new Error(j.error||'Free trial used up — your trial covered one free 30s video. Upgrade to keep creating.');
   }
   return j;
 }
