@@ -947,7 +947,7 @@ for (const d of [FRAMES_DIR, VIDEO_DIR, STORYBOARD_DIR]) fs.mkdirSync(d, { recur
 // deepseek-v3.2 when a model 502s/empty-responds, so a "broken" model never kills
 // a storyboard.
 const MODELS = ['gemini-2.5-pro', 'gemini-3.1-pro', 'gemini-3.1-flash-lite', 'gpt-5.5', 'gpt-5', 'gpt-5.2', 'gpt-4.1', 'claude-opus-4-8', 'claude-sonnet-4-5', 'kimi-k3', 'kimi-k2.6', 'glm-5.2', 'glm-5.3', 'deepseek-v3.2', 'deepseek-v4-flash', 'mimo-v2.5', 'qwen3.8-max', 'qwen3.7-plus', 'grok-4.6', 'minimax-m3'];
-const IMAGE_MODELS = ['nano-banana-pro', 'nano-banana', 'nano-banana-2', 'seedream-5', 'seedream-4', 'seedream-4.5', 'grok-imagine-2', 'grok-imagine', 'gpt-image-2'];
+const IMAGE_MODELS = ['nano-banana-pro', 'nano-banana-2', 'nano-banana-2-lite', 'seedream-5', 'seedream-4', 'seedream-4.5', 'grok-imagine-2', 'grok-imagine', 'gpt-image-2'];
 // Grok Imagine is xAI's image model on PaxSenix: GET /ai-image/grok-imagine
 // (text-to-image, params: prompt + ratio) and POST /ai-img2img/grok-imagine
 // (image-to-image, body: prompt/model/ratio/image_urls — same shape as seedream,
@@ -1055,6 +1055,10 @@ function fishReferenceId(voice, language) {
 }
 
 // Map image model name → PaxSenix API endpoint path
+// NOTE: the base `nano-banana` model was REMOVED by PaxSenix (verified live:
+// 400 "Model isn't available" — only nano-banana-pro/-2/-2-lite remain), so the
+// nano-banana* family now routes through the same endpoint with an explicit
+// model param; anything unrecognised falls back to nano-banana-pro.
 function imageEndpoint(model) {
   if (model.startsWith('seedream')) return '/ai-image/seedream';
   if (model.startsWith('grok-imagine')) return '/ai-image/grok-imagine';
@@ -1066,6 +1070,11 @@ function img2ImgEndpoint(model) {
   if (model.startsWith('grok-imagine')) return '/ai-img2img/grok-imagine';
   if (model.startsWith('gpt-image')) return '/ai-img2img/gpt-image-2';
   return '/ai-img2img/nano-banana';
+}
+// Resolve an image model to a WORKING model id (dead base nano-banana → pro).
+function safeImageModel(model) {
+  if (!model || model === 'nano-banana') return 'nano-banana-pro';
+  return model;
 }
 
 const STYLES = {
@@ -1277,10 +1286,14 @@ async function paxFetch(url, opts = {}, timeoutMs = 120000) {
 }
 
 async function submitTask(pathAndQuery, logFn = logLine) {
+  // Dead model guard: PaxSenix removed the base `nano-banana` model (400s every
+  // time). Rewrite any `model=nano-banana` param to the live `nano-banana-pro`
+  // centrally, so every t2i call site is covered without touching each one.
+  const pq = String(pathAndQuery).replace(/([?&]model=)nano-banana(?=&|$)/i, '$1nano-banana-pro');
   for (let attempt = 1; attempt <= 4; attempt++) {
     if (storyboardCancelRequested(logFn)) { logFn('submit cancelled by user'); return null; }
     try {
-      const res = await paxFetch(`${API}${pathAndQuery}`);
+      const res = await paxFetch(`${API}${pq}`);
       const j = await res.json().catch(() => ({}));
       if (res.ok && j.ok && j.task_url) return j.task_url;
       logFn(`submit attempt ${attempt}: HTTP ${res.status} ${JSON.stringify(j).slice(0, 200)}`);
@@ -1289,6 +1302,12 @@ async function submitTask(pathAndQuery, logFn = logLine) {
       // retry ladder (softened → LLM-repaired → text-to-video) runs automatically.
       if (j && j.nsfw && pathAndQuery.includes('/ai-video/omni-flash')) {
         logFn(`omni-flash safety filter rejected this frame — retrying with a repaired prompt`);
+      }
+      // 400 "Model isn't available" is PERMANENT (dead model id) — retrying just
+      // burns ~40s per frame. Fail immediately; the fallback ladder switches model.
+      if (res.status === 400 && j && j.message && /isn'?t available/i.test(String(j.message))) {
+        logFn('model unavailable — not retrying (dead model id)');
+        return null;
       }
     } catch (e) { logFn(`submit attempt ${attempt}: ${e.message}`); }
     await new Promise(r => setTimeout(r, 4000 * attempt));
@@ -1311,7 +1330,7 @@ async function enhancePrompt(prompt) {
 
 // img2img with reference image(s) — anchors character identity
 async function submitImg2ImgTask(prompt, refUrls, imageModel = 'seedream-5', ratio = '16:9') {
-  const model = (imageModel && img2ImgEndpoint(imageModel)) ? imageModel : 'seedream-5';
+  const model = (imageModel && img2ImgEndpoint(imageModel)) ? safeImageModel(imageModel) : 'seedream-5';
   const endpoint = img2ImgEndpoint(model);
   const postBody = JSON.stringify({ prompt, model, ratio, image_urls: refUrls });
   for (let attempt = 1; attempt <= 3; attempt++) {
@@ -1322,6 +1341,11 @@ async function submitImg2ImgTask(prompt, refUrls, imageModel = 'seedream-5', rat
       const j = await res.json().catch(() => ({}));
       if (res.ok && j.ok && j.task_url) return j.task_url;
       logLine(`img2img ${model} attempt ${attempt}: HTTP ${res.status} ${JSON.stringify(j).slice(0, 120)}`);
+      // Dead model id (PaxSenix removed base nano-banana) — don't retry, fail now.
+      if (res.status === 400 && j && j.message && /isn'?t available/i.test(String(j.message))) {
+        logLine(`img2img: model ${model} unavailable — not retrying`);
+        return null;
+      }
     } catch (e) { logLine(`img2img ${model} attempt ${attempt}: ${e.message}`); }
     await new Promise(r => setTimeout(r, 3000 * attempt));
   }
@@ -2922,7 +2946,8 @@ async function combineFilm(frames, ratio = '16:9', narrationMode = 'tts', opts =
         logLine(`frame ${f.frame}: no video AND no image — generating emergency fallback still`);
         const essPrompt = `cinematic film still of ${f.summary || f.image_prompt?.slice(0, 200) || 'the scene'}${(f.characters_present || []).length ? `, featuring ${f.characters_present.join(' and ')}` : ''}, dramatic lighting, ${ratio}`;
         try {
-          const q = `${imageEndpoint('nano-banana')}?prompt=${encodeURIComponent(sanitizeImagePrompt(essPrompt))}&model=nano-banana&ratio=${encodeURIComponent(ratio)}`;
+          const fbModel = safeImageModel('nano-banana');
+          const q = `${imageEndpoint(fbModel)}?prompt=${encodeURIComponent(sanitizeImagePrompt(essPrompt))}&model=${encodeURIComponent(fbModel)}&ratio=${encodeURIComponent(ratio)}`;
           const task = await submitTask(q);
           if (task) {
             const url = await waitTask(task, 10);
