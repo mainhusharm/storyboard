@@ -730,7 +730,7 @@ async function generateFlashloopScene(effectName, tagline, userIdea, duration, r
 
   // Prefer a fast reliable model on Vercel to avoid timeouts
   const promptModel = IS_VERCEL
-    ? (['gemini-2.5-pro', 'gemini-3.1-pro', 'deepseek-v3.2', 'glm-5.2'].includes(model) ? model : 'gemini-2.5-pro')
+    ? (['gemini-2.5-pro', 'gemini-3.1-pro', 'gemini-3.1-flash-lite', 'deepseek-v3.2', 'deepseek-v4-flash', 'glm-5.2', 'glm-5.3', 'kimi-k3', 'kimi-k2.6', 'claude-sonnet-4-5', 'mimo-v2.5', 'gpt-5.5'].includes(model) ? model : 'gemini-2.5-pro')
     : model;
 
   // STEP 2: Generate prompts using styleText (no image attached — LLM can't copy subject)
@@ -775,7 +775,7 @@ async function generateFlashloopScript(effectName, tagline, userIdea, sceneDurat
   const cleanRefs = cleanFlashloopRefs(references);
   const refBlock = formatFlashloopRefs(cleanRefs);
   const promptModel = IS_VERCEL
-    ? (['gemini-2.5-pro', 'gemini-3.1-pro', 'deepseek-v3.2', 'glm-5.2'].includes(model) ? model : 'gemini-2.5-pro')
+    ? (['gemini-2.5-pro', 'gemini-3.1-pro', 'gemini-3.1-flash-lite', 'deepseek-v3.2', 'deepseek-v4-flash', 'glm-5.2', 'glm-5.3', 'kimi-k3', 'kimi-k2.6', 'claude-sonnet-4-5', 'mimo-v2.5', 'gpt-5.5'].includes(model) ? model : 'gemini-2.5-pro')
     : model;
 
   // Optional trend-style analysis (extra LLM call — skipped on Vercel).
