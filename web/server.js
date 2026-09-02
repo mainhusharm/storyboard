@@ -1732,8 +1732,14 @@ async function generateStoryboard(script, model, targetDuration = 120, look = ''
   // the 300s function budget with margin. Once past the deadline, stop trying
   // new models and fail fast instead of letting Vercel kill the function
   // mid-phase (the request then hangs with no response — "stuck at storyboard").
-  const sbDeadline = IS_VERCEL ? Date.now() + 240000 : Infinity;
+  // Budget discipline: each LLM call is capped at ~100s on Vercel, so a new model
+  // attempt is only STARTED when a full call still fits before the deadline —
+  // otherwise the function gets killed mid-call at 300s with no response (the
+  // "stuck at phase 1" hang).
+  const sbDeadline = IS_VERCEL ? Date.now() + 230000 : Infinity;
+  const CALL_RESERVE_MS = 105000; // per-call cap (100s) + response margin
   const outOfTime = () => Date.now() > sbDeadline;
+  const timeForOneMoreCall = () => Date.now() + CALL_RESERVE_MS < sbDeadline;
   const lookBlock = look && look.trim()
     ? `\n\nDIRECTOR'S CREATIVE DIRECTION (MANDATORY — the entire film must match this look):\n${look.trim()}`
     : '';
@@ -1767,7 +1773,7 @@ async function generateStoryboard(script, model, targetDuration = 120, look = ''
   let characters = [], charModel = model;
   for (const m of modelsToTry) {
     if (job.cancelRequested) { logLine('storyboard cancelled by user'); return { characters: [], frames: [] }; }
-    if (outOfTime()) { logLine('storyboard: Vercel time budget exhausted during characters — aborting model chain'); break; }
+    if (outOfTime() || !timeForOneMoreCall()) { logLine('storyboard: time budget exhausted during characters — aborting model chain'); break; }
     try {
       let rawContent = await chatCompletion(m, charMsgs);
       if (!rawContent) { logLine(`${m}: empty response, next`); continue; }
@@ -1775,7 +1781,9 @@ async function generateStoryboard(script, model, targetDuration = 120, look = ''
       let found = Array.isArray(parsed?.characters) ? parsed.characters : [];
       // One strict re-ask on the SAME model when the JSON is unusable — cheaper
       // than burning a fallback model and often fixes fence/prose wrapping.
-      if (!found.length && !outOfTime()) {
+      // Skipped on Vercel: the extra call doubles a failing model's time cost
+      // and can blow the 300s function budget (hang at phase 1).
+      if (!found.length && !IS_VERCEL && !outOfTime()) {
         logLine(`${m}: characters JSON unusable — re-asking with strict JSON-only instruction`);
         const strictMsgs = [...charMsgs, { role: 'user', content: 'Your previous response was NOT valid JSON. Return ONLY the raw JSON object now — no markdown fences, no explanations, no text before or after. Start with { and end with }.' }];
         rawContent = await chatCompletion(m, strictMsgs);
@@ -1822,7 +1830,7 @@ async function generateStoryboard(script, model, targetDuration = 120, look = ''
   let frames = [], frameModel = model;
   for (const m of modelsToTry) {
     if (job.cancelRequested) { logLine('storyboard cancelled by user'); return { characters: [], frames: [] }; }
-    if (outOfTime()) { logLine('storyboard: Vercel time budget exhausted during frames — aborting model chain'); break; }
+    if (outOfTime() || !timeForOneMoreCall()) { logLine('storyboard: time budget exhausted during frames — aborting model chain'); break; }
     try {
       let rawContent = await chatCompletion(m, frameMsgs);
       if (!rawContent) { logLine(`${m}: empty response, next`); continue; }
@@ -1830,7 +1838,8 @@ async function generateStoryboard(script, model, targetDuration = 120, look = ''
       let found = Array.isArray(parsed?.frames) ? parsed.frames : [];
       if (!found.length && Array.isArray(parsed)) found = parsed;
       // One strict re-ask on the SAME model when the JSON is unusable.
-      if (!found.length && !outOfTime()) {
+      // Skipped on Vercel — doubles a failing model's time cost (budget hang).
+      if (!found.length && !IS_VERCEL && !outOfTime()) {
         logLine(`${m}: frames JSON unusable — re-asking with strict JSON-only instruction`);
         const strictMsgs = [...frameMsgs, { role: 'user', content: 'Your previous response was NOT valid JSON. Return ONLY the raw JSON object now — no markdown fences, no explanations, no text before or after. Start with { and end with }.' }];
         rawContent = await chatCompletion(m, strictMsgs);

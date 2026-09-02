@@ -616,7 +616,9 @@ $('btnStoryboard').onclick=async()=>{
   LOCAL_BUSY=true;poll();
   try{
     await api('/clean-outputs',{method:'POST'});
-    const r=await api('/storyboard',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({script,model:$('chatModel').value,duration:Number($('duration').value),look:$('look').value,language:$('language').value,style:$('style').value,clipDuration:Number($('clipDuration').value)})});
+    // Vercel kills functions at 300s — abort the fetch at 290s so the user gets
+    // a clear error instead of an endless hang when the storyboard stalls.
+    const r=await api('/storyboard',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({script,model:$('chatModel').value,duration:Number($('duration').value),look:$('look').value,language:$('language').value,style:$('style').value,clipDuration:Number($('clipDuration').value)}),signal:IS_VERCEL_CLIENT?AbortSignal.timeout(290000):undefined});
     if(r.error){alert(r.error);return}
     // On Vercel the storyboard comes back inline (ephemeral /tmp) — render it directly.
     if(r.characters&&r.frames){OFFLINE_BOARD=true;await refresh({characters:r.characters,frames:r.frames});}
