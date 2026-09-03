@@ -121,12 +121,12 @@
     </div>
     <div class="grid2">
       <div class="field">
-        <label for="duration">Scene Length</label>
-        <select id="duration">
-          <option value="15">15 sec per scene — 8 scenes (2 min total)</option>
-          <option value="30" selected>30 sec per scene — 4 scenes (2 min total)</option>
-        </select>
-        <div class="hint">Fixed rule: 15s → 8 scenes · 30s → 4 scenes. Every scene is written to-the-point with a hook.</div>
+      <label for="duration">Video Length</label>
+      <select id="duration">
+        <option value="15" selected>~1 min — 8 scenes × 8s</option>
+        <option value="30">~2 min — 15 scenes × 8s</option>
+      </select>
+      <div class="hint">Scenes are sized to the render engine: omni-flash makes ~8s clips, so every scene timeline is written for exactly 8 seconds — no wasted prompt.</div>
       </div>
       <div class="field">
         <label for="ratio">Aspect Ratio</label>
@@ -348,7 +348,7 @@ function sceneVideoText(i){ const el = document.querySelector('.scene-video[data
 function fmtTime(s){ return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); }
 
 function buildFullScript(){
-  const per = Number($('duration').value) || 15;
+  const per = 8; // scenes are sized to omni-flash's ~8s clip length
   const lines = ['EFFECT: ' + scriptTitle, 'SCENE LENGTH: ' + per + 's per scene', ''];
   scenes.forEach((s, i) => {
     lines.push('SCENE ' + (i + 1) + ' — ' + (s.title || ('Scene ' + (i + 1))) + ' (' + fmtTime(i * per) + '–' + fmtTime((i + 1) * per) + ')');
@@ -361,7 +361,7 @@ function buildFullScript(){
 }
 
 function renderScript(){
-  const per = Number($('duration').value) || 15;
+  const per = 8; // scenes are sized to omni-flash's ~8s clip length
   const c = $('scriptContainer');
   if (!scenes.length) { c.innerHTML = ''; return; }
   c.innerHTML = scenes.map((s, i) => `

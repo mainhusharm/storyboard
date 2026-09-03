@@ -769,9 +769,13 @@ Use the supplied first-frame image as the strict visual reference — preserve t
 // scenes so the story flows seamlessly. Scene count is FIXED by the per-scene
 // length: 30s → 4 scenes, 15s → 8 scenes (both add up to 2 minutes of footage).
 async function generateFlashloopScript(effectName, tagline, userIdea, sceneDuration, ratio, model = 'gpt-5.5', references = [], trendThumbnail = '') {
-  const perScene = Number(sceneDuration) >= 30 ? 30 : 15;
-  const sceneCount = perScene === 30 ? 4 : 8;
-  const totalSec = perScene * sceneCount;
+// Scenes are sized to the RENDER engine, not a wishful duration: Make Video
+// renders each scene with omni-flash, which produces ~8s clips — so every scene
+// is 8 seconds and the video timelines ("0–4s: …; 4–8s: …") match the actual
+// clip length. Mode totals stay: short → 8 scenes (~1 min), long → 15 (~2 min).
+const perScene = 8;
+const sceneCount = Number(sceneDuration) >= 30 ? 15 : 8;
+const totalSec = perScene * sceneCount;
   const cleanRefs = cleanFlashloopRefs(references);
   const refBlock = formatFlashloopRefs(cleanRefs);
   const promptModel = IS_VERCEL
@@ -791,15 +795,15 @@ OUTPUT FORMAT — return ONLY a JSON object, nothing else:
 {
   "title": "short film title",
   "scenes": [
-    { "scene": 1, "title": "punchy scene title", "hook": "one sentence — the attention-grabbing moment this scene opens with", "imagePrompt": "first-frame image prompt", "videoPrompt": "0–5s: ...; 5–10s: ...; 10–15s: ... (time-stamped beats covering the full scene length)" }
+    { "scene": 1, "title": "punchy scene title", "hook": "one sentence — the attention-grabbing moment this scene opens with", "imagePrompt": "first-frame image prompt", "videoPrompt": "0–4s: ...; 4–8s: ... (time-stamped beats covering the full 8s scene)" }
   ]
 }
 
 RULES:
-- EXACTLY ${sceneCount} scenes. Every scene is exactly ${perScene} seconds.
+- EXACTLY ${sceneCount} scenes. Every scene is exactly ${perScene} seconds — the video engine renders ~8s clips, so the timeline MUST fit inside 8s.
 - TO THE POINT, zero filler. NO "CAMERA:" sections, NO camera-angle/movement instructions, NO lighting/mood/setting bullet lists, NO audio or style paragraphs inside the prompts, NO negative instructions.
 - Each scene's "imagePrompt": 80-140 words — the first-frame reference image for that scene. Concrete subject, exact action, setting, colors, materials. End with: ${ratio}.
-- Each scene's "videoPrompt": 180-280 words — a TIMELINE of 5-7 time-stamped beats that covers the full ${perScene} seconds. Format: "0–5s: ...", "5–10s: ..." — consecutive segments with no gaps, ending exactly at ${perScene}s. The FIRST segment must deliver the hook. Each segment is one concrete action beat with vivid specifics (textures, scale, lighting, expressions, sounds, miniature-detail observations). NO "CAMERA:" section, no camera-movement instructions, no audio/style filler paragraphs.
+- Each scene's "videoPrompt": 120-200 words — a TIMELINE of 2-3 time-stamped beats that covers the full ${perScene} seconds. Format: "0–4s: ...", "4–8s: ..." — consecutive segments with no gaps, ending exactly at ${perScene}s. The FIRST segment must deliver the hook. Each segment is one concrete action beat with vivid specifics (textures, scale, lighting, expressions, sounds, miniature-detail observations). NO "CAMERA:" section, no camera-movement instructions, no audio/style filler paragraphs.
 - Hit the word targets above exactly — count your words as you write. If a videoPrompt is under 180 words, add more detail to each time-stamped beat until it fits. Be vivid and specific so a video model can animate it precisely, but never pad with filler.
 - STORY: Scene 1 opens with the strongest hook (cold open). Scenes flow seamlessly — each scene starts exactly where the previous one ended (same characters, same place, same light, continuous motion). The last scene ends on a satisfying payoff.
 - Interpret "${effectName}" as the theme and write a specific, vivid, viral-worthy scene — never generic filler.${tagline ? '\n- Trend tagline: ' + tagline : ''}${userIdea ? '\n- User idea (honor it): ' + userIdea : ''}${styleBlock}${refBlock}
@@ -4982,8 +4986,9 @@ Return ONLY a JSON object:
         const refs = Array.isArray(references) ? references.filter(r => r && String(r.name || '').trim()) : [];
         // Credit gate: writing a full multi-scene script is a real multi-LLM call.
         if (!(await requireCredits(req, res, CREDIT_COSTS.flashloopScript, 'generate script'))) return;
-        // sceneDuration = seconds per scene (15 → 8 scenes, 30 → 4 scenes); falls
-        // back to `duration` for older clients.
+      // sceneDuration selects the TOTAL length mode (short ~1min → 8 scenes,
+      // long ~2min → 15 scenes); every scene is 8s (omni-flash's real clip length).
+      const perScene = Number(sceneDuration) || Number(duration) || 15;
         const perScene = Number(sceneDuration) || Number(duration) || 15;
         const script = await generateFlashloopScript(effectName, String(tagline || ''), String(idea || ''), perScene, String(ratio), selectedModel, refs, String(trendThumbnail || ''));
         return sendJson(res, 200, { ok: true, slug, name: effectName, sceneDuration: perScene, ratio, model: selectedModel, ...script });
