@@ -4988,7 +4988,6 @@ Return ONLY a JSON object:
         if (!(await requireCredits(req, res, CREDIT_COSTS.flashloopScript, 'generate script'))) return;
       // sceneDuration selects the TOTAL length mode (short ~1min → 8 scenes,
       // long ~2min → 15 scenes); every scene is 8s (omni-flash's real clip length).
-      const perScene = Number(sceneDuration) || Number(duration) || 15;
         const perScene = Number(sceneDuration) || Number(duration) || 15;
         const script = await generateFlashloopScript(effectName, String(tagline || ''), String(idea || ''), perScene, String(ratio), selectedModel, refs, String(trendThumbnail || ''));
         return sendJson(res, 200, { ok: true, slug, name: effectName, sceneDuration: perScene, ratio, model: selectedModel, ...script });
