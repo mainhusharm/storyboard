@@ -213,9 +213,17 @@
         <img id="i2iImage" src="" alt="Generated image" style="max-width:420px;max-height:500px;border-radius:12px;border:1px solid var(--line2);object-fit:contain">
         <div style="margin-top:10px;display:flex;gap:10px;flex-wrap:wrap">
           <a id="i2iDownload" href="" download="" class="back-btn" style="background:var(--panel2);border-color:var(--green);color:var(--green)">⬇ Download Image</a>
-          <button id="i2iUseAsRef" style="background:var(--panel2);border-color:var(--cyan);color:var(--cyan)">🎬 Use as Video Reference</button>
         </div>
       </div>
+    </div>
+
+    <div id="makeVideoSection" style="display:none;margin-top:24px;border-top:1px solid var(--line2);padding-top:20px">
+      <div class="prompt-label">🎬 Make Video — all scenes · Omni Flash</div>
+      <div class="hint" style="margin:8px 0 14px">Renders EVERY scene (~8s each) with omni-flash and seamless chaining: each scene starts exactly where the previous scene ended. An 8-scene script ≈ a 1-minute video. Scene images are generated automatically first. Each scene takes 2-5 minutes.</div>
+      <button id="btnMakeVideo" class="generate-btn" style="background:linear-gradient(135deg,rgba(251,146,60,.25),rgba(236,72,153,.25));border-color:#fb923c">🎬 Make Video (Omni Flash)</button>
+      <div id="mvStatus" style="display:none;background:var(--panel2);border:1px solid var(--line2);border-radius:10px;padding:12px;font-size:12px;line-height:1.7;max-height:240px;overflow-y:auto;margin-top:14px;white-space:pre-wrap"></div>
+      <video id="mvVideo" controls playsinline style="display:none;max-width:420px;width:100%;border-radius:12px;border:1px solid var(--line2);margin-top:14px"></video>
+      <div style="margin-top:12px"><a id="mvDownload" download="flashloop_video.mp4" style="display:none" class="back-btn">⬇ Download Video</a></div>
     </div>
   </div>
 </div>
@@ -324,6 +332,8 @@ $('btnGenerate').onclick = async () => {
     // plain text-to-image. So the button always shows after a script is generated.
     $('btnGenerateImage').style.display = 'inline-flex';
     $('i2iSection').style.display = 'block';
+    $('makeVideoSection').style.display = 'block';
+    sceneImages = {}; // new script — drop cached scene images
   } catch (e) {
     $('error').textContent = 'Error: ' + e.message;
     $('error').classList.add('visible');
@@ -464,6 +474,87 @@ async function pollTask(taskUrl) {
   }
   throw new Error('Image generation timed out (5 min)');
 }
+
+// ---- Make Video: all scenes → omni-flash clips, seamlessly chained ----
+// Mirrors the storyboard pipeline: scene image first, then ONE video request per
+// scene (fits Vercel's 300s budget), each anchored to the previous scene's final
+// frame via chainAnchor. Finally combines all clips into one film.
+let sceneImages = {}; // scene index -> public first-frame image URL (session cache)
+function mvLog(msg, isErr){
+  const el = $('mvStatus');
+  el.style.display = 'block';
+  const line = document.createElement('div');
+  if (isErr) line.style.color = '#f87171';
+  line.textContent = msg;
+  el.appendChild(line);
+  el.scrollTop = el.scrollHeight;
+}
+$('btnMakeVideo').onclick = async () => {
+  if (!scenes.length) return;
+  const n = scenes.length;
+  if (!confirm(`Make a video from all ${n} scene(s) with Omni Flash?\n\nEach scene renders ~8s with seamless chaining (every scene starts where the previous ended) — ${n} scenes ≈ ${Math.round(n * 8 / 60 * 10) / 10} min of video. This takes several minutes per scene. Start?`)) return;
+  $('btnMakeVideo').disabled = true;
+  $('mvStatus').innerHTML = '';
+  $('mvVideo').style.display = 'none';
+  $('mvDownload').style.display = 'none';
+  try {
+    const ratio = $('ratio').value;
+    const rendered = [];
+    let prevChain = '';
+    for (let i = 0; i < n; i++) {
+      // 1) scene first-frame image (cached for the session)
+      if (!sceneImages[i]) {
+        mvLog(`scene ${i + 1}/${n}: generating first-frame image…`);
+        const r = await fetch('/api/flashloop/generate-i2i', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt: sceneImageText(i), refImageUrl: trendThumbnail, ratio, model: $('i2iModel').value, trendName: name, tagline })
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok || j.error) throw new Error(`scene ${i + 1} image: ${j.error || 'HTTP ' + r.status}`);
+        if (!j.taskUrl) throw new Error(`scene ${i + 1} image: no task URL`);
+        sceneImages[i] = await pollTask(j.taskUrl);
+        if (!sceneImages[i]) throw new Error(`scene ${i + 1} image generation failed`);
+        mvLog(`scene ${i + 1}/${n}: image done`);
+      }
+      // 2) scene video — omni-flash only, chained to the previous scene's last frame
+      mvLog(`scene ${i + 1}/${n}: rendering video (omni-flash${prevChain ? ', chained' : ''})… this takes 2-5 min`);
+      const res = await fetch('/api/flashloop/generate-video', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scene: i + 1, prompt: sceneVideoText(i), imageUrl: sceneImages[i], ratio, chainAnchor: prevChain })
+      });
+      const v = await res.json().catch(() => ({}));
+      if (!res.ok || v.error) {
+        mvLog(`scene ${i + 1}: FAILED — ${v.error || 'HTTP ' + res.status} (continuing without chain anchor)`, true);
+        prevChain = ''; // broken chain: next scene falls back to its own image
+        continue;
+      }
+      rendered.push(i + 1);
+      if (v.chain_image_url) prevChain = v.chain_image_url;
+      mvLog(`scene ${i + 1}/${n}: video done ✓`);
+    }
+    if (!rendered.length) throw new Error('all scenes failed');
+    // 3) combine into one film
+    mvLog(`combining ${rendered.length} clip(s) into the final video…`);
+    const cr = await fetch('/api/flashloop/combine', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scenes: rendered, ratio })
+    });
+    const cj = await cr.json().catch(() => ({}));
+    if (!cr.ok || cj.error) throw new Error('combine: ' + (cj.error || 'HTTP ' + cr.status));
+    const vurl = (cj.video_path || '/video/flash_final.mp4') + '?v=' + Date.now();
+    $('mvVideo').src = vurl;
+    $('mvVideo').style.display = 'block';
+    $('mvDownload').href = vurl;
+    $('mvDownload').style.display = 'inline-block';
+    mvLog(`🎬 VIDEO READY — ${cj.clips || rendered.length} clips combined`);
+    showToast('Video ready!');
+    $('makeVideoSection').scrollIntoView({ behavior: 'smooth' });
+  } catch (e) {
+    mvLog('ERROR: ' + e.message, true);
+  } finally {
+    $('btnMakeVideo').disabled = false;
+  }
+};
 </script>
 </body>
 </html>

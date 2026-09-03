@@ -3464,6 +3464,7 @@ const CREDIT_COSTS = {
   videosPerSec: 1,
   imagesPerSec: 0.5,
   flashloopI2I: 15,                  // one 15s scene first-frame image
+  flashloopVideo: 8,                 // one ~8s omni-flash scene clip (image-to-video + chain anchor)
   influencerImage: 3,
   influencerRefs: 3,                 // per portrait, but capped inside the handler
   influencerVideo: 6,
@@ -5089,6 +5090,127 @@ Return ONLY a JSON object:
         if (!taskUrl) return sendJson(res, 500, { error: `Failed to submit i2i task with ${selectedModel} after 5 attempts` });
         return sendJson(res, 200, { ok: true, taskUrl, model: selectedModel, mode: 'i2i' });
       } catch (e) { logLine('flashloop i2i: ' + e.message); return sendJson(res, 500, { error: e.message }); }
+    }
+
+    // ---- Flashloop / SJinn "Make Video" — one scene per request, OMNI-FLASH ONLY,
+    // with seamless chaining: each scene's video is anchored to the LAST FRAME of the
+    // previous scene's video (the client passes it back as chainAnchor), exactly like
+    // the storyboard pipeline. Synchronous so each invocation fits Vercel's 300s budget.
+    if (p === '/api/flashloop/generate-video' && req.method === 'POST') {
+      const body = await readBody(req).catch(() => ({}));
+      const { prompt = '', imageUrl = '', ratio = '9:16', chainAnchor = '' } = body || {};
+      const sceneN = Math.max(1, Number(body.scene) || 1);
+      if (!prompt) return sendJson(res, 400, { error: 'prompt required' });
+      if (!(await requireCredits(req, res, CREDIT_COSTS.flashloopVideo, 'flashloop video'))) return;
+      return (async () => {
+        const MODEL = 'omni-flash';
+        const out = path.join(VIDEO_DIR, `flash_scene_${String(sceneN).padStart(2, '0')}.mp4`);
+        const anchorPng = path.join(FRAMES_DIR, `flash_chain_${String(sceneN).padStart(2, '0')}.png`);
+        try {
+          fs.mkdirSync(VIDEO_DIR, { recursive: true });
+          fs.mkdirSync(FRAMES_DIR, { recursive: true });
+          logLine(`flashloop video scene ${sceneN}: rendering with ${MODEL} (${chainAnchor ? 'chained to previous scene' : imageUrl ? 'from scene image' : 'text-to-video'})`);
+          // Anchor: chainAnchor (seamless chain) > imageUrl (scene's first frame).
+          // Always re-host through ffmpeg → JPG because omni-flash's i2v asset
+          // pipeline REJECTS PNG, and old PaxSenix/tmpfiles URLs expire.
+          let anchor = String(chainAnchor || '').trim() || String(imageUrl || '').trim() || null;
+          if (anchor) {
+            try {
+              const tmp = path.join(FRAMES_DIR, `flash_anchor_${Date.now()}.img`);
+              await download(anchor, tmp);
+              const jpg = tmp + '.jpg';
+              await new Promise((resolve, reject) => {
+                execFile(ffmpegBin(), ['-y', '-i', tmp, '-q:v', '2', jpg], { timeout: 60000 }, err => err ? reject(err) : resolve());
+              });
+              anchor = await uploadToImageHost(jpg, logLine);
+              logLine(`flashloop video scene ${sceneN}: anchor re-hosted as JPG`);
+            } catch (e) { logLine(`flashloop video scene ${sceneN}: anchor re-host failed (${e.message}) — trying as-is`); }
+          }
+          const mRatio = normalizeVideoRatio(ratio, MODEL);
+          const softened = softenOmniPrompt(prompt);
+          const attempt = async (useImg) => {
+            const mode = useImg && anchor ? 'image-to-video' : 'text-to-video';
+            const imgParam = useImg && anchor ? `&${videoImgKey(MODEL)}=${encodeURIComponent(anchor)}` : '';
+            const q = `/ai-video/${MODEL}?prompt=${encodeURIComponent(softened)}&ratio=${mRatio}&type=${mode}${imgParam}`;
+            const task = await submitTask(q);
+            if (!task) return false;
+            const url = await waitTask(task, IS_VERCEL ? 4 : 25);
+            return !!(url && await download(url, out));
+          };
+          // Retry ladder: i2v (chained) → text-to-video. Never leaves a scene blank.
+          let ok = await attempt(true);
+          if (!ok) { logLine(`flashloop video scene ${sceneN}: i2v failed — retrying as text-to-video`); ok = await attempt(false); }
+          if (!ok) return sendJson(res, 500, { error: `omni-flash failed for scene ${sceneN}` });
+          // Extract the final frame → host it as the chain anchor for the NEXT scene.
+          let chainUrl = '';
+          try {
+            await extractLastFrame(out, anchorPng);
+            chainUrl = await uploadVideoImage(anchorPng, MODEL) || '';
+          } catch (e) { logLine(`flashloop video scene ${sceneN}: chain anchor extraction failed: ${e.message}`); }
+          logLine(`flashloop video scene ${sceneN}: DONE`);
+          return sendJson(res, 200, { ok: true, scene: sceneN, video_path: '/video/' + path.basename(out), chain_image_url: chainUrl });
+        } catch (e) {
+          logLine(`flashloop video scene ${sceneN}: FAILED — ${e.message}`);
+          return sendJson(res, 500, { error: String(e.message || e) });
+        }
+      })();
+    }
+
+    // ---- Flashloop / SJinn "Make Video" — combine the per-scene omni-flash clips
+    // into one film (normalize → concat, copy mode with re-encode fallback).
+    if (p === '/api/flashloop/combine' && req.method === 'POST') {
+      const body = await readBody(req).catch(() => ({}));
+      const sceneList = (Array.isArray(body.scenes) ? body.scenes : []).map(Number).filter(Boolean);
+      if (!sceneList.length) return sendJson(res, 400, { error: 'scenes list required' });
+      if (!(await requireCredits(req, res, 1, 'combine video'))) return;
+      return (async () => {
+        try {
+          const ratio = normalizeVideoRatio(body.ratio || '9:16', 'omni-flash');
+          const [w, h] = ratio === '9:16' ? [720, 1280] : [1280, 720];
+          const clipsDir = path.join(VIDEO_DIR, 'flash_clips');
+          fs.mkdirSync(clipsDir, { recursive: true });
+          const normClips = [];
+          let idx = 0;
+          for (const n of sceneList) {
+            const src = path.join(VIDEO_DIR, `flash_scene_${String(n).padStart(2, '0')}.mp4`);
+            if (!fs.existsSync(src)) { logLine(`flashloop combine: scene ${n} mp4 missing — skipping`); continue; }
+            idx++;
+            const clip = path.join(clipsDir, `clip_${String(idx).padStart(2, '0')}.mp4`);
+            await new Promise((resolve) => {
+              // Normalize (scale/pad/fps + silent AAC) so every clip is concat-safe.
+              execFile(ffmpegBin(), [
+                '-y', '-i', src,
+                '-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100',
+                '-vf', `scale=${w}:${h}:force_original_aspect_ratio=decrease,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2,fps=24`,
+                '-c:v', 'libx264', '-crf', '20', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p',
+                '-c:a', 'aac', '-b:a', '128k',
+                '-map', '0:v:0', '-map', '1:a:0', '-shortest',
+                clip
+              ], { timeout: 120000 }, () => resolve());
+            });
+            if (fs.existsSync(clip)) { normClips.push(clip); logLine(`flashloop combine: scene ${n} normalized`); }
+          }
+          if (!normClips.length) return sendJson(res, 500, { error: 'no scene clips found on this instance' });
+          const listFile = path.join(VIDEO_DIR, 'flash_concat.txt');
+          // Entries relative to VIDEO_DIR (concat -safe 0 resolves them against the list's dir)
+          fs.writeFileSync(listFile, normClips.map(c => `file '${path.relative(VIDEO_DIR, c).replace(/\\/g, '/')}'`).join('\n'));
+          const finalPath = path.join(VIDEO_DIR, 'flash_final.mp4');
+          const okConcat = await new Promise((resolve) => {
+            execFile(ffmpegBin(), ['-y', '-f', 'concat', '-safe', '0', '-i', 'flash_concat.txt', '-c', 'copy', '-movflags', '+faststart', 'flash_final.mp4'],
+              { cwd: VIDEO_DIR, timeout: 180000 }, err => resolve(!err));
+          });
+          if (!okConcat || !fs.existsSync(finalPath)) {
+            logLine('flashloop combine: copy-concat failed — re-encoding');
+            await new Promise((resolve) => {
+              execFile(ffmpegBin(), ['-y', '-f', 'concat', '-safe', '0', '-i', listFile, '-c:v', 'libx264', '-crf', '20', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', finalPath],
+                { timeout: 300000 }, () => resolve());
+            });
+          }
+          if (!fs.existsSync(finalPath)) return sendJson(res, 500, { error: 'combine failed' });
+          logLine(`flashloop combine: final video ready (${normClips.length} clips, ${(fs.statSync(finalPath).size / 1048576).toFixed(1)} MB)`);
+          return sendJson(res, 200, { ok: true, video_path: '/video/flash_final.mp4', clips: normClips.length });
+        } catch (e) { return sendJson(res, 500, { error: String(e.message || e) }); }
+      })();
     }
 
 
