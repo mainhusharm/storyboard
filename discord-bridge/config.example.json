@@ -1,0 +1,10 @@
+{
+  "token": "YOUR_TEST_BOT_TOKEN",
+  "channelId": "CHANNEL_ID_WHERE_YOU_TALK_TO_THE_VIDEO_BOT",
+  "targetBotId": "VIDEO_BOT_USER_ID",
+  "port": 5174,
+  "timeoutMs": 600000,
+  "defaultModel": "wan3",
+  "messageTemplate": "@bot make a video with {model}: {prompt}",
+  "apiKey": ""
+}

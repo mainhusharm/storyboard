@@ -27,6 +27,10 @@ foxy-shots/
 foxy-results.txt
 continue_full.log
 
+# Discord video bridge (bot token lives in config.json)
+discord-bridge/config.json
+discord-bridge/out/
+
 # Vercel
 .vercel/
 

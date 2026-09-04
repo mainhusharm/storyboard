@@ -1,0 +1,12 @@
+{
+  "name": "discord-video-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "main": "bridge.js",
+  "scripts": {
+    "start": "node bridge.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.16.3"
+  }
+}

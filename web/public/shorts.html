@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Shorts — Discord Studio</title>
+<style>
+  :root {
+    --surface-0:#05070c;
+    --surface-1:#0a0d12;
+    --surface-2:#0f131c;
+    --surface-3:#161d2b;
+    --surface-4:#1e2636;
+    --surface-5:#273144;
+    --line-1:rgba(45,60,90,.25);
+    --line-2:rgba(60,80,120,.35);
+    --txt:#f8fafc;
+    --txt-dim:#94a3b8;
+    --txt-faint:#64748b;
+    --accent:#38bdf8;
+    --accent-bright:#7dd3fc;
+    --emerald:#10b981;
+    --violet:#8b5cf6;
+    --radius-md:clamp(12px,1.5vw,16px);
+    --radius-lg:clamp(16px,2vw,24px);
+    --space-sm:clamp(12px,1.5vw,16px);
+    --space-md:clamp(20px,2.5vw,32px);
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;
+    background:var(--surface-0);
+    color:var(--txt);
+    line-height:1.6;
+    min-height:100vh;
+  }
+  body::before{
+    content:'';
+    position:fixed;
+    inset:0;
+    background:
+      radial-gradient(1200px 600px at 90% -15%,rgba(56,189,248,.08),transparent 65%),
+      radial-gradient(900px 700px at -10% 115%,rgba(139,92,246,.06),transparent 60%);
+    pointer-events:none;
+    z-index:0;
+  }
+  header{
+    position:sticky;
+    top:0;
+    z-index:100;
+    background:rgba(5,7,12,.85);
+    backdrop-filter:blur(16px) saturate(180%);
+    border-bottom:1px solid var(--line-1);
+    padding:0 var(--space-md);
+  }
+  .header-inner{
+    max-width:1400px;
+    margin:0 auto;
+    display:flex;
+    align-items:center;
+    gap:12px;
+    height:clamp(60px,8vh,72px);
+  }
+  .brand{
+    display:flex;
+    align-items:center;
+    gap:12px;
+    text-decoration:none;
+  }
+  .logo-mark{
+    width:clamp(36px,5vw,44px);
+    height:clamp(36px,5vw,44px);
+    border-radius:clamp(10px,1.5vw,12px);
+    background:linear-gradient(135deg,var(--accent),var(--accent-bright));
+    display:grid;
+    place-items:center;
+    font-weight:900;
+    font-size:clamp(1.1rem,2vw,1.5rem);
+    color:var(--surface-0);
+    box-shadow:0 0 24px rgba(56,189,248,.4),inset 0 1px 0 rgba(255,255,255,.2);
+  }
+  .brand-text{
+    font-size:clamp(0.95rem,1.8vw,1.1rem);
+    font-weight:800;
+    letter-spacing:1.5px;
+  }
+  .brand-text .accent{background:linear-gradient(135deg,var(--accent),var(--accent-bright));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+  .back{
+    margin-left:auto;
+    color:var(--txt-dim);
+    text-decoration:none;
+    font-size:0.9rem;
+    padding:8px 16px;
+    border:1px solid var(--line-2);
+    border-radius:999px;
+    transition:all .2s;
+  }
+  .back:hover{color:var(--txt);border-color:var(--accent)}
+  main{
+    position:relative;
+    z-index:1;
+    max-width:1200px;
+    margin:0 auto;
+    padding:var(--space-md);
+  }
+  .page-head{
+    display:flex;
+    align-items:baseline;
+    gap:14px;
+    flex-wrap:wrap;
+    margin-bottom:var(--space-sm);
+  }
+  h1{font-size:clamp(1.5rem,3vw,2rem);letter-spacing:-0.5px}
+  .pill{
+    font-size:0.75rem;
+    color:var(--accent);
+    background:rgba(56,189,248,.1);
+    border:1px solid rgba(56,189,248,.3);
+    padding:3px 12px;
+    border-radius:999px;
+    letter-spacing:.5px;
+  }
+  .note{
+    color:var(--txt-faint);
+    font-size:0.85rem;
+    margin-bottom:var(--space-sm);
+  }
+  .note b{color:var(--txt-dim)}
+  .widget-wrap{
+    background:var(--surface-1);
+    border:1px solid var(--line-1);
+    border-radius:var(--radius-lg);
+    padding:clamp(8px,1.5vw,16px);
+    box-shadow:0 24px 64px rgba(0,0,0,.45);
+  }
+  widgetbot{
+    display:block;
+    border-radius:var(--radius-md);
+    overflow:hidden;
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="header-inner">
+    <a class="brand" href="/home.html">
+      <div class="logo-mark">S</div>
+      <div class="brand-text">STORYBOARD <span class="accent">STUDIO</span></div>
+    </a>
+    <a class="back" href="/home.html">← Back to Studio</a>
+  </div>
+</header>
+<main>
+  <div class="page-head">
+    <h1>#shorts</h1>
+    <span class="pill">LIVE DISCORD CHANNEL</span>
+  </div>
+  <p class="note">
+    Chat with the video bot right here — <b>log in with Discord</b> when the widget asks (top-right corner).
+    Type <b>@websim bot</b> + your prompt, and it generates videos in this channel.
+  </p>
+  <div class="widget-wrap">
+    <widgetbot
+      server="994634777632190535"
+      channel="1520459110255169576"
+      width="100%"
+      height="78vh"
+    ></widgetbot>
+    <script src="https://cdn.jsdelivr.net/npm/@widgetbot/html-embed"></script>
+  </div>
+</main>
+</body>
+</html>
