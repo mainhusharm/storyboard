@@ -8,6 +8,7 @@
     { "source": "/influencer", "destination": "/influencer.html" },
     { "source": "/trends", "destination": "/trends.html" },
     { "source": "/flashloop-studio", "destination": "/flashloop-studio.html" },
+    { "source": "/shorts", "destination": "/shorts.html" },
     { "source": "/effects/:slug", "destination": "/flashloop-studio.html" },
     { "source": "/frames/:path*", "destination": "/api/_route?p=/frames/:path*" },
     { "source": "/video/:path*", "destination": "/api/_route?p=/video/:path*" },
