@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Shorts — Discord Studio</title>
+<title>Shorts — Live Channel</title>
 <style>
   :root {
     --surface-0:#05070c;
@@ -11,7 +11,6 @@
     --surface-2:#0f131c;
     --surface-3:#161d2b;
     --surface-4:#1e2636;
-    --surface-5:#273144;
     --line-1:rgba(45,60,90,.25);
     --line-2:rgba(60,80,120,.35);
     --txt:#f8fafc;
@@ -19,7 +18,6 @@
     --txt-faint:#64748b;
     --accent:#38bdf8;
     --accent-bright:#7dd3fc;
-    --emerald:#10b981;
     --violet:#8b5cf6;
     --radius-md:clamp(12px,1.5vw,16px);
     --radius-lg:clamp(16px,2vw,24px);
@@ -45,99 +43,85 @@
     z-index:0;
   }
   header{
-    position:sticky;
-    top:0;
-    z-index:100;
+    position:sticky;top:0;z-index:100;
     background:rgba(5,7,12,.85);
     backdrop-filter:blur(16px) saturate(180%);
     border-bottom:1px solid var(--line-1);
     padding:0 var(--space-md);
   }
-  .header-inner{
-    max-width:1400px;
-    margin:0 auto;
-    display:flex;
-    align-items:center;
-    gap:12px;
-    height:clamp(60px,8vh,72px);
-  }
-  .brand{
-    display:flex;
-    align-items:center;
-    gap:12px;
-    text-decoration:none;
-  }
+  .header-inner{max-width:1000px;margin:0 auto;display:flex;align-items:center;gap:12px;height:clamp(60px,8vh,72px)}
+  .brand{display:flex;align-items:center;gap:12px;text-decoration:none}
   .logo-mark{
-    width:clamp(36px,5vw,44px);
-    height:clamp(36px,5vw,44px);
+    width:clamp(36px,5vw,44px);height:clamp(36px,5vw,44px);
     border-radius:clamp(10px,1.5vw,12px);
     background:linear-gradient(135deg,var(--accent),var(--accent-bright));
-    display:grid;
-    place-items:center;
-    font-weight:900;
-    font-size:clamp(1.1rem,2vw,1.5rem);
+    display:grid;place-items:center;font-weight:900;font-size:clamp(1.1rem,2vw,1.5rem);
     color:var(--surface-0);
     box-shadow:0 0 24px rgba(56,189,248,.4),inset 0 1px 0 rgba(255,255,255,.2);
   }
-  .brand-text{
-    font-size:clamp(0.95rem,1.8vw,1.1rem);
-    font-weight:800;
-    letter-spacing:1.5px;
-  }
+  .brand-text{font-size:clamp(0.95rem,1.8vw,1.1rem);font-weight:800;letter-spacing:1.5px}
   .brand-text .accent{background:linear-gradient(135deg,var(--accent),var(--accent-bright));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
-  .back{
-    margin-left:auto;
-    color:var(--txt-dim);
-    text-decoration:none;
-    font-size:0.9rem;
-    padding:8px 16px;
-    border:1px solid var(--line-2);
-    border-radius:999px;
-    transition:all .2s;
-  }
+  .back{margin-left:auto;color:var(--txt-dim);text-decoration:none;font-size:.9rem;padding:8px 16px;border:1px solid var(--line-2);border-radius:999px;transition:all .2s}
   .back:hover{color:var(--txt);border-color:var(--accent)}
-  main{
-    position:relative;
-    z-index:1;
-    max-width:1200px;
-    margin:0 auto;
-    padding:var(--space-md);
-  }
-  .page-head{
-    display:flex;
-    align-items:baseline;
-    gap:14px;
-    flex-wrap:wrap;
-    margin-bottom:var(--space-sm);
-  }
-  h1{font-size:clamp(1.5rem,3vw,2rem);letter-spacing:-0.5px}
-  .pill{
-    font-size:0.75rem;
-    color:var(--accent);
-    background:rgba(56,189,248,.1);
-    border:1px solid rgba(56,189,248,.3);
-    padding:3px 12px;
-    border-radius:999px;
-    letter-spacing:.5px;
-  }
-  .note{
-    color:var(--txt-faint);
-    font-size:0.85rem;
-    margin-bottom:var(--space-sm);
-  }
-  .note b{color:var(--txt-dim)}
-  .widget-wrap{
+  main{position:relative;z-index:1;max-width:1000px;margin:0 auto;padding:var(--space-md)}
+  .page-head{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:var(--space-sm)}
+  h1{font-size:clamp(1.5rem,3vw,2rem);letter-spacing:-.5px}
+  .pill{font-size:.75rem;color:var(--accent);background:rgba(56,189,248,.1);border:1px solid rgba(56,189,248,.3);padding:3px 12px;border-radius:999px;letter-spacing:.5px}
+  .live-dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#10b981;margin-right:5px;animation:pulse 2s infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+  .chat-card{
     background:var(--surface-1);
     border:1px solid var(--line-1);
     border-radius:var(--radius-lg);
-    padding:clamp(8px,1.5vw,16px);
     box-shadow:0 24px 64px rgba(0,0,0,.45);
+    display:flex;flex-direction:column;
+    height:calc(100vh - 240px);min-height:480px;
   }
-  widgetbot{
-    display:block;
-    border-radius:var(--radius-md);
+  #feed{flex:1;overflow-y:auto;padding:var(--space-sm);display:flex;flex-direction:column;gap:14px}
+  #feed::-webkit-scrollbar{width:6px}
+  #feed::-webkit-scrollbar-thumb{background:var(--surface-4);border-radius:3px}
+  .msg{display:flex;gap:10px;align-items:flex-start}
+  .avatar{
+    width:36px;height:36px;border-radius:50%;flex-shrink:0;
+    background:var(--surface-4);display:grid;place-items:center;
+    font-weight:700;font-size:.9rem;color:var(--txt-dim);
     overflow:hidden;
   }
+  .avatar img{width:100%;height:100%;object-fit:cover}
+  .msg-body{min-width:0;flex:1}
+  .msg-head{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+  .msg-author{font-weight:700;font-size:.9rem}
+  .msg-author.bot{color:var(--violet)}
+  .msg-time{font-size:.7rem;color:var(--txt-faint)}
+  .msg-content{font-size:.92rem;color:var(--txt);word-wrap:break-word;white-space:pre-wrap}
+  .msg-content a{color:var(--accent)}
+  .msg-attachments{margin-top:8px;display:flex;flex-direction:column;gap:8px}
+  .msg-attachments video{width:100%;max-width:420px;border-radius:12px;background:#000}
+  .msg-attachments img{max-width:280px;border-radius:12px}
+  .att-link{font-size:.8rem;color:var(--txt-faint)}
+  .composer{
+    border-top:1px solid var(--line-1);
+    padding:var(--space-sm);
+    display:flex;gap:10px;
+    background:var(--surface-2);
+    border-radius:0 0 var(--radius-lg) var(--radius-lg);
+  }
+  .composer input{
+    flex:1;background:var(--surface-3);border:1px solid var(--line-2);
+    border-radius:12px;color:var(--txt);padding:12px 16px;font-size:.95rem;outline:none;
+  }
+  .composer input:focus{border-color:var(--accent)}
+  .composer button{
+    background:linear-gradient(135deg,var(--accent),var(--accent-bright));
+    color:var(--surface-0);border:none;border-radius:12px;padding:12px 22px;
+    font-weight:800;cursor:pointer;font-size:.9rem;transition:transform .1s;
+  }
+  .composer button:hover{transform:translateY(-1px)}
+  .composer button:disabled{opacity:.5;cursor:not-allowed;transform:none}
+  .status-line{font-size:.75rem;color:var(--txt-faint);padding:6px var(--space-sm) 0}
+  .empty{color:var(--txt-faint);text-align:center;padding:60px 20px;font-size:.9rem}
+  .note{color:var(--txt-faint);font-size:.85rem;margin-bottom:var(--space-sm)}
+  .note b{color:var(--txt-dim)}
 </style>
 </head>
 <body>
@@ -153,21 +137,151 @@
 <main>
   <div class="page-head">
     <h1>#shorts</h1>
-    <span class="pill">LIVE DISCORD CHANNEL</span>
+    <span class="pill"><span class="live-dot"></span>LIVE</span>
   </div>
-  <p class="note">
-    Chat with the video bot right here — <b>log in with Discord</b> when the widget asks (top-right corner).
-    Type <b>@websim bot</b> + your prompt, and it generates videos in this channel.
-  </p>
-  <div class="widget-wrap">
-    <widgetbot
-      server="994634777632190535"
-      channel="1520459110255169576"
-      width="100%"
-      height="78vh"
-    ></widgetbot>
-    <script src="https://cdn.jsdelivr.net/npm/@widgetbot/html-embed"></script>
+  <p class="note">Live feed of your Discord channel. Messages you send here appear in Discord under <b>your name</b> — type <b>@websim bot</b> + a prompt to generate videos.</p>
+  <div class="chat-card">
+    <div id="feed"><div class="empty">connecting to channel…</div></div>
+    <div class="composer">
+      <input id="msgInput" type="text" placeholder="Message #shorts… (e.g. @websim bot make a video with wan3: …)" autocomplete="off" maxlength="2000">
+      <button id="sendBtn" onclick="sendMsg()">Send</button>
+    </div>
+    <div class="status-line" id="statusLine"></div>
   </div>
 </main>
+<script>
+const BRIDGE = 'http://localhost:5174';
+const POLL_MS = 2500;
+let me = { name: 'you', avatar: '' };
+let lastIds = new Set();
+let firstLoad = true;
+
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined) e.textContent = text;
+  return e;
+}
+
+function fmtTime(ts) {
+  const d = new Date(ts);
+  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+function renderMessage(m) {
+  const row = el('div', 'msg');
+  const av = el('div', 'avatar');
+  if (m.avatar) {
+    const img = document.createElement('img');
+    img.src = m.avatar; img.alt = m.author;
+    av.appendChild(img);
+  } else {
+    av.textContent = (m.author || '?').slice(0, 1).toUpperCase();
+  }
+  const body = el('div', 'msg-body');
+  const head = el('div', 'msg-head');
+  const name = el('span', 'msg-author' + (m.bot ? ' bot' : ''), m.author);
+  const time = el('span', 'msg-time', fmtTime(m.ts));
+  head.appendChild(name); head.appendChild(time);
+  body.appendChild(head);
+  if (m.content) {
+    const content = el('div', 'msg-content');
+    content.textContent = m.content.replace(/<@!?(\d+)>/g, '@user ');
+    body.appendChild(content);
+  }
+  if (m.attachments && m.attachments.length) {
+    const atts = el('div', 'msg-attachments');
+    m.attachments.forEach((a) => {
+      if (a.contentType && a.contentType.startsWith('video/')) {
+        const v = document.createElement('video');
+        v.src = a.url; v.controls = true; v.preload = 'metadata';
+        atts.appendChild(v);
+      } else if (a.contentType && a.contentType.startsWith('image/')) {
+        const i = document.createElement('img');
+        i.src = a.url; i.alt = a.name || 'image'; i.loading = 'lazy';
+        atts.appendChild(i);
+      } else {
+        const a2 = document.createElement('a');
+        a2.className = 'att-link'; a2.href = a.url; a2.target = '_blank';
+        a2.textContent = '📎 ' + (a.name || 'attachment');
+        atts.appendChild(a2);
+      }
+    });
+    body.appendChild(atts);
+  }
+  row.appendChild(av); row.appendChild(body);
+  return row;
+}
+
+async function refresh() {
+  try {
+    const r = await fetch(BRIDGE + '/feed?n=60');
+    const data = await r.json();
+    const feed = document.getElementById('feed');
+    if (data.ok) {
+      if (firstLoad) {
+        feed.innerHTML = '';
+        if (!data.messages.length) feed.appendChild(el('div', 'empty', 'no messages yet — say something!'));
+        data.messages.forEach((m) => feed.appendChild(renderMessage(m)));
+        firstLoad = false;
+        feed.scrollTop = feed.scrollHeight;
+      } else {
+        const fresh = data.messages.filter((m) => !lastIds.has(m.id));
+        if (fresh.length) {
+          const wasNearBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 120;
+          if (feed.querySelector('.empty')) feed.innerHTML = '';
+          fresh.forEach((m) => feed.appendChild(renderMessage(m)));
+          if (wasNearBottom) feed.scrollTop = feed.scrollHeight;
+        }
+      }
+      lastIds = new Set(data.messages.map((m) => m.id));
+      setStatus('');
+    }
+  } catch {
+    setStatus('bridge offline — start discord-bridge (npm start)');
+  }
+}
+
+function setStatus(t) {
+  document.getElementById('statusLine').textContent = t;
+}
+
+async function loadMe() {
+  try {
+    const r = await fetch(BRIDGE + '/me');
+    me = await r.json();
+  } catch {}
+}
+
+async function sendMsg() {
+  const input = document.getElementById('msgInput');
+  const btn = document.getElementById('sendBtn');
+  const text = input.value.trim();
+  if (!text) return;
+  btn.disabled = true;
+  try {
+    const r = await fetch(BRIDGE + '/send', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ content: text, username: me.name, avatarUrl: me.avatar }),
+    });
+    const data = await r.json();
+    if (!data.ok) { setStatus(data.error || 'send failed'); }
+    else { input.value = ''; setStatus(''); }
+  } catch {
+    setStatus('bridge offline — start discord-bridge (npm start)');
+  }
+  btn.disabled = false;
+  input.focus();
+}
+
+document.getElementById('msgInput').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') sendMsg();
+});
+
+loadMe();
+refresh();
+setInterval(refresh, POLL_MS);
+</script>
 </body>
 </html>

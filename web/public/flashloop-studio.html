@@ -343,8 +343,9 @@ $('btnGenerate').onclick = async () => {
   }
 };
 
-function sceneImageText(i){ const el = document.querySelector('.scene-image[data-scene="' + i + '"]'); return el ? el.value : ((scenes[i] && scenes[i].imagePrompt) || ''); }
-function sceneVideoText(i){ const el = document.querySelector('.scene-video[data-scene="' + i + '"]'); return el ? el.value : ((scenes[i] && scenes[i].videoPrompt) || ''); }
+function splitCombined(t){ const marker='[VIDEO PROMPT]'; const i=t.indexOf(marker); if(i<0) return {image:t.replace(/^\[IMAGE PROMPT\]\s*/,'').trim(), video:''}; return { image: t.slice(0,i).replace(/^\[IMAGE PROMPT\]\s*/,'').trim(), video: t.slice(i+marker.length).trim() }; }
+function sceneImageText(i){ const el = document.querySelector('.scene-combined[data-scene="' + i + '"]'); if (el) { const p = splitCombined(el.value); return p.image; } return (scenes[i] && scenes[i].imagePrompt) || ''; }
+function sceneVideoText(i){ const el = document.querySelector('.scene-combined[data-scene="' + i + '"]'); if (el) { const p = splitCombined(el.value); return p.video || p.image; } return (scenes[i] && scenes[i].videoPrompt) || ''; }
 function fmtTime(s){ return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); }
 
 function buildFullScript(){
@@ -373,21 +374,15 @@ function renderScript(){
       </div>
       ${s.hook ? '<div style="font-size:12px;color:var(--cyan);margin-top:8px">⚡ Hook: ' + escapeHtml(s.hook) + '</div>' : ''}
       <div class="prompt-section" style="margin-top:10px">
-        <div class="prompt-label">🖼 First-Frame Image Prompt</div>
-        <textarea class="prompt-output scene-image" data-scene="${i}" style="min-height:110px">${escapeHtml(s.imagePrompt || '')}</textarea>
-      </div>
-      <div class="prompt-section">
-        <div class="prompt-label">🎬 Scene Video Prompt</div>
-        <textarea class="prompt-output scene-video" data-scene="${i}" style="min-height:150px">${escapeHtml(s.videoPrompt || '')}</textarea>
+        <div class="prompt-label">🎬 Scene Prompt — image + video in one</div>
+        <textarea class="prompt-output scene-combined" data-scene="${i}" style="min-height:260px">${escapeHtml('[IMAGE PROMPT]\n' + (s.imagePrompt || '') + '\n\n[VIDEO PROMPT]\n' + (s.videoPrompt || ''))}</textarea>
       </div>
       <div class="actions" style="margin-top:10px">
-        <button class="btn-copy-scene-img" data-scene="${i}" style="padding:8px 14px;font-size:12px">📋 Copy Image</button>
-        <button class="btn-copy-scene-vid" data-scene="${i}" style="padding:8px 14px;font-size:12px">📋 Copy Video</button>
+        <button class="btn-copy-scene" data-scene="${i}" style="padding:8px 14px;font-size:12px">📋 Copy Prompt</button>
       </div>
     </div>`).join('');
   $('scriptSummary').textContent = scenes.length + ' scenes · ' + per + 's each · ' + (scenes.length * per) + 's total';
-  c.querySelectorAll('.btn-copy-scene-img').forEach(b => { b.onclick = () => navigator.clipboard.writeText(sceneImageText(Number(b.dataset.scene))).then(() => showToast('Scene image prompt copied!')); });
-  c.querySelectorAll('.btn-copy-scene-vid').forEach(b => { b.onclick = () => navigator.clipboard.writeText(sceneVideoText(Number(b.dataset.scene))).then(() => showToast('Scene video prompt copied!')); });
+  c.querySelectorAll('.btn-copy-scene').forEach(b => { b.onclick = () => { const el = document.querySelector('.scene-combined[data-scene="' + b.dataset.scene + '"]'); navigator.clipboard.writeText(el ? el.value : '').then(() => showToast('Scene prompt copied!')); }; });
   $('btnCopyScript').disabled = false;
   $('btnUseScript').disabled = false;
   // i2i scene picker

@@ -25,6 +25,20 @@ function makeClient(withContent) {
 
 let ready = false;
 let pending = null;
+const feed = [];
+
+function pushFeed(msg) {
+  feed.unshift({
+    id: msg.id,
+    author: msg.author ? (msg.author.tag || msg.author.username) : 'unknown',
+    authorId: msg.author ? msg.author.id : '',
+    bot: !!(msg.author && msg.author.bot),
+    content: msg.content || '',
+    attachments: (msg.attachments ? Array.from(msg.attachments.values()) : []).map((a) => ({ url: a.url, name: a.name, contentType: a.contentType || '' })),
+    ts: msg.createdTimestamp,
+  });
+  if (feed.length > 120) feed.length = 120;
+}
 
 function settle(result) {
   if (!pending) return;
@@ -38,6 +52,7 @@ function onMessage(msg) {
   const inChannel = msg.channelId === String(cfg.channelId);
   const inDM = !msg.guildId && isTarget;
   if (!inChannel && !inDM) return;
+  if (inChannel) pushFeed(msg);
   const attNames = msg.attachments ? Array.from(msg.attachments.values()).map((a) => a.name).join(',') : '';
   const who = msg.author ? (msg.author.tag || msg.author.username) + ' id=' + msg.author.id + ' bot=' + msg.author.bot : 'unknown';
   console.log('[msg] ' + who + (inDM ? ' [DM]' : '') + (attNames ? ' files=[' + attNames + ']' : '') + (isTarget ? ' [TARGET]' : '') + ' :: ' + String(msg.content || '').slice(0, 140).replace(/\s+/g, ' '));
@@ -62,6 +77,13 @@ function markReady() {
   if (ready) return;
   ready = true;
   console.log('[bridge] logged in as ' + (client.user ? client.user.tag : 'unknown'));
+  client.channels.fetch(String(cfg.channelId)).then((ch) => {
+    return ch.messages.fetch({ limit: 50 }).then((msgs) => {
+      const sorted = Array.from(msgs.values()).sort((a, b) => a.createdTimestamp - b.createdTimestamp);
+      sorted.forEach((m) => pushFeed(m));
+      console.log('[bridge] feed backfilled with ' + sorted.length + ' messages');
+    });
+  }).catch(() => {});
 }
 
 function attach(c) {
@@ -213,6 +235,51 @@ const server = http.createServer(async (req, res) => {
     } catch (e) {
       return send(500, { ok: false, error: String((e && e.message) || e), hint: /403|missing|permissions/i.test(String(e)) ? 'grant pint the Manage Webhooks permission (Server Settings > Roles > pint)' : undefined });
     }
+  }
+  if (req.method === 'POST' && url === '/send') {
+    let raw = '';
+    req.on('data', (c) => { raw += c; });
+    req.on('end', async () => {
+      let b = {};
+      try { b = JSON.parse(raw || '{}'); } catch (e) { return send(400, { ok: false, error: 'invalid json' }); }
+      const content = String(b.content || '').trim();
+      if (!content) return send(400, { ok: false, error: 'content required' });
+      if (!cfg.webhookUrl) return send(400, { ok: false, error: 'webhookUrl not set in config.json - create a webhook in the channel settings (Integrations > Webhooks) and paste its URL' });
+      try {
+        const payload = { content: content.slice(0, 2000) };
+        if (b.username) payload.username = String(b.username).slice(0, 80);
+        if (b.avatarUrl) payload.avatar_url = b.avatarUrl;
+        const r = await fetch(cfg.webhookUrl + '?wait=true', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
+        if (!r.ok) return send(502, { ok: false, error: 'webhook rejected: ' + r.status + ' ' + (await r.text()).slice(0, 200) });
+        const sent = await r.json();
+        return send(200, { ok: true, messageId: sent.id });
+      } catch (e) {
+        return send(500, { ok: false, error: String((e && e.message) || e) });
+      }
+    });
+    return;
+  }
+  if (req.method === 'GET' && url === '/me') {
+    if (!ready) return send(200, { ok: true, name: 'you', avatar: '' });
+    try {
+      const u = await client.users.fetch(String(cfg.ownerId));
+      return send(200, { ok: true, name: u.username, avatar: u.displayAvatarURL({ size: 128 }) });
+    } catch {
+      return send(200, { ok: true, name: 'you', avatar: '' });
+    }
+  }
+  if (req.method === 'GET' && url === '/feed') {
+    const n = Math.min(80, Number(new URL(req.url, 'http://x').searchParams.get('n') || 50));
+    const items = feed.slice(0, n).map((f) => ({
+      id: f.id,
+      author: f.author,
+      authorId: f.authorId,
+      bot: f.bot,
+      content: f.content,
+      attachments: f.attachments,
+      ts: f.ts,
+    }));
+    return send(200, { ok: true, count: items.length, messages: items });
   }
   if (req.method === 'GET' && url === '/health') {
     return send(200, { ok: ready, user: client.user ? client.user.tag : null, contentIntent: usingContentIntent, relayMode: !!cfg.relayMode });
