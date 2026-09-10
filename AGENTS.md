@@ -10,7 +10,9 @@ consistency**, generates frame images, animates them via Grok Video / Omni Flash
 - `storyboard/characters.json` — locked character profiles (id, name, age, description, reference_prompt)
 - `storyboard/frames.json`  — master storyboard: one object per frame
 - `web/server.js`           — zero-dep Node web server (the app)
-- `web/public/index.html`   — SPA frontend
+- `web/public/home.html`     — public landing page (served at `/`)
+- `web/public/storyboard.html` — Storyboard SPA (`/storyboard`); no `index.html` so `/` is not shadowed
+- `web/public/auth.js`       — shared client auth guard (retry + bearer fallback)
 - `pipeline/PaxGen.ps1`     — CLI pipeline for single phases (alternative to web)
 - `pipeline/Continue-Full.ps1` — CLI full pipeline: clean, char refs, images, videos, combine
 - `pipeline/apikey.txt`     — PaxSenix API key (never commit)
@@ -165,13 +167,19 @@ Zero-framework auth built into `web/server.js` — scrypt password hashing + ran
 - **Users/sessions** live in Postgres when `DATABASE_URL` is set (Vercel Postgres / Neon via the
   `pg` driver — auto-creates `sb_users` + `sb_sessions` tables). Otherwise a local JSON fallback
   (`storyboard/users.json` + `storyboard/sessions.json`, gitignored) keeps local dev zero-setup.
-- **Pages**: `/` → `home.html` (portal to all tools), `/login` (login + signup), `/storyboard` →
-  `index.html`, plus `/influencer`, `/trends`, `/flashloop-studio`. All tool pages are protected.
-- **Local server**: tool pages are gated server-side (`requirePageAuth` → 302 to `/login`), and
-  every `/api/*` route (except `/api/health`, `/api/models`, `/api/status`, `/api/auth/*`) requires
-  a valid session via `requireApiAuth`.
-- **Vercel**: pages are served statically, so protection is client-side — each tool page checks
-  `/api/auth/me` on load and redirects to `/login?next=...` when 401; the API stays server-gated.
+- **Pages**: `/` → `home.html` (PUBLIC landing page; visitors see the product + a signup
+  funnel, no auth), `/login` (login + signup tabs; `?mode=signup` opens Create-account),
+  `/storyboard` → `storyboard.html`, plus `/influencer`, `/trends`, `/flashloop-studio`.
+  All tool pages are protected. There is NO `index.html` (a static index would shadow `/`).
+- **Signup funnel**: home's tool cards are gated and link to `/login?mode=signup&next=<tool>`;
+  anonymous deep-links to a tool also land on the signup tab. Signed-in users get the cards
+  unlocked, a "Welcome back" hero and an "Open Studio" header instead.
+- **Local server**: tool pages are gated server-side (`requirePageAuth` → 302 to
+  `/login?mode=signup&next=...`), and every `/api/*` route (except `/api/health`, `/api/models`,
+  `/api/status`, `/api/auth/*`) requires a valid session via `requireApiAuth`.
+- **Vercel**: pages are served statically, so protection is client-side — each tool page uses
+  the shared `auth.js` guard (retries transient failures, redirects only on a real 401, and
+  falls back to a Bearer token if the cookie is dropped); the API stays server-gated.
 - **Endpoints**: `POST /api/auth/signup`, `POST /api/auth/login`, `POST /api/auth/logout`,
   `GET /api/auth/me` (cookie or `Authorization: Bearer <token>`), `PUT /api/auth/user` (rename).
 - Session cookie: `sb_session` (HttpOnly, SameSite=Lax, 30-day TTL; `Secure` on Vercel).

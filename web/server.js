@@ -6082,7 +6082,7 @@ ${infl.description || '(no description - describe a beautiful confident influenc
     else if (p.startsWith('/video/')) filePath = path.join(VIDEO_DIR, decodeURIComponent(p.slice('/video/'.length)));
     else if (p === '/' || p === '/home') filePath = path.join(PUBLIC, 'home.html');
     else if (p === '/login' || p === '/signup') filePath = path.join(PUBLIC, 'login.html');
-    else if (p === '/storyboard' || p === '/index') filePath = path.join(PUBLIC, 'index.html');
+    else if (p === '/storyboard' || p === '/index') filePath = path.join(PUBLIC, 'storyboard.html');
     else if (p === '/influencer') filePath = path.join(PUBLIC, 'influencer.html');
     else if (p === '/trends') filePath = path.join(PUBLIC, 'trends.html');
     else if (p === '/flashloop-studio' || /^\/effects\/[^/]+$/.test(p)) filePath = path.join(PUBLIC, 'flashloop-studio.html');
