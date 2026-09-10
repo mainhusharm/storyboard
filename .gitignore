@@ -30,6 +30,7 @@ continue_full.log
 # Discord video bridge (bot token lives in config.json)
 discord-bridge/config.json
 discord-bridge/out/
+discord-bridge/result.json
 
 # Vercel
 .vercel/

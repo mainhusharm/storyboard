@@ -121,12 +121,23 @@
     </div>
     <div class="grid2">
       <div class="field">
-      <label for="duration">Video Length</label>
-      <select id="duration">
-        <option value="15" selected>~1 min — 8 scenes × 8s</option>
-        <option value="30">~2 min — 15 scenes × 8s</option>
-      </select>
-      <div class="hint">Scenes are sized to the render engine: omni-flash makes ~8s clips, so every scene timeline is written for exactly 8 seconds — no wasted prompt.</div>
+        <label for="duration">Video Length</label>
+        <select id="duration">
+          <option value="15" selected>~1 min — 8 scenes</option>
+          <option value="30">~2 min — 15 scenes</option>
+        </select>
+        <div class="hint">Total video length. Scene count adapts to the per-scene timeframe below.</div>
+      </div>
+      <div class="field">
+        <label for="sceneLength">Scene Length</label>
+        <select id="sceneLength">
+          <option value="8" selected>8s per scene (omni-flash)</option>
+          <option value="5">5s per scene</option>
+          <option value="10">10s per scene</option>
+          <option value="15">15s per scene</option>
+          <option value="30">30s per scene</option>
+        </select>
+        <div class="hint">Each scene's video prompt is timed exactly to this. 8s matches omni-flash clips; pick what your render engine needs.</div>
       </div>
       <div class="field">
         <label for="ratio">Aspect Ratio</label>
@@ -138,27 +149,36 @@
       </div>
     </div>
     <div class="field">
-      <label for="model">Model</label>
-      <select id="model">
-        <option value="gemini-2.5-pro" selected>Gemini 2.5 Pro (recommended)</option>
-        <option value="gemini-3.1-pro">Gemini 3.1 Pro</option>
-        <option value="gemini-3.1-flash-lite">Gemini 3.1 Flash Lite</option>
-        <option value="gpt-5.5">GPT-5.5</option>
-        <option value="gpt-5.2">GPT-5.2</option>
-        <option value="claude-sonnet-4-5">Claude Sonnet 4.5</option>
-        <option value="claude-opus-4-8">Claude Opus 4.8</option>
-        <option value="kimi-k3">Kimi K3</option>
-        <option value="kimi-k2.6">Kimi K2.6</option>
-        <option value="glm-5.2">GLM 5.2</option>
-        <option value="glm-5.3">GLM 5.3</option>
-        <option value="deepseek-v3.2">DeepSeek V3.2</option>
-        <option value="deepseek-v4-flash">DeepSeek V4 Flash</option>
-        <option value="qwen3.8-max">Qwen 3.8 Max</option>
-        <option value="grok-4.6">Grok 4.6</option>
-        <option value="mimo-v2.5">MIMO 2.5</option>
-        <option value="minimax-m3">MiniMax M3</option>
-      </select>
-      <div class="hint">Choose the PaxSenix chat model. If it fails or times out, the server automatically retries with Gemini 2.5 Pro.</div>
+        <label for="model">Model</label>
+        <select id="model">
+          <option value="logfare:auto" selected>Logfare Auto (recommended)</option>
+          <option value="logfare:gemma-4-26b">Gemma 4 26B — Logfare</option>
+          <option value="logfare:glm-5.3">GLM 5.3 — Logfare (needs opt-in)</option>
+          <option value="logfare:kimi-k3">Kimi K3 — Logfare (needs opt-in)</option>
+          <option value="logfare:kimi-k3:fast">Kimi K3 Fast — Logfare (needs opt-in)</option>
+          <option value="logfare:deepseek-v4-flash-0731">DeepSeek V4 Flash — Logfare (needs opt-in)</option>
+          <option value="logfare:deepseek-v4-pro-0813">DeepSeek V4 Pro — Logfare (needs opt-in)</option>
+          <option value="logfare:qwen-3.8-27b">Qwen 3.8 27B — Logfare (needs opt-in)</option>
+          <option value="logfare:moondream3.1">Moondream 3.1 — Logfare (needs opt-in)</option>
+          <option value="gemini-2.5-pro">Gemini 2.5 Pro (PaxSenix)</option>
+          <option value="gemini-3.1-pro">Gemini 3.1 Pro (PaxSenix)</option>
+          <option value="gemini-3.1-flash-lite">Gemini 3.1 Flash Lite (PaxSenix)</option>
+          <option value="gpt-5.5">GPT-5.5 (PaxSenix)</option>
+          <option value="gpt-5.2">GPT-5.2 (PaxSenix)</option>
+          <option value="claude-sonnet-4-5">Claude Sonnet 4.5 (PaxSenix)</option>
+          <option value="claude-opus-4-8">Claude Opus 4.8 (PaxSenix)</option>
+          <option value="kimi-k3">Kimi K3 (PaxSenix)</option>
+          <option value="kimi-k2.6">Kimi K2.6 (PaxSenix)</option>
+          <option value="glm-5.2">GLM 5.2 (PaxSenix)</option>
+          <option value="glm-5.3">GLM 5.3 (PaxSenix)</option>
+          <option value="deepseek-v3.2">DeepSeek V3.2 (PaxSenix)</option>
+          <option value="deepseek-v4-flash">DeepSeek V4 Flash (PaxSenix)</option>
+          <option value="qwen3.8-max">Qwen 3.8 Max (PaxSenix)</option>
+          <option value="grok-4.6">Grok 4.6 (PaxSenix)</option>
+          <option value="mimo-v2.5">MIMO 2.5 (PaxSenix)</option>
+          <option value="minimax-m3">MiniMax M3 (PaxSenix)</option>
+        </select>
+        <div class="hint">Logfare models are used ONLY to write these prompts — nothing else is ever sent there. "needs opt-in" models unlock after enabling model-training opt-in on your Logfare dashboard; until then they auto-fall back to Logfare Auto. If all Logfare fails, the server falls back to PaxSenix.</div>
     </div>
     <div class="field">
       <label>Character References</label>
@@ -278,6 +298,7 @@ if (trendThumbnail) {
 
 let scenes = [];
 let scriptTitle = '';
+let sceneLen = 8; // seconds per scene (from the dropdown / server response)
 let references = [];
 
 function renderRefs(){
@@ -316,13 +337,14 @@ $('btnGenerate').onclick = async () => {
     const res = await fetch('/api/flashloop/generate-prompt', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ slug, name, tagline, idea, sceneDuration, ratio, model: $('model').value, references: getRefs(), trendThumbnail })
+      body: JSON.stringify({ slug, name, tagline, idea, sceneDuration, sceneLength: Number($('sceneLength').value) || 8, ratio, model: $('model').value, references: getRefs(), trendThumbnail })
     });
     const rawText = await res.text();
     let j; try { j = JSON.parse(rawText); } catch { j = { error: rawText ? rawText.slice(0, 180) : ('HTTP ' + res.status) }; }
     if (!res.ok || j.error) throw new Error(j.error || ('Failed to generate prompt (HTTP ' + res.status + ')'));
     scenes = Array.isArray(j.scenes) ? j.scenes : [];
     if (!scenes.length) throw new Error('The script generator returned no scenes.');
+    sceneLen = Number(j.sceneLength) || Number(j.sceneDuration) || 8;
     scriptTitle = j.title || name;
     $('effectTitle').textContent = scriptTitle;
     renderScript();
@@ -343,48 +365,80 @@ $('btnGenerate').onclick = async () => {
   }
 };
 
-function splitCombined(t){ const marker='[VIDEO PROMPT]'; const i=t.indexOf(marker); if(i<0) return {image:t.replace(/^\[IMAGE PROMPT\]\s*/,'').trim(), video:''}; return { image: t.slice(0,i).replace(/^\[IMAGE PROMPT\]\s*/,'').trim(), video: t.slice(i+marker.length).trim() }; }
-function sceneImageText(i){ const el = document.querySelector('.scene-combined[data-scene="' + i + '"]'); if (el) { const p = splitCombined(el.value); return p.image; } return (scenes[i] && scenes[i].imagePrompt) || ''; }
-function sceneVideoText(i){ const el = document.querySelector('.scene-combined[data-scene="' + i + '"]'); if (el) { const p = splitCombined(el.value); return p.video || p.image; } return (scenes[i] && scenes[i].videoPrompt) || ''; }
+function parseScriptBox(t){
+  const out = [];
+  let cur = null, mode = null;
+  for (const ln of String(t || '').split('\n')) {
+    if (/^SCENE\s+\d+/.test(ln.trim())) { if (cur) out.push(cur); cur = { image: '', video: '' }; mode = null; continue; }
+    if (!cur) continue;
+    const s = ln.trim();
+    if (/^\[IMAGE PROMPT\]/i.test(s)) { mode = 'image'; continue; }
+    if (/^\[VIDEO PROMPT\]/i.test(s)) { mode = 'video'; continue; }
+    if (mode === 'image') cur.image += (cur.image ? '\n' : '') + ln;
+    else if (mode === 'video') cur.video += (cur.video ? '\n' : '') + ln;
+  }
+  if (cur) out.push(cur);
+  return out;
+}
+function sceneImageText(i){ const box = document.getElementById('fullScriptBox'); if (box) { const p = parseScriptBox(box.value); if (p[i] && p[i].image.trim()) return p[i].image.trim(); } return (scenes[i] && scenes[i].imagePrompt) || ''; }
+function sceneVideoText(i){ const box = document.getElementById('fullScriptBox'); if (box) { const p = parseScriptBox(box.value); if (p[i] && p[i].video.trim()) return p[i].video.trim(); } return (scenes[i] && scenes[i].videoPrompt) || ''; }
 function fmtTime(s){ return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); }
 
 function buildFullScript(){
-  const per = 8; // scenes are sized to omni-flash's ~8s clip length
-  const lines = ['EFFECT: ' + scriptTitle, 'SCENE LENGTH: ' + per + 's per scene', ''];
-  scenes.forEach((s, i) => {
-    lines.push('SCENE ' + (i + 1) + ' — ' + (s.title || ('Scene ' + (i + 1))) + ' (' + fmtTime(i * per) + '–' + fmtTime((i + 1) * per) + ')');
-    if (s.hook) lines.push('HOOK: ' + s.hook);
-    lines.push('IMAGE: ' + sceneImageText(i));
-    lines.push('VIDEO: ' + sceneVideoText(i));
-    lines.push('');
-  });
-  return lines.join('\n');
+  // The single window is the source of truth once rendered — return it as-is
+  // so Copy / Use in Storyboard always match what the user sees and edited.
+  const box = document.getElementById('fullScriptBox');
+  if (box && box.value.trim()) return box.value;
+  const per = sceneLen || 8;
+  const blocks = scenes.map((s, i) =>
+    'SCENE ' + (i + 1) + ' — ' + (s.title || ('Scene ' + (i + 1))) + ' (' + fmtTime(i * per) + '–' + fmtTime((i + 1) * per) + ')' + (s.hook ? '\nHOOK: ' + s.hook : '') +
+    '\n[IMAGE PROMPT]\n' + (s.imagePrompt || '') +
+    '\n\n[VIDEO PROMPT]\n' + (s.videoPrompt || '')
+  );
+  return blocks.join('\n\n');
 }
 
 function renderScript(){
-  const per = 8; // scenes are sized to omni-flash's ~8s clip length
+  const per = sceneLen || 8; // scenes are timed to the user's chosen scene length
   const c = $('scriptContainer');
   if (!scenes.length) { c.innerHTML = ''; return; }
-  c.innerHTML = scenes.map((s, i) => `
-    <div class="scene-card" style="border:1px solid var(--line2);border-radius:12px;padding:16px;margin-top:16px;background:var(--bg2)">
-      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-        <span style="font-size:11px;font-weight:700;color:var(--orange);background:rgba(251,146,60,.12);border:1px solid rgba(251,146,60,.35);border-radius:99px;padding:4px 10px">SCENE ${i + 1} · ${per}s</span>
-        <b style="font-size:14px">${escapeHtml(s.title || ('Scene ' + (i + 1)))}</b>
-        <span style="font-size:11px;color:var(--faint)">${fmtTime(i * per)}–${fmtTime((i + 1) * per)}</span>
-      </div>
-      ${s.hook ? '<div style="font-size:12px;color:var(--cyan);margin-top:8px">⚡ Hook: ' + escapeHtml(s.hook) + '</div>' : ''}
-      <div class="prompt-section" style="margin-top:10px">
-        <div class="prompt-label">🎬 Scene Prompt — image + video in one</div>
-        <textarea class="prompt-output scene-combined" data-scene="${i}" style="min-height:260px">${escapeHtml('[IMAGE PROMPT]\n' + (s.imagePrompt || '') + '\n\n[VIDEO PROMPT]\n' + (s.videoPrompt || ''))}</textarea>
-      </div>
-      <div class="actions" style="margin-top:10px">
-        <button class="btn-copy-scene" data-scene="${i}" style="padding:8px 14px;font-size:12px">📋 Copy Prompt</button>
-      </div>
-    </div>`).join('');
+  // ONE single window: every scene stacked in one editable textarea.
+  const blocks = scenes.map((s, i) =>
+    'SCENE ' + (i + 1) + ' — ' + (s.title || ('Scene ' + (i + 1))) + ' (' + fmtTime(i * per) + '–' + fmtTime((i + 1) * per) + ')' + (s.hook ? '\nHOOK: ' + s.hook : '') +
+    '\n[IMAGE PROMPT]\n' + (s.imagePrompt || '') +
+    '\n\n[VIDEO PROMPT]\n' + (s.videoPrompt || '')
+  );
+  c.innerHTML = `
+    <textarea id="fullScriptBox" class="prompt-output" style="min-height:600px;width:100%">${escapeHtml(blocks.join('\n\n'))}</textarea>
+    <div id="editBar" style="display:flex;gap:10px;margin-top:12px;flex-wrap:wrap">
+      <input id="editInstruction" type="text" placeholder="Tell the AI what to edit — e.g. change the cat to a puppy, make scene 2 faster, replace neon with warm amber…" style="flex:1;min-width:240px;background:var(--bg2);border:1px solid var(--line2);border-radius:10px;padding:10px 14px;font-size:13px;color:var(--txt)">
+      <button id="btnEditScript" style="padding:10px 18px;font-size:13px">✏️ AI Edit</button>
+    </div>
+    <div id="editStatus" style="font-size:12px;color:var(--faint);margin-top:6px;min-height:16px"></div>`;
   $('scriptSummary').textContent = scenes.length + ' scenes · ' + per + 's each · ' + (scenes.length * per) + 's total';
-  c.querySelectorAll('.btn-copy-scene').forEach(b => { b.onclick = () => { const el = document.querySelector('.scene-combined[data-scene="' + b.dataset.scene + '"]'); navigator.clipboard.writeText(el ? el.value : '').then(() => showToast('Scene prompt copied!')); }; });
   $('btnCopyScript').disabled = false;
   $('btnUseScript').disabled = false;
+  // AI edit bar — rewrite the window content per the user's instruction.
+  const box = $('fullScriptBox');
+  const editBtn = $('btnEditScript');
+  const doEdit = async () => {
+    const instr = $('editInstruction').value.trim();
+    const st = $('editStatus');
+    if (!instr) { st.textContent = 'Type what to edit first.'; return; }
+    editBtn.disabled = true; st.textContent = 'AI is rewriting the script…';
+    try {
+      const r = await fetch('/api/flashloop/edit-prompt', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ script: box.value, instruction: instr, model: $('model').value }) });
+      const j = await r.json();
+      if (!r.ok || j.error) throw new Error(j.error || ('HTTP ' + r.status));
+      box.value = j.script || box.value;
+      $('editInstruction').value = '';
+      st.textContent = 'Edited ✓';
+      showToast('Script edited!');
+    } catch (e) { st.textContent = 'Edit failed: ' + e.message; }
+    editBtn.disabled = false;
+  };
+  editBtn.onclick = doEdit;
+  $('editInstruction').addEventListener('keydown', (e) => { if (e.key === 'Enter') doEdit(); });
   // i2i scene picker
   const picker = $('i2iScene');
   if (picker) {

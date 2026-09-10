@@ -351,6 +351,16 @@ The Director AI will:
 })();
 function logout(){fetch('/api/auth/logout',{method:'POST'}).then(()=>location.replace('/login'));}
 
+// Flashloop handoff — "Use Full Script in Storyboard" drops the full script here.
+try{
+  if(new URLSearchParams(location.search).get('prefill')==='flashloop_prompt'){
+    const t=localStorage.getItem('flashloop_prompt');
+    if(t&&document.getElementById('script')){document.getElementById('script').value=t;}
+    localStorage.removeItem('flashloop_prompt');
+    history.replaceState(null,'','/');
+  }
+}catch(e){}
+
 const $=id=>document.getElementById(id);
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const pad=n=>String(n).padStart(2,'0');

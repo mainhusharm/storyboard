@@ -37,9 +37,16 @@ if (!IS_VERCEL) { try { AQUA_API_KEY = AQUA_API_KEY || fs.readFileSync(path.join
 // Reads from env FISH_API_KEY first, then pipeline/fish_apikey.txt (gitignored).
 let FISH_API_KEY = process.env.FISH_API_KEY || '';
 if (!IS_VERCEL) { try { FISH_API_KEY = FISH_API_KEY || fs.readFileSync(path.join(ROOT, 'pipeline', 'fish_apikey.txt'), 'utf8').trim(); } catch {} }
+// Logfare (https://logfare.ai/v1) — OpenAI-compatible LLM gateway. ONLY used for
+// flashloop/sjinn script+prompt generation (generateFlashloopScript / generateFlashloopScene
+// / chatWithLogfare). Never used for storyboards, images, videos, TTS, or anything else:
+// Logfare logs all request content, so it must not see project data beyond prompt writing.
+let LOGFARE_API_KEY = process.env.LOGFARE_API_KEY || '';
+if (!IS_VERCEL) { try { LOGFARE_API_KEY = LOGFARE_API_KEY || fs.readFileSync(path.join(ROOT, 'pipeline', 'logfare_apikey.txt'), 'utf8').trim(); } catch {} }
 const FISH_API = 'https://api.fish.audio';
 const API = 'https://api.paxsenix.org';
 const AQUA_API = 'https://api.aquadevs.com';
+const LOGFARE_API = 'https://logfare.ai/v1';
 const PORT = process.env.PORT || 5173;
 // omkar.cloud trending API (TikTok trending + search)
 let OMKAR_KEY = process.env.OMKAR_KEY || '';
@@ -650,7 +657,7 @@ A photorealistic macro close-up of a crystal-glass fruit on a dark slate cutting
 
 ${hasStyle ? 'Render your scene in the exact visual style described in the VISUAL STYLE REFERENCE above. Your SUBJECT must be "' + effectName + '" — depict a scene that matches this trend name.' : 'Generate { "title": "...", "imagePrompt": "..." } for "' + effectName + '".'} Keep imagePrompt under 150 words. Do not output any explanation outside the JSON.`;
 
-  const raw = await chatWithFallback(model, [{ role: 'system', content: system }, { role: 'user', content: userText }], 4000, 1.0);
+  const raw = await chatWithLogfareFallback(model, [{ role: 'system', content: system }, { role: 'user', content: userText }], 4000, 1.0);
   let parsed = {};
   try { parsed = parseJsonLenient(raw); } catch (e) { parsed = {}; }
   const imagePrompt = enforceEffectRelevance(parsed.imagePrompt || raw, effectName, tagline, userIdea, 0, ratio, 'image');
@@ -702,7 +709,7 @@ ${FLASHLOOP_EXAMPLE_VIDEO_PROMPT}
 
 ${hasStyle ? 'Render in the exact visual style described in the VISUAL STYLE REFERENCE above. Your SUBJECT must be "' + effectName + '" — animate a scene that matches this trend name.' : 'Generate { "title": "...", "videoPrompt": "..." } for "' + effectName + '".'} Keep videoPrompt 180-280 words. No negative instructions. Do not output any explanation outside the JSON.`;
 
-  const raw = await chatWithFallback(model, [{ role: 'system', content: system }, { role: 'user', content: userText }], 16000, 1.0);
+  const raw = await chatWithLogfareFallback(model, [{ role: 'system', content: system }, { role: 'user', content: userText }], 16000, 1.0);
   let parsed = {};
   try { parsed = parseJsonLenient(raw); } catch (e) { parsed = {}; }
   const videoPrompt = scrubCameraFluff(capPrompt(enforceEffectRelevance(parsed.videoPrompt || raw, effectName, tagline, userIdea, duration, ratio, 'video'), 420));
@@ -715,7 +722,10 @@ ${hasStyle ? 'Render in the exact visual style described in the VISUAL STYLE REF
 // Build a production-ready AI scene for a Flashloop-style effect using GPT-5.5.
 // Returns both a first-frame/reference image prompt (img2img) and a motion
 // prompt for image-to-video (img2video) that preserves the generated frame.
-async function generateFlashloopScene(effectName, tagline, userIdea, duration, ratio, model = 'gpt-5.5', references = [], trendThumbnail = '') {
+async function generateFlashloopScene(effectName, tagline, userIdea, duration, ratio, model = 'gpt-5.5', references = [], trendThumbnail = '', sceneLength = 0) {
+  // sceneLength (seconds per scene) overrides `duration` when provided so the
+  // per-scene fill fallback matches the script's chosen timeframe exactly.
+  const perSceneLen = [5, 8, 10, 15, 30].includes(Number(sceneLength)) ? Number(sceneLength) : Number(duration) || 8;
   const cleanRefs = cleanFlashloopRefs(references);
 
   // On Vercel, skip vision style analysis (extra LLM call) so we fit in maxDuration.
@@ -730,7 +740,7 @@ async function generateFlashloopScene(effectName, tagline, userIdea, duration, r
 
   // Prefer a fast reliable model on Vercel to avoid timeouts
   const promptModel = IS_VERCEL
-    ? (['gemini-2.5-pro', 'gemini-3.1-pro', 'gemini-3.1-flash-lite', 'deepseek-v3.2', 'deepseek-v4-flash', 'glm-5.2', 'glm-5.3', 'kimi-k3', 'kimi-k2.6', 'claude-sonnet-4-5', 'mimo-v2.5', 'gpt-5.5'].includes(model) ? model : 'gemini-2.5-pro')
+    ? ((LOGFARE_MODELS.includes(model) || ['gemini-2.5-pro', 'gemini-3.1-pro', 'gemini-3.1-flash-lite', 'deepseek-v3.2', 'deepseek-v4-flash', 'glm-5.2', 'glm-5.3', 'kimi-k3', 'kimi-k2.6', 'claude-sonnet-4-5', 'mimo-v2.5', 'gpt-5.5'].includes(model)) ? model : 'logfare:auto')
     : model;
 
   // STEP 2: Generate prompts using styleText (no image attached — LLM can't copy subject)
@@ -743,17 +753,17 @@ async function generateFlashloopScene(effectName, tagline, userIdea, duration, r
 
   let videoResult = {};
   try {
-    videoResult = await generateFlashloopVideoPrompt(effectName, tagline, userIdea, duration, ratio, promptModel, cleanRefs, imageResult.imagePrompt, styleText);
+    videoResult = await generateFlashloopVideoPrompt(effectName, tagline, userIdea, perSceneLen, ratio, promptModel, cleanRefs, imageResult.imagePrompt, styleText);
   } catch (e) { logLine('flashloop video prompt failed: ' + e.message); }
 
   // Ensure the video prompt is never empty — build a detailed fallback.
   if (!videoResult.videoPrompt || !videoResult.videoPrompt.trim()) {
-    const d3 = Math.round(duration * 0.3);
-    const d6 = Math.round(duration * 0.6);
-    videoResult.videoPrompt = `Create an exactly ${duration}-second video for "${effectName}"${tagline ? ' — ' + tagline : ''}${userIdea ? ' — ' + userIdea : ''}, as a time-stamped timeline:
+    const d3 = Math.round(perSceneLen * 0.3);
+    const d6 = Math.round(perSceneLen * 0.6);
+    videoResult.videoPrompt = `Create an exactly ${perSceneLen}-second video for "${effectName}"${tagline ? ' — ' + tagline : ''}${userIdea ? ' — ' + userIdea : ''}, as a time-stamped timeline:
 0–${d3}s: HOOK — the scene's most striking moment, front and center.
 ${d3}–${d6}s: The main action unfolds in a few concrete beats with detail.
-${d6}–${duration}s: The action peaks, then settles into a strong final moment.
+${d6}–${perSceneLen}s: The action peaks, then settles into a strong final moment.
 Use the supplied first-frame image as the strict visual reference — preserve the exact subject, position, colors, lighting, and composition. Smooth continuous motion. Cinematic, photorealistic, ${ratio}. No text or logos.`;
   }
 
@@ -768,18 +778,18 @@ Use the supplied first-frame image as the strict visual reference — preserve t
 // scene opens with a hook, no camera/lighting/mood fluff. One LLM call writes all
 // scenes so the story flows seamlessly. Scene count is FIXED by the per-scene
 // length: 30s → 4 scenes, 15s → 8 scenes (both add up to 2 minutes of footage).
-async function generateFlashloopScript(effectName, tagline, userIdea, sceneDuration, ratio, model = 'gpt-5.5', references = [], trendThumbnail = '') {
-// Scenes are sized to the RENDER engine, not a wishful duration: Make Video
-// renders each scene with omni-flash, which produces ~8s clips — so every scene
-// is 8 seconds and the video timelines ("0–4s: …; 4–8s: …") match the actual
-// clip length. Mode totals stay: short → 8 scenes (~1 min), long → 15 (~2 min).
-const perScene = 8;
-const sceneCount = Number(sceneDuration) >= 30 ? 15 : 8;
+async function generateFlashloopScript(effectName, tagline, userIdea, sceneDuration, ratio, model = 'gpt-5.5', references = [], trendThumbnail = '', sceneLength = 8) {
+// Scenes are sized to the RENDER engine: Make Video renders each scene with
+// omni-flash (~8s clips) by default, but the user can pick another per-scene
+// length (5s/10s/15s). Total stays on target: short → ~64s, long → ~120s.
+const perScene = [5, 8, 10, 15, 30].includes(Number(sceneLength)) ? Number(sceneLength) : 8;
+const targetTotal = Number(sceneDuration) >= 30 ? 120 : 64;
+const sceneCount = Math.max(2, Math.round(targetTotal / perScene));
 const totalSec = perScene * sceneCount;
   const cleanRefs = cleanFlashloopRefs(references);
   const refBlock = formatFlashloopRefs(cleanRefs);
   const promptModel = IS_VERCEL
-    ? (['gemini-2.5-pro', 'gemini-3.1-pro', 'gemini-3.1-flash-lite', 'deepseek-v3.2', 'deepseek-v4-flash', 'glm-5.2', 'glm-5.3', 'kimi-k3', 'kimi-k2.6', 'claude-sonnet-4-5', 'mimo-v2.5', 'gpt-5.5'].includes(model) ? model : 'gemini-2.5-pro')
+    ? ((LOGFARE_MODELS.includes(model) || ['gemini-2.5-pro', 'gemini-3.1-pro', 'gemini-3.1-flash-lite', 'deepseek-v3.2', 'deepseek-v4-flash', 'glm-5.2', 'glm-5.3', 'kimi-k3', 'kimi-k2.6', 'claude-sonnet-4-5', 'mimo-v2.5', 'gpt-5.5'].includes(model)) ? model : 'logfare:auto')
     : model;
 
   // Optional trend-style analysis (extra LLM call — skipped on Vercel).
@@ -789,22 +799,29 @@ const totalSec = perScene * sceneCount;
   }
   const styleBlock = styleText ? `\n\nVISUAL STYLE (from the trend reference — every scene must be rendered in this exact style):\n${styleText}` : '';
 
+  // Timeline beats scale with the chosen per-scene length.
+  const beatCount = perScene <= 10 ? 2 : (perScene <= 15 ? 3 : 4);
+  const bnds = Array.from({ length: beatCount + 1 }, (_, k) => Math.round(k * perScene / beatCount));
+  bnds[0] = 0; bnds[beatCount] = perScene;
+  const beatExample = bnds.slice(0, -1).map((b, k) => `"${b}–${bnds[k + 1]}s: ..."`).join(', ');
+  const vidWords = perScene <= 8 ? '120-200' : (perScene <= 10 ? '150-240' : (perScene <= 15 ? '200-320' : '320-480'));
+
   const system = `You are a top short-form video scriptwriter for viral AI formats. Write a complete ${sceneCount}-scene script (${totalSec} seconds total, exactly ${perScene} seconds per scene) for the effect "${effectName}".
 
 OUTPUT FORMAT — return ONLY a JSON object, nothing else:
 {
   "title": "short film title",
   "scenes": [
-    { "scene": 1, "title": "punchy scene title", "hook": "one sentence — the attention-grabbing moment this scene opens with", "imagePrompt": "first-frame image prompt", "videoPrompt": "0–4s: ...; 4–8s: ... (time-stamped beats covering the full 8s scene)" }
+    { "scene": 1, "title": "punchy scene title", "hook": "one sentence — the attention-grabbing moment this scene opens with", "imagePrompt": "first-frame image prompt", "videoPrompt": "${beatExample.replace(/"/g, '')} (time-stamped beats covering the full ${perScene}s scene)" }
   ]
 }
 
 RULES:
-- EXACTLY ${sceneCount} scenes. Every scene is exactly ${perScene} seconds — the video engine renders ~8s clips, so the timeline MUST fit inside 8s.
+- EXACTLY ${sceneCount} scenes. Every scene is exactly ${perScene} seconds — the video engine renders ~${perScene}s clips, so the timeline MUST fit inside ${perScene}s.
 - TO THE POINT, zero filler. NO "CAMERA:" sections, NO camera-angle/movement instructions, NO lighting/mood/setting bullet lists, NO audio or style paragraphs inside the prompts, NO negative instructions.
 - Each scene's "imagePrompt": 80-140 words — the first-frame reference image for that scene. Concrete subject, exact action, setting, colors, materials. End with: ${ratio}.
-- Each scene's "videoPrompt": 120-200 words — a TIMELINE of 2-3 time-stamped beats that covers the full ${perScene} seconds. Format: "0–4s: ...", "4–8s: ..." — consecutive segments with no gaps, ending exactly at ${perScene}s. The FIRST segment must deliver the hook. Each segment is one concrete action beat with vivid specifics (textures, scale, lighting, expressions, sounds, miniature-detail observations). NO "CAMERA:" section, no camera-movement instructions, no audio/style filler paragraphs.
-- Hit the word targets above exactly — count your words as you write. If a videoPrompt is under 180 words, add more detail to each time-stamped beat until it fits. Be vivid and specific so a video model can animate it precisely, but never pad with filler.
+- Each scene's "videoPrompt": ${vidWords} words — a TIMELINE of ${beatCount} time-stamped beats that covers the full ${perScene} seconds. Format: ${beatExample} — consecutive segments with no gaps, ending exactly at ${perScene}s. The FIRST segment must deliver the hook. Each segment is one concrete action beat with vivid specifics (textures, scale, lighting, expressions, sounds, miniature-detail observations). NO "CAMERA:" section, no camera-movement instructions, no audio/style filler paragraphs.
+- Hit the word targets above exactly — count your words as you write. If a videoPrompt is under the target, add more detail to each time-stamped beat until it fits. Be vivid and specific so a video model can animate it precisely, but never pad with filler.
 - STORY: Scene 1 opens with the strongest hook (cold open). Scenes flow seamlessly — each scene starts exactly where the previous one ended (same characters, same place, same light, continuous motion). The last scene ends on a satisfying payoff.
 - Interpret "${effectName}" as the theme and write a specific, vivid, viral-worthy scene — never generic filler.${tagline ? '\n- Trend tagline: ' + tagline : ''}${userIdea ? '\n- User idea (honor it): ' + userIdea : ''}${styleBlock}${refBlock}
 - Keep every prompt tight and concrete.`;
@@ -812,11 +829,13 @@ RULES:
   let promptText = `Write the full ${sceneCount}-scene script for "${effectName}"${tagline ? ' — ' + tagline : ''}. ${perScene}s per scene, ${ratio}.${userIdea ? '\nUser idea: ' + userIdea : ''}\nReturn ONLY the JSON object described in your instructions.`;
   let parsed = {};
   let raw = '';
+  let lastScriptErr = null;
   for (let attempt = 0; attempt < 2 && !Array.isArray(parsed.scenes); attempt++) {
     try {
-      raw = await chatWithFallback(promptModel, [{ role: 'system', content: system }, { role: 'user', content: promptText }], 20000, 1.0);
+      raw = await chatWithLogfareFallback(promptModel, [{ role: 'system', content: system }, { role: 'user', content: promptText }], 20000, 1.0);
       parsed = parseJsonLenient(raw);
-    } catch (e) { logLine(`flashloop script attempt ${attempt + 1} failed: ${e.message}`); }
+      if (!Array.isArray(parsed.scenes)) lastScriptErr = new Error('LLM returned JSON without a scenes array');
+    } catch (e) { logLine(`flashloop script attempt ${attempt + 1} failed: ${e.message}`); lastScriptErr = e; }
     if (!Array.isArray(parsed.scenes)) {
       promptText += '\n\nIMPORTANT: your previous response was not valid JSON. Return ONLY the JSON object — no markdown, no commentary, no extra text.';
     }
@@ -841,10 +860,16 @@ RULES:
       try {
         const prevEnd = scenes[i - 1] ? ` Previous scene ends here: ${scenes[i - 1].videoPrompt}` : '';
         const sceneIdea = String(userIdea || '') + prevEnd;
-        const one = await generateFlashloopScene(effectName, tagline, sceneIdea, perScene, ratio, promptModel, references, '');
+        const one = await generateFlashloopScene(effectName, tagline, sceneIdea, perScene, ratio, promptModel, references, '', perScene);
         scenes.push({ scene: i + 1, title: `Scene ${i + 1}`, hook: '', imagePrompt: one.imagePrompt, videoPrompt: one.videoPrompt });
-      } catch (e) { logLine(`flashloop per-scene fill failed: ${e.message}`); break; }
+      } catch (e) { logLine(`flashloop per-scene fill failed: ${e.message}`); lastScriptErr = lastScriptErr || e; break; }
     }
+  }
+
+  if (!scenes.length) {
+    throw new Error(lastScriptErr
+      ? 'Script LLM unavailable: ' + lastScriptErr.message
+      : 'Script LLM returned no usable scenes');
   }
 
   return { title: parsed.title || effectName, sceneDuration: perScene, sceneCount: scenes.length, scenes };
@@ -951,6 +976,11 @@ for (const d of [FRAMES_DIR, VIDEO_DIR, STORYBOARD_DIR]) fs.mkdirSync(d, { recur
 // deepseek-v3.2 when a model 502s/empty-responds, so a "broken" model never kills
 // a storyboard.
 const MODELS = ['gemini-2.5-pro', 'gemini-3.1-pro', 'gemini-3.1-flash-lite', 'gpt-5.5', 'gpt-5', 'gpt-5.2', 'gpt-4.1', 'claude-opus-4-8', 'claude-sonnet-4-5', 'kimi-k3', 'kimi-k2.6', 'glm-5.2', 'glm-5.3', 'deepseek-v3.2', 'deepseek-v4-flash', 'mimo-v2.5', 'qwen3.8-max', 'qwen3.7-plus', 'grok-4.6', 'minimax-m3'];
+// Logfare chat models (https://logfare.ai/v1) — flashloop/sjinn prompt generation ONLY.
+// Selected from the UI with a "logfare:" prefix so they never collide with same-named
+// PaxSenix models. gemma-4-26b + logfare/auto work without opt-in; the rest require
+// model-training opt-in on the Logfare account and fall back to logfare/auto until then.
+const LOGFARE_MODELS = ['logfare:auto', 'gemma-4-26b', 'glm-5.3', 'kimi-k3', 'kimi-k3:fast', 'deepseek-v4-flash-0731', 'deepseek-v4-pro-0813', 'qwen-3.8-27b', 'moondream3.1'];
 const IMAGE_MODELS = ['nano-banana-pro', 'nano-banana-2', 'nano-banana-2-lite', 'seedream-5', 'seedream-4', 'seedream-4.5', 'grok-imagine-2', 'grok-imagine', 'gpt-image-2'];
 // Grok Imagine is xAI's image model on PaxSenix: GET /ai-image/grok-imagine
 // (text-to-image, params: prompt + ratio) and POST /ai-img2img/grok-imagine
@@ -1449,6 +1479,44 @@ async function chatCompletion(model, messages, maxTokens = 16384, temperature = 
 // Try the requested model first, then fall back to reliable models if it fails or
 // times out (e.g. gpt-5.5 on PaxSenix can exceed the local 120s budget, which used
 // to dump users into the generic fallback prompts). Returns the raw LLM text.
+// Logfare chat — OpenAI-compatible gateway. NOTE: Logfare logs request content,
+// so this must ONLY ever be called from the flashloop/sjinn prompt-writing path.
+// Models without training opt-in (no data training): logfare/auto, gemma-4-26b.
+async function chatWithLogfare(model, messages, maxTokens = 16000, temperature = 0.7) {
+  if (!LOGFARE_API_KEY) throw new Error('no Logfare key (env LOGFARE_API_KEY or pipeline/logfare_apikey.txt)');
+  const res = await fetch(`${LOGFARE_API}/chat/completions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + LOGFARE_API_KEY },
+    body: JSON.stringify({ model, messages, max_tokens: maxTokens, temperature }),
+    signal: AbortSignal.timeout(250000)
+  });
+  const j = await res.json().catch(() => ({}));
+  if (!res.ok || j.error) {
+    const msg = (j.error && (j.error.message || JSON.stringify(j.error))) || ('HTTP ' + res.status);
+    throw new Error(`logfare ${model}: ${msg}`);
+  }
+  const content = j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content;
+  if (!content || !String(content).trim()) throw new Error(`logfare ${model}: empty response`);
+  return String(content);
+}
+
+// Prompt-writing chain used ONLY by the flashloop/sjinn script generators.
+// A "logfare:<model>" model from the UI pins that Logfare model first, then
+// logfare/auto, then the regular PaxSenix chain as last resort.
+async function chatWithLogfareFallback(model, messages, maxTokens = 16000, temperature = 0.7) {
+  const raw = String(model || '');
+  const isLogfare = raw.startsWith('logfare:');
+  const pinned = isLogfare ? raw.slice('logfare:'.length) : '';
+  const chain = [pinned || 'logfare:auto', 'logfare:auto'].filter((m, i, a) => m && a.indexOf(m) === i);
+  let lastErr = null;
+  for (const m of chain) {
+    try { return await chatWithLogfare(m, messages, maxTokens, temperature); }
+    catch (e) { lastErr = e; logLine(`chatWithLogfareFallback: ${m} failed (${e.message}) — trying next`); }
+  }
+  // All Logfare models failed — hand off to the regular PaxSenix chain.
+  return chatWithFallback(isLogfare ? 'gemini-2.5-pro' : raw, messages, maxTokens, temperature);
+}
+
 async function chatWithFallback(model, messages, maxTokens = 16000, temperature = 0.7) {
   const chain = [model, 'gemini-2.5-pro', 'deepseek-v3.2'].filter((m, i, a) => m && a.indexOf(m) === i);
   let lastErr = null;
@@ -4979,19 +5047,57 @@ Return ONLY a JSON object:
     if (p === '/api/flashloop/generate-prompt' && req.method === 'POST') {
       try {
         const body = await readBody(req);
-        const { slug = '', name = '', tagline = '', idea = '', duration = 15, sceneDuration = 0, ratio = '9:16', model = 'gpt-5.5', references = [], trendThumbnail = '' } = body || {};
+        const { slug = '', name = '', tagline = '', idea = '', duration = 15, sceneLength = 8, ratio = '9:16', model = 'gpt-5.5', references = [], trendThumbnail = '' } = body || {};
         const effectName = String(name || slug).trim();
         if (!effectName) return sendJson(res, 400, { error: 'effect name or slug required' });
-        const selectedModel = MODELS.includes(model) ? model : 'gpt-5.5';
+        const selectedModel = (MODELS.includes(model) || LOGFARE_MODELS.includes(model)) ? model : 'logfare:auto';
         const refs = Array.isArray(references) ? references.filter(r => r && String(r.name || '').trim()) : [];
         // Credit gate: writing a full multi-scene script is a real multi-LLM call.
         if (!(await requireCredits(req, res, CREDIT_COSTS.flashloopScript, 'generate script'))) return;
-      // sceneDuration selects the TOTAL length mode (short ~1min → 8 scenes,
-      // long ~2min → 15 scenes); every scene is 8s (omni-flash's real clip length).
-        const perScene = Number(sceneDuration) || Number(duration) || 15;
-        const script = await generateFlashloopScript(effectName, String(tagline || ''), String(idea || ''), perScene, String(ratio), selectedModel, refs, String(trendThumbnail || ''));
-        return sendJson(res, 200, { ok: true, slug, name: effectName, sceneDuration: perScene, ratio, model: selectedModel, ...script });
+      // duration selects the TOTAL length mode (short ~1min, long ~2min) and
+      // sceneLength is the PER-SCENE seconds (5/8/10/15); the scene count adapts.
+        const mode = Number(duration) || 15;
+const perScene = [5, 8, 10, 15, 30].includes(Number(sceneLength)) ? Number(sceneLength) : 8;
+        const script = await generateFlashloopScript(effectName, String(tagline || ''), String(idea || ''), mode, String(ratio), selectedModel, refs, String(trendThumbnail || ''), perScene);
+        return sendJson(res, 200, { ok: true, slug, name: effectName, sceneDuration: mode, sceneLength: perScene, ratio, model: selectedModel, ...script });
       } catch (e) { logLine('flashloop prompt: ' + e.message); return sendJson(res, 500, { error: e.message }); }
+    }
+
+    // AI edit of the full script window — user types what to change, the LLM
+    // rewrites the script keeping the exact SCENE/[IMAGE PROMPT]/[VIDEO PROMPT] format.
+    if (p === '/api/flashloop/edit-prompt' && req.method === 'POST') {
+      try {
+        const body = await readBody(req);
+        const { script = '', instruction = '', model = 'logfare:auto' } = body || {};
+        if (!String(script).trim()) return sendJson(res, 400, { error: 'script required' });
+        if (!String(instruction).trim()) return sendJson(res, 400, { error: 'edit instruction required' });
+        if (!(await requireCredits(req, res, 1, 'edit script'))) return;
+        const selectedModel = (MODELS.includes(model) || LOGFARE_MODELS.includes(model)) ? model : 'logfare:auto';
+        const system = `You are a precise script editor for short-form AI video prompts. The user gives you their full script and an edit instruction. Apply ONLY the requested changes — keep everything else word-for-word identical.
+
+OUTPUT FORMAT — return the FULL edited script as plain text, nothing else. Preserve the exact structure:
+SCENE <n> — <title> (<start>–<end>)
+HOOK: <hook>
+[IMAGE PROMPT]
+<image prompt text>
+
+[VIDEO PROMPT]
+<video prompt text>
+
+RULES:
+- Keep every SCENE header, HOOK, [IMAGE PROMPT] and [VIDEO PROMPT] marker exactly as given.
+- Apply the edit instruction precisely (e.g. "change the cat to a puppy", "make scene 2 faster", "replace all neon colors with warm amber").
+- Keep prompts concrete and vivid. Never add commentary, explanations, or markdown — ONLY the edited script text.`;
+        const raw = await chatWithLogfareFallback(selectedModel, [
+          { role: 'system', content: system },
+          { role: 'user', content: `EDIT INSTRUCTION: ${String(instruction).trim()}\n\nFULL SCRIPT:\n${String(script)}` }
+        ], 20000, 0.7);
+        let edited = String(raw).trim();
+        // Strip accidental markdown fences the LLM may add.
+        edited = edited.replace(/^```[a-z]*\s*/i, '').replace(/```\s*$/, '').trim();
+        if (!edited) return sendJson(res, 500, { error: 'edit returned empty result' });
+        return sendJson(res, 200, { ok: true, script: edited });
+      } catch (e) { logLine('flashloop edit-prompt: ' + e.message); return sendJson(res, 500, { error: e.message }); }
     }
 
     // Generate i2i image anchored to a trend reference image
