@@ -462,6 +462,7 @@
   <p>Storyboard Studio · AI Creative Suite · Built for creators</p>
 </footer>
 
+<script src="/auth.js"></script>
 <script>
 const $=id=>document.getElementById(id);
 let mouseX=0,mouseY=0;
@@ -477,29 +478,25 @@ document.querySelectorAll('.tool-card').forEach(card=>{
 });
 
 async function init(){
-  try{
-    const r=await fetch('/api/auth/me',{cache:'no-store'});
-    if(r.status===401){location.replace('/login?next=/');return}
-    const j=await r.json();
-    if(j.user){
-      $('userPill').style.display='';
-      $('userName').textContent=j.user.name||j.user.email;
-      $('btnLogout').style.display='';
-      $('statusText').textContent='LOGGED IN';
-      // Trial banner + remaining credits (Vercel/production only — localhost is unlimited)
-      let isVercel=false;try{const h=await fetch('/api/health',{cache:'no-store'});if(h.ok){const hj=await h.json();isVercel=!!hj.vercel;}}catch(e){}
-      const credits=j.user.credits!=null?j.user.credits:j.user.trialCredits||0;
-      const tc=$('trialCredits');
-      if(tc&&isVercel){tc.textContent=credits;$('trialBanner').style.display='';if(credits<=10)$('trialLow').style.display='inline';if(credits<=0)$('statusText').textContent='NO CREDITS';
-        const cp=document.createElement('div');cp.className='status-pill user-pill';cp.innerHTML='⚡ '+credits+' credits';document.querySelector('.header-actions').insertBefore(cp,$('btnLogout'));
-      }
+  const j = window.SBAuth
+    ? await SBAuth.me()
+    : await fetch('/api/auth/me',{cache:'no-store'}).then(r=>r.ok?r.json():{unauth:r.status===401}).catch(()=>({}));
+  if(j && j.unauth){location.replace('/login?next=/');return;}
+  if(j && j.user){
+    $('userPill').style.display='';
+    $('userName').textContent=j.user.name||j.user.email;
+    $('btnLogout').style.display='';
+    $('statusText').textContent='LOGGED IN';
+    // Trial banner + remaining credits (Vercel/production only — localhost is unlimited)
+    let isVercel=false;try{const h=await fetch('/api/health',{cache:'no-store'});if(h.ok){const hj=await h.json();isVercel=!!hj.vercel;}}catch(e){}
+    const credits=j.user.credits!=null?j.user.credits:j.user.trialCredits||0;
+    const tc=$('trialCredits');
+    if(tc&&isVercel){tc.textContent=credits;$('trialBanner').style.display='';if(credits<=10)$('trialLow').style.display='inline';if(credits<=0)$('statusText').textContent='NO CREDITS';
+      const cp=document.createElement('div');cp.className='status-pill user-pill';cp.innerHTML='⚡ '+credits+' credits';document.querySelector('.header-actions').insertBefore(cp,$('btnLogout'));
     }
-  }catch(e){}
+  }
 }
-$('btnLogout').onclick=async()=>{
-  await fetch('/api/auth/logout',{method:'POST'});
-  location.replace('/login');
-};
+$('btnLogout').onclick=async()=>{ if(window.SBAuth)return SBAuth.logout(); await fetch('/api/auth/logout',{method:'POST'}); location.replace('/login'); };
 init();
 </script>
 </body>

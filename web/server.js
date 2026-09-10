@@ -3722,6 +3722,14 @@ function readCookie(req, name) {
   return null;
 }
 
+// Session token from either the HttpOnly cookie (normal path) or an Authorization:
+// Bearer header (client-side fallback). The cookie can be dropped by privacy
+// settings / cross-site navigation, which used to bounce logged-in users back to
+// the login form; the bearer fallback keeps the session alive.
+function authToken(req) {
+  return readCookie(req, AUTH_COOKIE) || bearerToken(req);
+}
+
 function setAuthCookie(res, token) {
   const secure = IS_VERCEL ? '; Secure' : '';
   res.setHeader('Set-Cookie', `${AUTH_COOKIE}=${token}; HttpOnly; Path=/; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}; SameSite=Lax${secure}`);
@@ -3733,7 +3741,7 @@ function clearAuthCookie(res) {
 
 // Redirect a page visitor to /login if they have no valid session (used for protected pages locally).
 async function requirePageAuth(req, res) {
-  const user = await getUserBySessionToken(readCookie(req, AUTH_COOKIE));
+  const user = await getUserBySessionToken(authToken(req));
   if (!user) {
     res.writeHead(302, { Location: '/login?next=' + encodeURIComponent((req.url || '/').split('?')[0]) });
     res.end();
@@ -3746,7 +3754,7 @@ async function requirePageAuth(req, res) {
 // user's current credit balance + plan to req.user so the request can be gated
 // downstream.
 async function requireApiAuth(req, res) {
-  const user = await getUserBySessionToken(readCookie(req, AUTH_COOKIE));
+  const user = await getUserBySessionToken(authToken(req));
   if (!user) { sendJson(res, 401, { error: 'auth required' }); return null; }
   try { const meta = await loadUserMeta(user.id); user.credits = meta.credits; user.plan = meta.plan; } catch (e) { user.credits = 0; user.plan = 'trial'; }
   return user;
@@ -3902,7 +3910,7 @@ const requestHandler = async (req, res) => {
 
     // --- AUTH ---
     if (p === '/api/auth/me' && req.method === 'GET') {
-      const user = await getUserBySessionToken(readCookie(req, AUTH_COOKIE)) || (await getUserBySessionToken(bearerToken(req)));
+      const user = await getUserBySessionToken(authToken(req));
       if (!user) return sendJson(res, 401, { error: 'not logged in' });
       const meta = await loadUserMeta(user.id);
       return sendJson(res, 200, { user: { id: user.id, email: user.email, name: user.name, credits: meta.credits, plan: meta.plan, trialCredits: TRIAL_CREDITS } });
@@ -3920,7 +3928,7 @@ const requestHandler = async (req, res) => {
         const user = await createUser(email, name, password);
         const token = await createSession(user);
         setAuthCookie(res, token);
-        return sendJson(res, 200, { ok: true, user: { id: user.id, email: user.email, name: user.name } });
+        return sendJson(res, 200, { ok: true, token, user: { id: user.id, email: user.email, name: user.name } });
       } catch (e) { return sendJson(res, 500, { error: 'signup failed: ' + (e.message || e) }); }
     }
     if (p === '/api/auth/login' && req.method === 'POST') {
@@ -3931,10 +3939,10 @@ const requestHandler = async (req, res) => {
       if (!user || !(await verifyPassword(password, user.pass_hash))) return sendJson(res, 401, { error: 'invalid email or password' });
       const token = await createSession(user);
       setAuthCookie(res, token);
-      return sendJson(res, 200, { ok: true, user: { id: user.id, email: user.email, name: user.name } });
+      return sendJson(res, 200, { ok: true, token, user: { id: user.id, email: user.email, name: user.name } });
     }
     if (p === '/api/auth/logout' && req.method === 'POST') {
-      const token = readCookie(req, AUTH_COOKIE) || bearerToken(req);
+      const token = authToken(req);
       await deleteSession(token);
       clearAuthCookie(res);
       return sendJson(res, 200, { ok: true });

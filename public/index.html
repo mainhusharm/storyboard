@@ -330,26 +330,30 @@ The Director AI will:
   </div>
 </div>
 
+<script src="/auth.js"></script>
 <script>
-// Auth guard — redirect to /login if not authenticated; show user + logout when logged in.
+// Auth guard — shared resilient guard (window.SBAuth). Retries transient
+// /api/auth/me failures and only redirects on a real 401, so a logged-in user
+// is never bounced back to the login form by a network blip or proxy response.
 (async function(){
-  try{
-    const r=await fetch('/api/auth/me',{cache:'no-store'});
-    if(r.status===401){location.replace('/login?next='+encodeURIComponent(location.pathname+location.search));return;}
-    const j=await r.json();
-    if(j.user){
-      document.getElementById('authName').style.display='';
-      document.getElementById('authName').textContent='👤 '+(j.user.name||j.user.email);
-      document.getElementById('btnLogout').style.display='';
-      // Credits pill only matters on Vercel (production) — localhost is unlimited.
-      if(IS_VERCEL_CLIENT&&j.user.credits!=null){
-        const cnt=document.getElementById('creditCount');
-        if(cnt){cnt.textContent=j.user.credits+' credits';document.getElementById('creditPill').style.display='';}
-      }
+  const j = window.SBAuth
+    ? await SBAuth.me()
+    : await fetch('/api/auth/me',{cache:'no-store'}).then(r=>r.ok?r.json():{unauth:r.status===401}).catch(()=>({}));
+  if(j && j.user){
+    const el=document.getElementById('authName');
+    if(el){el.style.display='';el.textContent='👤 '+(j.user.name||j.user.email);}
+    const lo=document.getElementById('btnLogout');
+    if(lo)lo.style.display='';
+    // Credits pill only matters on Vercel (production) — localhost is unlimited.
+    if(typeof IS_VERCEL_CLIENT!=='undefined'&&IS_VERCEL_CLIENT&&j.user.credits!=null){
+      const cnt=document.getElementById('creditCount');
+      if(cnt){cnt.textContent=j.user.credits+' credits';document.getElementById('creditPill').style.display='';}
     }
-   }catch(e){location.replace('/login?next='+encodeURIComponent(location.pathname));}
+  } else if(j && j.unauth){
+    location.replace('/login?next='+encodeURIComponent(location.pathname+location.search));
+  }
 })();
-function logout(){fetch('/api/auth/logout',{method:'POST'}).then(()=>location.replace('/login'));}
+function logout(){ if(window.SBAuth)return SBAuth.logout(); fetch('/api/auth/logout',{method:'POST'}).then(()=>location.replace('/login')); }
 
 // Flashloop handoff — "Use Full Script in Storyboard" drops the full script here.
 try{
@@ -375,6 +379,8 @@ async function api(p,opts){
   const r=await fetch('/api'+p,opts);
   const t=await r.text();
   let j;try{j=JSON.parse(t)}catch(e){throw new Error('API '+r.status+': '+(t||'').slice(0,120))}
+  // A real 401 means the session is actually gone — send them to login once.
+  if(r.status===401){location.replace('/login?next='+encodeURIComponent(location.pathname+location.search));throw new Error(j.error||'session expired');}
   // 402 = out of trial credits — only on Vercel (localhost is unlimited).
   // Surface a clear upgrade prompt and refresh the header pill.
   if(r.status===402&&j&&j.outOfCredits){

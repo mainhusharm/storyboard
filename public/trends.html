@@ -122,21 +122,26 @@
   </div>
 </div>
 
+<script src="/auth.js"></script>
 <script>
-// Auth guard — redirect to /login if not authenticated; show user + logout when logged in.
+// Auth guard — shared resilient guard (window.SBAuth). Retries transient
+// /api/auth/me failures and only redirects on a real 401, so a logged-in user
+// is never bounced back to the login form by a network blip or proxy response.
 (async function(){
-  try{
-    const r=await fetch('/api/auth/me',{cache:'no-store'});
-    if(r.status===401){location.replace('/login?next='+encodeURIComponent(location.pathname+location.search));return;}
-    const j=await r.json();
-    if(j.user){
-      document.getElementById('authName').style.display='';
-      document.getElementById('authName').textContent='👤 '+(j.user.name||j.user.email);
-      document.getElementById('btnLogout').style.display='';
-    }
-  }catch(e){location.replace('/login?next='+encodeURIComponent(location.pathname));}
+  const j = window.SBAuth
+    ? await SBAuth.me()
+    : await fetch('/api/auth/me',{cache:'no-store'}).then(r=>r.ok?r.json():{unauth:r.status===401}).catch(()=>({}));
+  if(j && j.user){
+    const el=document.getElementById('authName');
+    if(el){el.style.display='';el.textContent='👤 '+(j.user.name||j.user.email);}
+    const lo=document.getElementById('btnLogout');
+    if(lo)lo.style.display='';
+
+  } else if(j && j.unauth){
+    location.replace('/login?next='+encodeURIComponent(location.pathname+location.search));
+  }
 })();
-function logout(){fetch('/api/auth/logout',{method:'POST'}).then(()=>location.replace('/login'));}
+function logout(){ if(window.SBAuth)return SBAuth.logout(); fetch('/api/auth/logout',{method:'POST'}).then(()=>location.replace('/login')); }
 
 const $=id=>document.getElementById(id);
 const CATEGORIES=[
