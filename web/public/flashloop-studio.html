@@ -266,7 +266,7 @@
     if(lo)lo.style.display='';
 
   } else if(j && j.unauth){
-    location.replace('/login?next='+encodeURIComponent(location.pathname+location.search));
+    location.replace('/login?mode=signup&next='+encodeURIComponent(location.pathname+location.search));
   }
 })();
 function logout(){ if(window.SBAuth)return SBAuth.logout(); fetch('/api/auth/logout',{method:'POST'}).then(()=>location.replace('/login')); }

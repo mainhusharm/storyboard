@@ -153,7 +153,8 @@ const params=new URLSearchParams(location.search);
 const rawNext=params.get('next')||'/';
 // Only allow same-site paths (blocks protocol-relative open redirects like //evil.com)
 const next=(rawNext.startsWith('/')&&!rawNext.startsWith('//'))?rawNext:'/';
-let mode='login';
+const startMode=(params.get('mode')==='signup')?'signup':'login';
+let mode=startMode;
 let busy=false;
 
 function setMode(m){
@@ -242,17 +243,20 @@ async function submit(e){
 $('authForm').addEventListener('submit',submit);
 $('password').addEventListener('input',()=>{if(mode==='signup')updateStrength();});
 
-// If a session is already valid, offer to continue instead of silently bouncing
-// the user back and forth (this was the "keeps asking for my email" loop).
+// Reflect the funnel's requested tab (?mode=signup from the landing page).
+setMode(startMode);
+
+// If a session is already valid, skip the form entirely and continue into the app
+// (this was the "keeps asking for my email" loop).
 (async()=>{
   const res=await SBAuth.me(2);
   if(res.user){
-    const who=res.user.name||res.user.email;
-    $('resumeEmail').textContent=who?(who+' · '+res.user.email):'';
+    const dest=params.get('next')?next:'/storyboard';
+    $('resumeEmail').textContent=(res.user.name||res.user.email)+' · '+res.user.email;
     $('resume').classList.add('show');
-    $('resumeBtn').onclick=()=>{location.href=next;};
-    // Auto-continue when no explicit next was requested.
-    if(!params.get('next'))location.replace('/');
+    $('resumeBtn').onclick=()=>{location.replace(dest);};
+    // Auto-continue — a signed-in visitor never needs to see the auth form.
+    location.replace(dest);
   }
 })();
 </script>

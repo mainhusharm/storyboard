@@ -3740,10 +3740,11 @@ function clearAuthCookie(res) {
 }
 
 // Redirect a page visitor to /login if they have no valid session (used for protected pages locally).
+// New visitors land on the Create-account tab; the page still allows switching to "Log in".
 async function requirePageAuth(req, res) {
   const user = await getUserBySessionToken(authToken(req));
   if (!user) {
-    res.writeHead(302, { Location: '/login?next=' + encodeURIComponent((req.url || '/').split('?')[0]) });
+    res.writeHead(302, { Location: '/login?mode=signup&next=' + encodeURIComponent((req.url || '/').split('?')[0]) });
     res.end();
     return null;
   }
@@ -6088,8 +6089,9 @@ ${infl.description || '(no description - describe a beautiful confident influenc
     else filePath = path.join(PUBLIC, path.normalize(p).replace(/^([/\\])+/, ''));
 
     // Protect tool pages (local server): require a valid session, redirect to /login.
+    // The landing page (/) is PUBLIC so new visitors can see the product first.
     // On Vercel the static pages are gated client-side via /api/auth/me instead.
-    if (!IS_VERCEL && (p === '/' || p === '/home' || p === '/index' || p === '/storyboard' || p === '/influencer' || p === '/trends' || p === '/flashloop-studio' || /^\/effects\/[^/]+$/.test(p))) {
+    if (!IS_VERCEL && (p === '/storyboard' || p === '/index' || p === '/influencer' || p === '/trends' || p === '/flashloop-studio' || /^\/effects\/[^/]+$/.test(p))) {
       const pageUser = await requirePageAuth(req, res);
       if (!pageUser) return;
     }

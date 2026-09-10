@@ -350,7 +350,7 @@ The Director AI will:
       if(cnt){cnt.textContent=j.user.credits+' credits';document.getElementById('creditPill').style.display='';}
     }
   } else if(j && j.unauth){
-    location.replace('/login?next='+encodeURIComponent(location.pathname+location.search));
+    location.replace('/login?mode=signup&next='+encodeURIComponent(location.pathname+location.search));
   }
 })();
 function logout(){ if(window.SBAuth)return SBAuth.logout(); fetch('/api/auth/logout',{method:'POST'}).then(()=>location.replace('/login')); }

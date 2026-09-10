@@ -214,6 +214,72 @@
     margin:0 auto;
     line-height:1.5;
   }
+  .hero-cta{
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    gap:10px;
+    margin-top:var(--space-md);
+  }
+  .btn-cta{
+    padding:14px 34px;
+    background:linear-gradient(135deg,var(--accent),var(--accent-bright));
+    border:none;
+    border-radius:var(--radius-full);
+    color:var(--surface-0);
+    font-size:var(--font-body);
+    font-weight:800;
+    letter-spacing:.4px;
+    cursor:pointer;
+    box-shadow:0 8px 28px rgba(56,189,248,.35);
+    transition:transform .15s,box-shadow .2s;
+  }
+  .btn-cta:hover{transform:translateY(-2px);box-shadow:0 12px 34px rgba(56,189,248,.45)}
+  .btn-cta:active{transform:translateY(0)}
+  .hero-note{font-size:var(--font-small);color:var(--txt-faint);letter-spacing:.3px}
+  .btn-primary{
+    background:linear-gradient(135deg,var(--accent),var(--accent-bright));
+    border:none;color:var(--surface-0);font-weight:800;
+  }
+  .btn-primary:hover{filter:brightness(1.08);border-color:transparent}
+
+  .steps{
+    margin-bottom:var(--space-lg);
+    padding:var(--space-md);
+    background:linear-gradient(135deg,var(--surface-2),var(--surface-1));
+    border:1px solid var(--line-2);
+    border-radius:var(--radius-lg);
+    animation:fadeInUp 0.9s cubic-bezier(0.4,0,0.2,1);
+  }
+  .steps-title{
+    text-align:center;
+    font-size:var(--font-h1);
+    font-weight:900;
+    letter-spacing:-.5px;
+    margin-bottom:var(--space-md);
+  }
+  .steps-title .accent{color:var(--accent)}
+  .steps-grid{
+    display:grid;
+    grid-template-columns:repeat(auto-fit,minmax(min(240px,100%),1fr));
+    gap:var(--space-md);
+  }
+  .step{position:relative;padding:var(--space-sm)}
+  .step-num{
+    width:38px;height:38px;border-radius:var(--radius-full);
+    display:grid;place-items:center;
+    background:linear-gradient(135deg,rgba(56,189,248,.15),rgba(139,92,246,.1));
+    border:1px solid rgba(56,189,248,.35);
+    color:var(--accent-bright);font-weight:900;font-size:1rem;
+    margin-bottom:12px;
+  }
+  .step h3{font-size:var(--font-body);font-weight:800;margin-bottom:6px;letter-spacing:.2px}
+  .step p{font-size:var(--font-small);color:var(--txt-faint);line-height:1.6}
+  .step p strong{color:var(--accent-bright)}
+  .steps-cta{
+    display:flex;flex-direction:column;align-items:center;gap:8px;
+    margin-top:var(--space-md);
+  }
 
   .tools-grid{
     display:grid;
@@ -253,6 +319,14 @@
   .tool-card.c2:hover{border-color:var(--orange)}
   .tool-card.c3:hover{border-color:var(--violet)}
   .tool-card.c4:hover{border-color:var(--emerald)}
+  .tool-card.locked .tool-cta{color:var(--txt-faint)}
+  .tool-card.locked:hover .tool-cta{color:var(--accent-bright)}
+  .tool-card.locked .lock-badge{
+    position:absolute;top:var(--space-sm);right:var(--space-sm);
+    font-size:10.5px;font-weight:700;letter-spacing:.6px;color:var(--amber);
+    background:rgba(245,158,11,.12);border:1px solid rgba(245,158,11,.35);
+    border-radius:var(--radius-full);padding:3px 9px;
+  }
   .tool-icon{
     position:relative;
     width:56px;
@@ -379,6 +453,8 @@
       <div class="status-pill user-pill" id="userPill" style="display:none">
         <span id="userName"></span>
       </div>
+      <a class="btn btn-primary" id="btnStudio" href="/storyboard" style="display:none">Open Studio →</a>
+      <button class="btn" id="btnLogin" onclick="goSignup('/storyboard')">Sign up free</button>
       <button class="btn" id="btnLogout" style="display:none">Log out</button>
     </div>
   </div>
@@ -389,6 +465,10 @@
     <div class="badge">AI CREATIVE SUITE</div>
     <h1>Your Creative <span class="highlight">Command Center</span></h1>
     <p>Transform scripts into cinematic films, discover viral trends, generate AI influencers, and engineer production-ready prompts.</p>
+    <div class="hero-cta">
+      <button class="btn-cta" id="heroCta" onclick="goSignup('/storyboard')">Get started free →</button>
+      <span class="hero-note">60 free credits · no card required</span>
+    </div>
   </section>
 
   <div class="stats">
@@ -407,11 +487,37 @@
   </div>
 
   <div id="trialBanner" style="display:none;margin-bottom:var(--space-md);padding:var(--space-sm) var(--space-md);background:linear-gradient(135deg,rgba(56,189,248,.08),rgba(16,185,129,.06));border:1px solid rgba(56,189,248,.25);border-radius:var(--radius-md);text-align:center;font-size:var(--font-body);color:var(--txt-dim);transition:all .2s">
-    <strong style="color:var(--accent-bright)">Free Trial Active</strong> — <strong id="trialCredits">60</strong> credits left (one free 30s video · omni-flash). <span id="trialLow" style="display:none;color:var(--rose)">Running low — upgrade to keep creating.</span>
+    <span id="trialBannerCopy"><strong style="color:var(--accent-bright)">Free Trial</strong> — get <strong>60 credits</strong> (one free 30s video · omni-flash) when you create an account. <span id="trialLow" style="display:none;color:var(--rose)">Running low — upgrade to keep creating.</span></span>
   </div>
 
+  <section id="howItWorks" class="steps">
+    <h2 class="steps-title">Start creating in <span class="accent">3 steps</span></h2>
+    <div class="steps-grid">
+      <div class="step">
+        <div class="step-num">1</div>
+        <h3>Create a free account</h3>
+        <p>Sign up in seconds — no card required. You get <strong>60 free credits</strong> to generate your first film.</p>
+      </div>
+      <div class="step">
+        <div class="step-num">2</div>
+        <h3>Pick your studio</h3>
+        <p>Storyboard, Trends, AI Influencer, Flashloop or Shorts — every tool unlocks the moment you're in.</p>
+      </div>
+      <div class="step">
+        <div class="step-num">3</div>
+        <h3>Generate &amp; publish</h3>
+        <p>Turn scripts and trends into cinematic frames, narration and finished videos — ready to post.</p>
+      </div>
+    </div>
+    <div class="steps-cta">
+      <button class="btn-cta" onclick="goSignup('/storyboard')">Create your free account →</button>
+      <span class="hero-note">Takes less than a minute</span>
+    </div>
+  </section>
+
   <div class="tools-grid">
-    <a class="tool-card c1" href="/storyboard">
+    <a class="tool-card c1 locked" href="/login?mode=signup&next=%2Fstoryboard" data-auth="/storyboard">
+      <span class="lock-badge">FREE ACCOUNT</span>
       <div class="tool-icon">🎬</div>
       <h2 class="tool-title">Storyboard <span class="accent">Studio</span></h2>
       <p class="tool-desc">Transform scripts into production-ready cinematic storyboards with locked character consistency, frame-by-frame narration, and automated video generation.</p>
@@ -420,7 +526,8 @@
       </div>
     </a>
 
-    <a class="tool-card c2" href="/trends">
+    <a class="tool-card c2 locked" href="/login?mode=signup&next=%2Ftrends" data-auth="/trends">
+      <span class="lock-badge">FREE ACCOUNT</span>
       <div class="tool-icon">🔥</div>
       <h2 class="tool-title">Trends <span class="accent">Now</span></h2>
       <p class="tool-desc">Real-time trending content discovery across TikTok, YouTube Shorts, Flashloop formats, and SJinn templates. Stay ahead of the curve.</p>
@@ -429,7 +536,8 @@
       </div>
     </a>
 
-    <a class="tool-card c3" href="/influencer">
+    <a class="tool-card c3 locked" href="/login?mode=signup&next=%2Finfluencer" data-auth="/influencer">
+      <span class="lock-badge">FREE ACCOUNT</span>
       <div class="tool-icon">✨</div>
       <h2 class="tool-title">AI Influencer <span class="accent">Studio</span></h2>
       <p class="tool-desc">Create consistent AI personas with reference photos, then generate unlimited images and videos with locked character features.</p>
@@ -438,7 +546,8 @@
       </div>
     </a>
 
-    <a class="tool-card c4" href="/flashloop-studio">
+    <a class="tool-card c4 locked" href="/login?mode=signup&next=%2Fflashloop-studio" data-auth="/flashloop-studio">
+      <span class="lock-badge">FREE ACCOUNT</span>
       <div class="tool-icon">⚡</div>
       <h2 class="tool-title">Flashloop <span class="accent">Studio</span></h2>
       <p class="tool-desc">Convert viral AI format trends into detailed multi-scene scripts with precise image and video prompts, ready for production.</p>
@@ -447,7 +556,8 @@
       </div>
     </a>
 
-    <a class="tool-card c1" href="/shorts.html">
+    <a class="tool-card c1 locked" href="/login?mode=signup&next=%2Fshorts.html" data-auth="/shorts.html">
+      <span class="lock-badge">FREE ACCOUNT</span>
       <div class="tool-icon">🎬</div>
       <h2 class="tool-title">Shorts <span class="accent">Live</span></h2>
       <p class="tool-desc">Chat with the video generation bot right from your website. Log in with Discord, drop a prompt, and generate wan3 videos in the #shorts channel.</p>
@@ -481,22 +591,49 @@ async function init(){
   const j = window.SBAuth
     ? await SBAuth.me()
     : await fetch('/api/auth/me',{cache:'no-store'}).then(r=>r.ok?r.json():{unauth:r.status===401}).catch(()=>({}));
-  if(j && j.unauth){location.replace('/login?next=/');return;}
   if(j && j.user){
+    // Returning, signed-in user: show the studio entry + account chrome.
     $('userPill').style.display='';
     $('userName').textContent=j.user.name||j.user.email;
     $('btnLogout').style.display='';
+    $('btnStudio').style.display='';
+    $('btnLogin').style.display='none';
     $('statusText').textContent='LOGGED IN';
+    const hero=document.querySelector('.hero-cta');
+    if(hero)hero.style.display='none';
+    const badge=document.querySelector('.hero .badge');
+    if(badge)badge.innerHTML='Welcome back'+(j.user.name?', '+j.user.name.split(' ')[0]:'');
+    // Signed-in users don't need the acquisition funnel.
+    if($('howItWorks'))$('howItWorks').style.display='none';
+    // Unlock the tool cards for signed-in users.
+    document.querySelectorAll('.tool-card[data-auth]').forEach(c=>{
+      c.classList.remove('locked');
+      const lock=c.querySelector('.lock-badge'); if(lock)lock.remove();
+      c.setAttribute('href',c.getAttribute('data-auth'));
+    });
     // Trial banner + remaining credits (Vercel/production only — localhost is unlimited)
     let isVercel=false;try{const h=await fetch('/api/health',{cache:'no-store'});if(h.ok){const hj=await h.json();isVercel=!!hj.vercel;}}catch(e){}
     const credits=j.user.credits!=null?j.user.credits:j.user.trialCredits||0;
-    const tc=$('trialCredits');
-    if(tc&&isVercel){tc.textContent=credits;$('trialBanner').style.display='';if(credits<=10)$('trialLow').style.display='inline';if(credits<=0)$('statusText').textContent='NO CREDITS';
+    if(isVercel){
+      $('trialBannerCopy').innerHTML='<strong style="color:var(--accent-bright)">Free Trial Active</strong> — <strong id="trialCredits">'+credits+'</strong> credits left (one free 30s video · omni-flash). <span id="trialLow" style="display:none;color:var(--rose)">Running low — upgrade to keep creating.</span>';
+      $('trialBanner').style.display='';
+      if(credits<=10&&$('trialLow'))$('trialLow').style.display='inline';
+      if(credits<=0)$('statusText').textContent='NO CREDITS';
       const cp=document.createElement('div');cp.className='status-pill user-pill';cp.innerHTML='⚡ '+credits+' credits';document.querySelector('.header-actions').insertBefore(cp,$('btnLogout'));
     }
+  }else{
+    // New / signed-out visitor: this is a public landing page. Keep it viewable,
+    // advertise the free trial, and route every tool into the signup funnel.
+    $('trialBanner').style.display='';
+    $('statusText').textContent='NEW USER';
   }
 }
-$('btnLogout').onclick=async()=>{ if(window.SBAuth)return SBAuth.logout(); await fetch('/api/auth/logout',{method:'POST'}); location.replace('/login'); };
+// Route into the signup funnel. mode=signup opens the Create-account tab directly.
+function goSignup(nextPath, mode){
+  const n=(nextPath&&nextPath.startsWith('/')&&!nextPath.startsWith('//'))?nextPath:'/storyboard';
+  location.href='/login?mode='+(mode||'signup')+'&next='+encodeURIComponent(n);
+}
+$('btnLogout').onclick=async()=>{ if(window.SBAuth)return SBAuth.logout(); await fetch('/api/auth/logout',{method:'POST'}); location.replace('/'); };
 init();
 </script>
 </body>
