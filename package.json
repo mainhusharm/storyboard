@@ -5,7 +5,8 @@
   "main": "web/server.js",
   "scripts": {
     "start": "node web/server.js",
-    "dev": "node web/server.js"
+    "dev": "node web/server.js",
+    "build": "node scripts/sync-public.js"
   },
   "keywords": [],
   "author": "",
