@@ -116,7 +116,7 @@
     <h3>📝 Scene Inputs</h3>
     <div class="field">
       <label for="idea">Describe the scene you want</label>
-      <textarea id="idea" placeholder="e.g. A crystal glass fruit being slowly sliced by a chef's knife on a dark stone board, ASMR satisfying sounds, no hands visible, 15 seconds..."></textarea>
+      <textarea id="idea" placeholder="Leave blank to recreate the trend as it is, or add your own twist — e.g. the same trend but with my own character, at night, in the rain…"></textarea>
       <div class="hint">Leave blank and GPT-5.5 will create a scene based on the effect name.</div>
     </div>
     <div class="grid2">
@@ -276,7 +276,7 @@ const params = new URLSearchParams(location.search);
 
 // Support both /effects/<slug> and /flashloop-studio?slug=... routes
 const pathMatch = location.pathname.match(/^\/effects\/([^/]+)$/);
-let slug = '', name = '', tagline = '', trendThumbnail = '';
+let slug = '', name = '', tagline = '', trendThumbnail = '', source = '';
 if (pathMatch) {
   slug = decodeURIComponent(pathMatch[1]);
   name = params.get('name') || slug;
@@ -287,18 +287,28 @@ if (pathMatch) {
   tagline = params.get('tagline') || '';
 }
 trendThumbnail = params.get('thumbnail') || params.get('thumb') || '';
+// 'flashloop' trends are visual STYLES; 'sjinn' trends are viral CONCEPTS.
+// The server uses this to keep prompts on-trend instead of inventing a scene.
+source = (params.get('source') || '').toLowerCase();
+
+// Trend mode: flashloop formats are VISUAL STYLES, sjinn trends are CONCEPTS.
+// Mirrors resolveTrendMode() on the server so the UI explains what it will do.
+const isStyleTrend = source === 'flashloop' &&
+  !{ 'viral-skeleton-cv': 1, 'talking-food-drama-cv': 1, 'glass-asmr-video-cv': 1, 'historic-battles-cv': 1 }[slug.toLowerCase()];
 
 function escapeHtml(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 
 $('effectTitle').textContent = name ? escapeHtml(name) : (slug ? escapeHtml(slug) : 'Flashloop Effect');
-$('effectTagline').textContent = tagline ? escapeHtml(tagline) : 'Select an effect from Trends and describe the scene you want.';
+$('effectTagline').textContent = tagline ? escapeHtml(tagline) : (isStyleTrend ? 'Describe any scene and it will be rendered in this style.' : 'Select an effect from Trends and describe the scene you want.');
 $('effectBadge').style.display = 'inline-block';
 
 // Show trend reference image if available
 if (trendThumbnail) {
   $('trendPreview').style.display = 'block';
   $('trendThumb').src = trendThumbnail;
-  $('trendStyleInfo').innerHTML = `The generated prompts will be tuned to match <b>${escapeHtml(name)}</b> visual style. When you click <b>Generate Image</b>, this reference image will be used as the i2i anchor to lock the exact art style, color palette, and composition.`;
+  $('trendStyleInfo').innerHTML = isStyleTrend
+    ? `The generated prompts apply the <b>${escapeHtml(name)}</b> visual style to whatever scene you describe. When you click <b>Generate Image</b>, this reference image is used as the i2i anchor to lock the exact art style, color palette, and composition.`
+    : `The generated prompts <b>recreate the "${escapeHtml(name)}" trend</b> — its subject, action and look — so the result is instantly recognisable. Leave the scene box blank to reproduce the trend as-is, or add a twist. When you click <b>Generate Image</b>, this reference image is used as the i2i anchor.`;
 }
 
 let scenes = [];
@@ -342,7 +352,7 @@ $('btnGenerate').onclick = async () => {
     const res = await fetch('/api/flashloop/generate-prompt', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ slug, name, tagline, idea, sceneDuration, sceneLength: Number($('sceneLength').value) || 8, ratio, model: $('model').value, references: getRefs(), trendThumbnail })
+      body: JSON.stringify({ slug, name, tagline, idea, sceneDuration, sceneLength: Number($('sceneLength').value) || 8, ratio, model: $('model').value, references: getRefs(), trendThumbnail, source })
     });
     const rawText = await res.text();
     let j; try { j = JSON.parse(rawText); } catch { j = { error: rawText ? rawText.slice(0, 180) : ('HTTP ' + res.status) }; }
@@ -488,7 +498,9 @@ $('btnGenerateImage').onclick = async () => {
         ratio: $('ratio').value,
         model: $('i2iModel').value,
         trendName: name,
-        tagline: tagline
+        tagline: tagline,
+        slug: slug,
+        source: source
       })
     });
     const j = await res.json().catch(() => ({ error: 'Invalid response from server' }));

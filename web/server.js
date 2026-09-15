@@ -470,19 +470,19 @@ function sjinnAsVideo(trend) {
   };
 }
 
-// Example prompts for one-shot Flashloop scene generation.
-// NOTE: These examples are ONLY for structure, detail level, and tone. The LLM must NOT copy the crystal-fruit subject.
-const FLASHLOOP_EXAMPLE_IMAGE_PROMPT = `A photorealistic macro close-up of a single original imaginary crystal-glass fruit resting motionless on a dark slate cutting board. The fruit has a rounded teardrop shape with five gently twisted ribs, a short curled stem, translucent teal glass skin, thin coral-colored veins inside, and six dark crystal seeds arranged symmetrically around a small central core. A polished steel chef's knife lies beside it on the same board, and the background is a soft neutral grey. Soft controlled studio lighting from the left creates realistic caustics and reflections inside the glass. Shallow but stable depth of field keeps the entire fruit tack sharp. Camera positioned 25 degrees above the board, looking down at the fruit from the front. No hands are visible. Premium photorealistic macro food cinematography, realistic ray-traced glass, physically accurate reflections and refraction, 8K, 16:9, first frame only.`;
+// Structural templates for one-shot Flashloop scene generation.
+// These deliberately contain NO concrete subject: the old crystal-glass-fruit
+// example kept getting copied verbatim into unrelated trends, which is exactly the
+// "prompt doesn't match the trend" bug. They show FORMAT only.
+const FLASHLOOP_EXAMPLE_IMAGE_PROMPT = `<clear subject: who or what, and what they are doing>, <the specific place it happens>, <the key materials and textures that sell it>, <the lighting and colour palette>, <style and technical keywords>.`;
 
-const FLASHLOOP_EXAMPLE_VIDEO_PROMPT = `Create an exactly 15-second photorealistic ASMR video, animated as a time-stamped timeline:
+const FLASHLOOP_EXAMPLE_VIDEO_PROMPT = `Create an exactly N-second video, animated as a time-stamped timeline:
 
-0–2s: HOOK — a chef's knife taps the crown of a crystal-glass fruit; one crisp crystal clink as the whole fruit shivers.
-2–5s: The knife presses down, splitting the translucent teal glass cleanly along its centerline.
-5–9s: The two halves slide apart with a soft crystalline crackle, revealing coral veins and six dark crystal seeds inside.
-9–12s: A fingertip nudges the right half three centimeters across the dark slate board; the fresh cross-section catches the light with realistic caustics and refraction.
-12–15s: The knife lifts away, the halves rest side by side, and one gentle glass clink closes the scene.
+0–Ns: HOOK — <the single most striking moment of this trend, front and centre>
+Ns–Ns: <the main action develops in one concrete beat with vivid specifics>
+Ns–Ns: <the action peaks, then settles into a strong closing moment>
 
-Photorealistic macro food cinematography, ray-traced glass, studio lighting, shallow depth of field, 16:9.`;
+<Style and technical keywords for the look of the video>.`;
 
 // Strip camera instructions from generated video prompts so scripts stay to the
 // point (users explicitly asked for NO camera fluff). Removes standalone
@@ -511,43 +511,38 @@ function capPrompt(text, maxWords) {
   return out.join(' ');
 }
 
-// Ensure a generated prompt actually references the requested effect, not the hardcoded example.
-function enforceEffectRelevance(text, effectName, tagline, userIdea, duration = 15, ratio = '9:16', type = 'image') {
+// Ensure a generated prompt actually references the requested effect, not the
+// hardcoded example. In CONCEPT mode a missing concept is a hard failure; in STYLE
+// mode the effect only defines the look, so we never force its name into the scene.
+function enforceEffectRelevance(text, effectName, tagline, userIdea, duration = 15, ratio = '9:16', type = 'image', opts = {}) {
   if (!text) return text;
-  const normalizedEffect = String(effectName || '').toLowerCase();
-  const normalizedTagline = String(tagline || '').toLowerCase();
+  const mode = opts.mode === 'style' ? 'style' : 'concept';
+  const concept = String(opts.concept || '');
 
   // Strip common markdown fences so the guard inspects the actual prompt content.
   let cleanText = String(text).replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
-
-  // Build keyword set from effect name, tagline, and user idea.
-  const stopWords = new Set(['and', 'the', 'for', 'with', 'you', 'this', 'that', 'from', 'are', 'was', 'were', 'shorts', 'tiktok', 'youtube']);
-  const keywords = [...new Set(
-    [...normalizedEffect.split(/\s+/), ...normalizedTagline.split(/\s+/), ...String(userIdea || '').toLowerCase().split(/\s+/)]
-      .filter(w => w.length > 2 && !stopWords.has(w))
-  )];
   const textLower = cleanText.toLowerCase();
-  const hasMatch = keywords.some(k => textLower.includes(k));
 
-  // Words that strongly signal the LLM copied the hardcoded glass-fruit example.
-  const exampleSignals = ['crystal-glass', 'crystal glass', 'cutting board', 'cutting-board', 'glass fruit', 'glassfruit', 'chef\'s knife'];
+  // Words that signal the LLM copied the (now removed) hardcoded glass-fruit example
+  // or otherwise produced the old template verbatim.
+  const exampleSignals = ['crystal-glass', 'crystal glass', 'cutting board', 'cutting-board', 'glass fruit', 'glassfruit', "chef's knife", 'crystal seeds'];
   const copiedExample = exampleSignals.some(s => textLower.includes(s));
 
-  // Prompt is on-topic only if it matches the effect AND does not copy the example.
-  if (hasMatch && !copiedExample) return cleanText;
+  // A usable prompt is long enough and (unless copied) is trusted — keyword matching
+  // on creative writing is too aggressive to be a gate.
+  const longEnough = cleanText.split(/\s+/).filter(Boolean).length >= 12;
+  if (longEnough && !copiedExample) return cleanText;
 
-  // If the prompt doesn't copy the example, trust it even if keywords don't match exactly.
-  // The LLM was told to write about this effect — keyword matching is too aggressive for
-  // creative prompts (e.g. "cozy family breakfast" is about "Everyday Life" but doesn't
-  // contain the literal word "everyday").
-  if (!copiedExample) return cleanText;
-
-  // Prompt copied the example: return a clean, effect-aware fallback.
-  const base = `A visually striking "${effectName}" scene${tagline ? ' — ' + tagline : ''}.${userIdea ? ' ' + userIdea : ''}`;
+  // Copied the removed example, or came back empty/too thin: build a clean,
+  // on-topic fallback from the effect name and (in concept mode) its real concept.
+  const conceptLine = mode === 'concept' && concept ? ' ' + concept : '';
+  const base = mode === 'style'
+    ? `A specific, visually striking scene rendered in the "${effectName}" visual style${tagline ? ' — ' + tagline : ''}.${userIdea ? ' ' + userIdea : ''}`
+    : `A scene that recreates the viral "${effectName}" trend${tagline ? ' — ' + tagline : ''}.${conceptLine}${userIdea ? ' ' + userIdea : ''}`;
   if (type === 'video') {
-    return `${base} Create an exactly ${duration}-second video anchored to the supplied first-frame image. Preserve the exact subject, style, lighting, and composition. Smooth continuous motion, camera continuity. Cinematic, photorealistic, ${ratio}.`;
+    return `${base} Create an exactly ${duration}-second video anchored to the supplied first-frame image. Preserve the exact subject, style, lighting, and composition. Smooth continuous motion, camera continuity. Cinematic, ${ratio}.`;
   }
-  return `${base} First-frame reference image, cinematic, photorealistic, highly detailed, ${ratio}, first frame only.`;
+  return `${base} First-frame reference image, cinematic, highly detailed, ${ratio}, first frame only.`;
 }
 
 // Build a production-ready AI scene for a Flashloop-style effect using GPT-5.5.
@@ -567,30 +562,111 @@ function formatFlashloopRefs(cleanRefs) {
     : '';
 }
 
-// Analyze a trend reference image and extract ONLY its visual style as text.
-// Returns a style description that can be injected into prompts WITHOUT attaching
-// the image — this prevents the LLM from copying the subject/scene from the ref.
-async function analyzeTrendStyle(trendThumbnail, effectName, model = 'gpt-5.5') {
-  if (!trendThumbnail) return '';
+// ─── Trend mode: STYLE vs CONCEPT ─────────────────────────────────────────
+// Flashloop formats are VISUAL STYLES — their own taglines say "Describe any scene
+// and generate it in the X style". The format defines HOW to render; the subject
+// comes from the user's idea.
+// SJinn trends are CONCEPTS (Slime Face, Rust Removal, Fruit Avatar, ...) — the
+// trend name defines WHAT must happen and has to be reproduced faithfully.
+//
+// Treating both as the same "theme" made prompts drift off-concept: style formats
+// invented scenes ABOUT the style (e.g. paintbrushes for "Watercolor") while concept
+// trends invented a different subject entirely (losing the viral idea). So we branch.
+
+// Literal concepts for the known viral trends — used so the prompt hits the exact
+// idea even when the scraped tagline is empty or the trend image can't be analyzed
+// (vision style analysis is skipped on Vercel for time budget).
+const TREND_CONCEPTS = {
+  'slime-face': 'A person\'s face in extreme macro close-up being slowly covered by thick, glossy, dripping slime that oozes, stretches into strings and slides over the skin in satisfying ASMR detail.',
+  'micro-camera-animal': 'A tiny animal (kitten, puppy, bird or bug) filmed through an extreme macro "micro camera" lens so it looks miniature, with very shallow depth of field and huge blurred background.',
+  'topiary-shorts': 'Everyday animals or objects sculpted as topiary — living green foliage and clipped leaves shaped into a recognizable figure, seen in a garden.',
+  'food-eating-itself': 'A piece of food biting or eating a copy of itself — food-cannibalism gag where the food has a mouth and takes a bite out of its own kind.',
+  'fruit-avatar': 'A portrait of a person whose head transforms into (or is replaced by) a realistic giant fruit while keeping a human face and expression.',
+  'matchstick-shorts': 'Tiny matchsticks arranged and animated into miniature scenes — little matchstick people/structures moving in a macro stop-motion world.',
+  'rust-removal': 'A satisfying extreme close-up of heavy rust being scraped, brushed or dissolved off metal, revealing clean bright metal underneath, with flakes and dust falling away.',
+  'object-talk': 'Household objects (bottle, mug, lamp, fruit) with human faces and mouths, talking to each other like characters in a short comedy sketch.',
+  'time-travel-vlog': 'A vlog-style video where the creator jumps between historical eras, filming each era selfie-style before hopping to the next century.',
+  'fruit-movie-maker': 'Fruit characters acting out a dramatic movie scene — cinematic parody with fruit standing in for Hollywood actors.',
+  'flying-dragon': 'A realistic giant dragon soaring through the sky over landscapes, wings beating, cinematic epic scale.',
+  'mechanical-toy': 'A wind-up mechanical steampunk toy moving on its own — brass gears, springs and pistons driving little limbs.',
+  'mini-rescue': 'A tiny miniature person or creature in a real-world macro setting being rescued from danger by a giant hand or object.',
+  'pov-roller-coaster': 'First-person POV riding a roller coaster — hands and legs in frame, track rushing underneath, screams and wind.',
+  // Flashloop formats that are concept-driven memes rather than pure styles.
+  'viral-skeleton-cv': 'A skeleton meme video — a comedic skeleton character acting out a short multi-scene joke.',
+  'talking-food-drama-cv': 'Talking fruit and food characters in a reality-show romance drama, arguing and reacting to each other like TV contestants.',
+  'glass-asmr-video-cv': 'Extreme close-up ASMR footage of glass — cutting, tapping, cracking, pouring and shattering glass textures with crisp sound detail.',
+  'historic-battles-cv': 'A cinematic recreation of a historic battle — period soldiers, weapons and formations in a dramatic war scene.'
+};
+
+// Patterns that mark a flashloop-style VISUAL STYLE format rather than a concept.
+const STYLE_HINTS = /\bstyle\b|\bdescribe any scene\b|aesthetic|cartoon|anime|watercolor|collage|claymation|hand.?drawn|stickman|sketch|render(ing)? look/i;
+
+function resolveTrendMode(source, slug, name, tagline) {
+  const s = String(source || '').toLowerCase();
+  if (s === 'sjinn') return 'concept';
+  if (s === 'flashloop') {
+    // A flashloop format can still be concept-driven (viral skeleton, historic battles).
+    return TREND_CONCEPTS[String(slug || '').toLowerCase()] ? 'concept' : 'style';
+  }
+  if (TREND_CONCEPTS[String(slug || '').toLowerCase()]) return 'concept';
+  if (STYLE_HINTS.test(String(tagline || ''))) return 'style';
+  return 'concept';
+}
+
+// Analyze a trend reference image.
+// - CONCEPT mode: capture WHAT the trend shows (subject, action, setting) so the
+//   prompt can reproduce the idea everyone is copying, plus the visual style.
+// - STYLE mode: capture ONLY the style — the subject must come from the user's
+//   idea, so we deliberately do not describe the reference's subject.
+async function analyzeTrendReference(trendThumbnail, effectName, model = 'gpt-5.5', mode = 'concept') {
+  if (!trendThumbnail) return { concept: '', style: '' };
   try {
-    const system = `You are a visual style analyst. You will be shown a reference image from a viral AI video trend. Your job is to describe ONLY the visual style, technique, and aesthetic of the image — NOT its subject, characters, objects, or scene content.
+    const wantConcept = mode === 'concept';
+    const system = wantConcept
+      ? `You are analyzing a reference frame from the viral AI video trend "${effectName}". The user wants to recreate this exact trend.
+
+Return TWO labelled sections:
+
+CONCEPT: In 1-2 sentences, describe literally WHAT the trend shows — the subject, what it is doing, and the setting. Be specific and concrete. This is the idea viewers instantly recognize.
+STYLE: In one dense sentence (30-60 words), describe HOW it is rendered — rendering technique, color palette, lighting, texture, lens feel and mood. Do not repeat the subject here.
+
+Describe only what is actually visible. No preamble, no markdown, just the two labelled lines.`
+      : `You are a visual style analyst. You will be shown a reference image from a viral AI video trend called "${effectName}". It is a VISUAL STYLE / rendering treatment.
 
 OUTPUT RULES:
 - Describe ONLY: rendering technique (photorealistic / 3D claymation / cel-shaded anime / hand-drawn / etc.), color palette (specific colors and grading), lighting style, texture quality, camera/lens feel, mood, and overall aesthetic.
-- DO NOT mention: people, characters, animals, objects, locations, actions, or any scene content.
-- DO NOT say "the image shows..." or describe what is happening in the scene.
+- DO NOT mention people, characters, animals, objects, locations, actions, or any scene content.
 - Output a single dense paragraph of 60-120 words of pure style keywords and descriptions.
 - End with a short "Style tag:" line summarizing the aesthetic in 8-15 keywords.`;
+
     const userContent = [
-      { type: 'text', text: `Analyze the visual style of this "${effectName}" trend reference image. Remember: describe ONLY style, colors, lighting, textures, rendering technique, and mood. Do NOT describe the subject or scene content.` },
+      { type: 'text', text: wantConcept
+        ? `Analyze this "${effectName}" trend reference. First the CONCEPT (what the trend literally shows — subject, action, setting), then the STYLE (how it is rendered).`
+        : `Analyze the visual style of this "${effectName}" trend reference image. Remember: describe ONLY style, colors, lighting, textures, rendering technique, and mood. Do NOT describe the subject or scene content.` },
       { type: 'image_url', image_url: { url: trendThumbnail } }
     ];
     const raw = await chatCompletion(model, [{ role: 'system', content: system }, { role: 'user', content: userContent }], 1500);
-    return (raw || '').trim();
+    const text = (raw || '').trim();
+    if (!wantConcept) return { concept: '', style: text };
+    const conceptM = text.match(/CONCEPT\s*:\s*([\s\S]*?)(?=\bSTYLE\s*:|$)/i);
+    const styleM = text.match(/STYLE\s*:\s*([\s\S]*)$/i);
+    return {
+      concept: (conceptM ? conceptM[1] : '').trim(),
+      style: (styleM ? styleM[1] : '').trim()
+    };
   } catch (e) {
-    logLine(`trend style analysis failed: ${e.message}`);
-    return '';
+    logLine(`trend reference analysis failed: ${e.message}`);
+    return { concept: '', style: '' };
   }
+}
+
+// The concrete concept for a trend: curated map first (instant, works offline and
+// on Vercel), then the vision-extracted concept as a fallback/refinement.
+function resolveTrendConcept(slug, effectName, visionConcept) {
+  const curated = TREND_CONCEPTS[String(slug || '').toLowerCase()];
+  if (curated) return curated;
+  if (visionConcept && visionConcept.trim().length > 20) return visionConcept.trim();
+  return '';
 }
 
 // Random creative directions for one-shot prompt generation. gpt-5.5 on PaxSenix
@@ -619,48 +695,64 @@ CREATIVE DIRECTION FOR THIS GENERATION (MANDATORY — pick a DIFFERENT scene tha
 }
 
 // Generate only the first-frame / reference image prompt (img2img).
-// styleText is a pre-extracted style description (from analyzeTrendStyle) — the image
-// itself is NOT attached to this call, so the LLM cannot copy the reference's subject.
-async function generateFlashloopImagePrompt(effectName, tagline, userIdea, ratio, model = 'gpt-5.5', cleanRefs = [], styleText = '') {
+// mode 'concept' → the trend name IS the subject; reproduce the concept faithfully.
+// mode 'style'   → the trend name is a rendering STYLE; the subject comes from the idea.
+// styleText/concept are pre-extracted (from analyzeTrendReference); the reference image
+// itself is NOT attached to this call, so the LLM cannot copy unrelated scene content.
+async function generateFlashloopImagePrompt(effectName, tagline, userIdea, ratio, model = 'gpt-5.5', cleanRefs = [], styleText = '', mode = 'concept', concept = '') {
   const refBlock = formatFlashloopRefs(cleanRefs);
   const hasStyle = !!styleText;
-  const visionBlock = hasStyle
-    ? `\n\nVISUAL STYLE REFERENCE (extracted from the "${effectName}" trend reference image):\n${styleText}\n\nYour prompt MUST be rendered in this exact visual style — same rendering technique, color palette, lighting, textures, and mood. The SUBJECT of your prompt must come from the effect name "${effectName}" and the user's idea below — NOT from any scene implied by the style description. The style tells you HOW to render, not WHAT to render.`
+  const hasConcept = mode === 'concept' && !!concept;
+
+  const styleBlock = hasStyle
+    ? `\n\nVISUAL STYLE (extracted from the "${effectName}" trend reference — render in this exact style):\n${styleText}`
     : '';
-  const system = `You are an expert prompt engineer for short-form AI video generation. Given an effect name, an optional tagline, and a short user idea, write a CONCISE first-frame / reference image prompt for img2img generation.
+  const conceptBlock = hasConcept
+    ? `\n\nTHE TREND CONCEPT — this is exactly WHAT the video must show. Reproduce it faithfully:\n${concept}`
+    : '';
+
+  const subjectRule = mode === 'style'
+    ? `- "${effectName}" is a VISUAL STYLE, not the subject. Decide the SUBJECT from the user's idea; if there is no idea, pick a simple, relatable, visually interesting subject.
+- NEVER make the scene about the style itself. For a "Watercolor" style do NOT show paintbrushes or paint — show the chosen subject PAINTED in watercolor. For "Sports Anime" show the chosen subject drawn as sports anime.
+- Describe the STYLE explicitly so the renderer reproduces it: rendering technique, line work, colour palette, shading, texture, mood.`
+    : `- "${effectName}" is a viral TREND. Reproduce its concept so anyone scrolling instantly recognises it as "${effectName}".
+- Keep the core concept, the subject type and the signature action${hasConcept ? ' described in THE TREND CONCEPT above' : ''}. Change only surface details: which specific person/object, wardrobe/colours, exact setting details, camera distance.
+- Do NOT invent a different concept or unrelated subject matter, and never write a generic scene that ignores the trend.`;
+
+  const system = `You are an expert prompt engineer for short-form AI video generation. Given an effect, an optional tagline and a short user idea, write a CONCISE first-frame / reference image prompt for img2img generation.
 
 CRITICAL RULES:
-- The EFFECT NAME is the core concept of the scene. "Everyday Life" means depict a relatable human everyday moment — family, morning routine, cooking, reading, etc. "Old Cartoon Style" means depict a scene in retro cartoon aesthetic. ALWAYS interpret the effect name as the scene's THEME and subject matter.
-- You MUST generate a SPECIFIC scene with specific subjects, actions, and setting. Do NOT write generic descriptions like "a scene matching this effect." Instead write something like "A family of four sitting around a breakfast table, mother pouring coffee, children reaching for toast."
-- The example below is ONLY for structure and tone. Do NOT copy its subject (crystal-glass fruit).
-- Keep the prompt CONCISE: 80-150 words max. This is just a single frozen frame anchor.
-- Focus ONLY on: (1) WHO is in the scene and WHAT they're doing, (2) camera angle and framing, (3) lighting and color palette, (4) key materials/textures, (5) style keywords.
-- If a user idea is provided, incorporate it naturally. If no user idea, invent a specific compelling scene that represents the effect name as a viral trend.
-${visionBlock}
+${subjectRule}
+- You MUST generate a SPECIFIC scene: name the subject, the action, and the setting. Never write "a scene matching this effect".
+- Keep the prompt CONCISE: 80-150 words max. This is a single frozen frame anchor.
+- Cover: (1) WHO/WHAT is in frame and what they're doing, (2) framing/distance, (3) lighting and colour palette, (4) key materials/textures, (5) style keywords.
+- If a user idea is provided, incorporate it naturally without losing the concept above.
+- The example below is a FORMAT template with no subject — match its conciseness and structure, never its wording.${conceptBlock}${styleBlock}${refBlock}
 
 Return ONLY a JSON object with "title" and "imagePrompt". Do not output any explanation outside the JSON.`;
 
-  // Light variation token ONLY — gpt-5.5 ignores temperature and returns identical
-  // output for identical input. NO camera/lighting/mood/setting fluff is injected:
-  // prompts must stay to the point.
-  const variation = `\n\nVariation #${Date.now().toString(36)} — write a fresh, specific scene for this effect. Do NOT repeat a previous generation. Keep it to the point.`;
+  // Light variation token ONLY — the upstream models ignore temperature and return
+  // identical output for identical input, so a token forces a fresh scene.
+  const variation = `\n\nVariation #${Date.now().toString(36)} — write a fresh, specific scene. Do NOT repeat a previous generation.`;
+  const subjectLine = mode === 'style'
+    ? `Subject (from the user's idea — render this in the "${effectName}" style): ${userIdea || 'Invent a simple, relatable, visually interesting subject.'}`
+    : `Subject (reproduce the "${effectName}" trend concept${hasConcept ? ' described above' : ''}): ${userIdea || 'Recreate this trend exactly — pick a specific subject, setting and action that make it instantly recognisable.'}`;
   const userText = `Effect: ${effectName}${tagline ? ' — ' + tagline : ''}
-The effect "${effectName}" is a viral trend — your scene MUST depict a concept that matches this name. For "Everyday Life", show a cozy relatable daily moment (family, morning routine, cooking together). For "Old Cartoon Style", show a scene in retro cartoon aesthetic.
+${mode === 'style' ? `Mode: VISUAL STYLE — the effect defines HOW it is rendered, not WHAT is shown.` : `Mode: VIRAL CONCEPT — the effect defines WHAT must happen.`}
 ${refBlock}
-User idea: ${userIdea || 'Invent a specific compelling scene that represents "' + effectName + '" as a viral trend — pick specific subjects, a specific setting, and a specific action.'}
+${subjectLine}
 Aspect ratio: ${ratio}
 ${variation}
 
-Example (match its CONCISENESS, NOT its subject):
+Format template (structure only — no subject to copy):
+${FLASHLOOP_EXAMPLE_IMAGE_PROMPT}
 
-A photorealistic macro close-up of a crystal-glass fruit on a dark slate cutting board. Translucent teal glass skin, coral veins, six dark crystal seeds. Chef's knife beside it. Soft studio lighting from the left, realistic caustics. Camera 25° above, shallow DOF. No hands. 8K, 16:9, first frame only.
-
-${hasStyle ? 'Render your scene in the exact visual style described in the VISUAL STYLE REFERENCE above. Your SUBJECT must be "' + effectName + '" — depict a scene that matches this trend name.' : 'Generate { "title": "...", "imagePrompt": "..." } for "' + effectName + '".'} Keep imagePrompt under 150 words. Do not output any explanation outside the JSON.`;
+Return { "title": "...", "imagePrompt": "..." }. Keep imagePrompt under 150 words, and end it with ${ratio}. Do not output any explanation outside the JSON.`;
 
   const raw = await chatWithLogfareFallback(model, [{ role: 'system', content: system }, { role: 'user', content: userText }], 4000, 1.0);
   let parsed = {};
   try { parsed = parseJsonLenient(raw); } catch (e) { parsed = {}; }
-  const imagePrompt = enforceEffectRelevance(parsed.imagePrompt || raw, effectName, tagline, userIdea, 0, ratio, 'image');
+  const imagePrompt = enforceEffectRelevance(parsed.imagePrompt || raw, effectName, tagline, userIdea, 0, ratio, 'image', { mode, concept });
   return {
     title: parsed.title || effectName,
     imagePrompt
@@ -668,33 +760,46 @@ ${hasStyle ? 'Render your scene in the exact visual style described in the VISUA
 }
 
 // Generate only the motion / video prompt (img2video), using the generated image prompt as context.
-async function generateFlashloopVideoPrompt(effectName, tagline, userIdea, duration, ratio, model = 'gpt-5.5', cleanRefs = [], imagePrompt = '', styleText = '') {
+async function generateFlashloopVideoPrompt(effectName, tagline, userIdea, duration, ratio, model = 'gpt-5.5', cleanRefs = [], imagePrompt = '', styleText = '', mode = 'concept', concept = '') {
   const refBlock = formatFlashloopRefs(cleanRefs);
   const hasStyle = !!styleText;
-  const visionBlock = hasStyle
-    ? `\n\nVISUAL STYLE REFERENCE (extracted from the "${effectName}" trend reference image):\n${styleText}\n\nThe video MUST maintain this exact visual style throughout all frames — same rendering technique, color palette, lighting, textures, and mood. Camera movements and pacing should match this aesthetic. Audio description should complement the vibe. The SUBJECT comes from the effect name and user idea — NOT from any scene implied by the style description.`
+  const hasConcept = mode === 'concept' && !!concept;
+
+  const styleBlock = hasStyle
+    ? `\n\nVISUAL STYLE (from the "${effectName}" trend reference — maintain this exact rendering throughout every frame):\n${styleText}`
     : '';
-  const system = `You are an expert prompt engineer for short-form AI video generation. Given an effect name, an optional tagline, a short user idea, and a first-frame image prompt, write a detailed img2video / image-to-video prompt.
+  const conceptBlock = hasConcept
+    ? `\n\nTHE TREND CONCEPT — this is exactly WHAT the video must show. Animate it faithfully:\n${concept}`
+    : '';
+
+  const subjectRule = mode === 'style'
+    ? `- "${effectName}" is a VISUAL STYLE, not the subject. Animate the subject already established in the first-frame image, keeping that same subject in this style throughout.
+- NEVER make the video about the style itself. Keep the style as the LOOK of the video, not its content.
+- Keep the rendering technique, line work, colour palette and texture consistent in every beat.`
+    : `- "${effectName}" is a viral TREND. The video must make its concept instantly recognisable as "${effectName}".
+- Keep the core concept, subject type and signature action${hasConcept ? ' from THE TREND CONCEPT above' : ''} — vary only surface detail.
+- Do NOT invent an unrelated subject or concept.`;
+
+  const system = `You are an expert prompt engineer for short-form AI video generation. Given an effect, an optional tagline, a short user idea and a first-frame image prompt, write a detailed img2video / image-to-video prompt.
 
 CRITICAL RULES:
-- The EFFECT NAME is the core concept. "Everyday Life" means animate a relatable human everyday moment. "Old Cartoon Style" means animate in retro cartoon aesthetic. ALWAYS interpret the effect name as the scene's THEME and subject matter.
-- You MUST describe specific actions, movements, and interactions. Do NOT write generic descriptions. The timeline must have concrete actions like "the mother lifts the coffee pot and pours" not "motion occurs."
-- The example below is ONLY for structure and tone. Do NOT copy its subject.
+${subjectRule}
+- You MUST describe specific actions, movements and interactions. Never write generic lines like "motion occurs" — write "the mother lifts the coffee pot and pours".
 - Keep it focused but DETAILED (180-280 words). Do NOT include negative instructions — only describe what SHOULD happen.
-- Structure it as a TIMELINE of time-stamped beats that cover the full ${duration} seconds — e.g. "0–5s: ...", "5–10s: ...", "10–15s: ..." — consecutive segments with no gaps, ending exactly at ${duration}s. The FIRST segment must deliver the HOOK. Each segment is one concrete action beat with vivid specifics (textures, scale, lighting, expressions, sounds, miniature-detail observations). NO "CAMERA:" section, no camera-movement instructions, no audio/style filler paragraphs.
-- Preserve the exact subject, position, colors, lighting, and composition of the supplied first-frame image while animating.
-${visionBlock}
+- Structure it as a TIMELINE of time-stamped beats covering the full ${duration} seconds — e.g. "0–5s: ...", "5–10s: ...", "10–15s: ..." — consecutive segments with no gaps, ending exactly at ${duration}s. The FIRST segment must deliver the HOOK. Each segment is one concrete action beat with vivid specifics (textures, scale, lighting, expressions, sounds).
+- NO "CAMERA:" section, no camera-movement instructions, no audio/style filler paragraphs.
+- Preserve the exact subject, position, colours, lighting and composition of the supplied first-frame image while animating.
+- The template below is a FORMAT skeleton with no subject — match its structure, never its wording.${conceptBlock}${styleBlock}${refBlock}
 
 Return ONLY a JSON object with "title" and "videoPrompt". Do not output any explanation outside the JSON.`;
 
-  // Light variation token ONLY — gpt-5.5 ignores temperature and returns identical
-  // output for identical input. NO camera/lighting/mood/setting fluff is injected:
-  // prompts must stay to the point.
-  const variation = `\n\nVariation #${Date.now().toString(36)} — write a fresh, specific scene for this effect. Do NOT repeat a previous generation. Keep it to the point.`;
+  // Light variation token ONLY — the upstream models ignore temperature and return
+  // identical output for identical input, so a token forces a fresh scene.
+  const variation = `\n\nVariation #${Date.now().toString(36)} — write a fresh, specific animation. Do NOT repeat a previous generation.`;
   const userText = `Effect: ${effectName}${tagline ? ' — ' + tagline : ''}
-The effect "${effectName}" is a viral trend — your scene MUST depict a concept that matches this name. For "Everyday Life", animate a cozy relatable daily moment. For "Old Cartoon Style", animate in retro cartoon aesthetic.
+${mode === 'style' ? 'Mode: VISUAL STYLE — animate the subject in this look.' : 'Mode: VIRAL CONCEPT — reproduce this trend\'s action.'}
 ${refBlock}
-User idea: ${userIdea || 'Invent a specific compelling scene that represents "' + effectName + '" as a viral trend — pick specific subjects, a specific setting, and a specific action.'}
+${mode === 'style' ? 'Subject: the subject established in the first-frame image below.' : `Subject: reproduce the "${effectName}" trend${hasConcept ? ' concept described above' : ''}.${userIdea ? ' ' + userIdea : ''}`}
 Duration: ${duration} seconds
 Aspect ratio: ${ratio}
 ${variation}
@@ -703,16 +808,16 @@ First-frame image prompt (your video prompt must describe motion anchored to thi
 
 ${imagePrompt || 'No image prompt provided.'}
 
-Example (match its STRUCTURE and TONE, NOT its subject. 180-280 words, no negative instructions):
+Format template (structure only — no subject to copy, 180-280 words):
 
 ${FLASHLOOP_EXAMPLE_VIDEO_PROMPT}
 
-${hasStyle ? 'Render in the exact visual style described in the VISUAL STYLE REFERENCE above. Your SUBJECT must be "' + effectName + '" — animate a scene that matches this trend name.' : 'Generate { "title": "...", "videoPrompt": "..." } for "' + effectName + '".'} Keep videoPrompt 180-280 words. No negative instructions. Do not output any explanation outside the JSON.`;
+Return { "title": "...", "videoPrompt": "..." }. Keep videoPrompt 180-280 words, no negative instructions. Do not output any explanation outside the JSON.`;
 
   const raw = await chatWithLogfareFallback(model, [{ role: 'system', content: system }, { role: 'user', content: userText }], 16000, 1.0);
   let parsed = {};
   try { parsed = parseJsonLenient(raw); } catch (e) { parsed = {}; }
-  const videoPrompt = scrubCameraFluff(capPrompt(enforceEffectRelevance(parsed.videoPrompt || raw, effectName, tagline, userIdea, duration, ratio, 'video'), 420));
+  const videoPrompt = scrubCameraFluff(capPrompt(enforceEffectRelevance(parsed.videoPrompt || raw, effectName, tagline, userIdea, duration, ratio, 'video', { mode, concept }), 420));
   return {
     title: parsed.title || effectName,
     videoPrompt
@@ -722,38 +827,44 @@ ${hasStyle ? 'Render in the exact visual style described in the VISUAL STYLE REF
 // Build a production-ready AI scene for a Flashloop-style effect using GPT-5.5.
 // Returns both a first-frame/reference image prompt (img2img) and a motion
 // prompt for image-to-video (img2video) that preserves the generated frame.
-async function generateFlashloopScene(effectName, tagline, userIdea, duration, ratio, model = 'gpt-5.5', references = [], trendThumbnail = '', sceneLength = 0) {
+// mode = 'concept' (reproduce the viral trend) | 'style' (apply the look to a subject).
+async function generateFlashloopScene(effectName, tagline, userIdea, duration, ratio, model = 'gpt-5.5', references = [], trendThumbnail = '', sceneLength = 0, mode = 'concept', slug = '') {
   // sceneLength (seconds per scene) overrides `duration` when provided so the
   // per-scene fill fallback matches the script's chosen timeframe exactly.
   const perSceneLen = [5, 8, 10, 15, 30].includes(Number(sceneLength)) ? Number(sceneLength) : Number(duration) || 8;
   const cleanRefs = cleanFlashloopRefs(references);
 
-  // On Vercel, skip vision style analysis (extra LLM call) so we fit in maxDuration.
-  // Style still comes from effect name + tagline in the prompt itself.
+  // Vision analysis is skipped on Vercel (extra LLM call vs the time budget). The
+  // concept still lands via TREND_CONCEPTS and the effect name itself, so prompts
+  // stay on-trend even without it.
   let styleText = '';
+  let visionConcept = '';
   if (trendThumbnail && !IS_VERCEL) {
-    styleText = await analyzeTrendStyle(trendThumbnail, effectName, model);
-    logLine(`trend style extracted for "${effectName}": ${styleText.length} chars`);
-  } else if (trendThumbnail && IS_VERCEL) {
-    styleText = `Match the viral "${effectName}" trend aesthetic${tagline ? ' — ' + tagline : ''}. High-contrast short-form social video look, punchy color grade, clean composition, modern AI-video style.`;
+    const analysis = await analyzeTrendReference(trendThumbnail, effectName, model, mode);
+    styleText = analysis.style;
+    visionConcept = analysis.concept;
+    logLine(`trend reference analysed for "${effectName}" (${mode}): style ${styleText.length}c, concept ${visionConcept.length}c`);
   }
+  const concept = mode === 'concept' ? resolveTrendConcept(slug, effectName, visionConcept) : '';
 
   // Prefer a fast reliable model on Vercel to avoid timeouts
   const promptModel = IS_VERCEL
     ? ((LOGFARE_MODELS.includes(model) || ['gemini-2.5-pro', 'gemini-3.1-pro', 'gemini-3.1-flash-lite', 'deepseek-v3.2', 'deepseek-v4-flash', 'glm-5.2', 'glm-5.3', 'kimi-k3', 'kimi-k2.6', 'claude-sonnet-4-5', 'mimo-v2.5', 'gpt-5.5'].includes(model)) ? model : 'logfare:auto')
     : model;
 
-  // STEP 2: Generate prompts using styleText (no image attached — LLM can't copy subject)
-  const imageResult = await generateFlashloopImagePrompt(effectName, tagline, userIdea, ratio, promptModel, cleanRefs, styleText);
+  // Generate prompts (the reference image is NOT attached — the LLM cannot copy it)
+  const imageResult = await generateFlashloopImagePrompt(effectName, tagline, userIdea, ratio, promptModel, cleanRefs, styleText, mode, concept);
 
   // Ensure the image prompt is never empty; if the LLM returned nothing useful, build a minimal anchor.
   if (!imageResult.imagePrompt || !imageResult.imagePrompt.trim()) {
-    imageResult.imagePrompt = `First-frame reference image for "${effectName}"${tagline ? ' — ' + tagline : ''}${userIdea ? ' — ' + userIdea : ''}. A specific, visually striking scene: concrete subjects, a clear action, and a vivid setting. Cinematic, photorealistic, high detail, ${ratio}, first frame only.`;
+    imageResult.imagePrompt = mode === 'style'
+      ? `First-frame reference image rendered in the "${effectName}" visual style${tagline ? ' — ' + tagline : ''}${userIdea ? ' — ' + userIdea : ''}. A specific subject in a clear setting, ${ratio}, first frame only.`
+      : `First-frame reference image recreating the viral "${effectName}" trend${tagline ? ' — ' + tagline : ''}. ${concept || 'A specific, instantly recognisable scene from this trend.'}${userIdea ? ' ' + userIdea : ''} ${ratio}, first frame only.`;
   }
 
   let videoResult = {};
   try {
-    videoResult = await generateFlashloopVideoPrompt(effectName, tagline, userIdea, perSceneLen, ratio, promptModel, cleanRefs, imageResult.imagePrompt, styleText);
+    videoResult = await generateFlashloopVideoPrompt(effectName, tagline, userIdea, perSceneLen, ratio, promptModel, cleanRefs, imageResult.imagePrompt, styleText, mode, concept);
   } catch (e) { logLine('flashloop video prompt failed: ' + e.message); }
 
   // Ensure the video prompt is never empty — build a detailed fallback.
@@ -761,10 +872,10 @@ async function generateFlashloopScene(effectName, tagline, userIdea, duration, r
     const d3 = Math.round(perSceneLen * 0.3);
     const d6 = Math.round(perSceneLen * 0.6);
     videoResult.videoPrompt = `Create an exactly ${perSceneLen}-second video for "${effectName}"${tagline ? ' — ' + tagline : ''}${userIdea ? ' — ' + userIdea : ''}, as a time-stamped timeline:
-0–${d3}s: HOOK — the scene's most striking moment, front and center.
+0–${d3}s: HOOK — ${mode === 'concept' ? 'the trend\'s signature moment, front and centre.' : 'the subject\'s most striking moment, front and centre.'}
 ${d3}–${d6}s: The main action unfolds in a few concrete beats with detail.
 ${d6}–${perSceneLen}s: The action peaks, then settles into a strong final moment.
-Use the supplied first-frame image as the strict visual reference — preserve the exact subject, position, colors, lighting, and composition. Smooth continuous motion. Cinematic, photorealistic, ${ratio}. No text or logos.`;
+${concept ? concept + ' ' : ''}Use the supplied first-frame image as the strict visual reference — preserve the exact subject, position, colors, lighting, and composition. Smooth continuous motion. Cinematic, ${ratio}. No text or logos.`;
   }
 
   return {
@@ -778,7 +889,7 @@ Use the supplied first-frame image as the strict visual reference — preserve t
 // scene opens with a hook, no camera/lighting/mood fluff. One LLM call writes all
 // scenes so the story flows seamlessly. Scene count is FIXED by the per-scene
 // length: 30s → 4 scenes, 15s → 8 scenes (both add up to 2 minutes of footage).
-async function generateFlashloopScript(effectName, tagline, userIdea, sceneDuration, ratio, model = 'gpt-5.5', references = [], trendThumbnail = '', sceneLength = 8) {
+async function generateFlashloopScript(effectName, tagline, userIdea, sceneDuration, ratio, model = 'gpt-5.5', references = [], trendThumbnail = '', sceneLength = 8, mode = 'concept', slug = '') {
 // Scenes are sized to the RENDER engine: Make Video renders each scene with
 // omni-flash (~8s clips) by default, but the user can pick another per-scene
 // length (5s/10s/15s). Total stays on target: short → ~64s, long → ~120s.
@@ -792,11 +903,18 @@ const totalSec = perScene * sceneCount;
     ? ((LOGFARE_MODELS.includes(model) || ['gemini-2.5-pro', 'gemini-3.1-pro', 'gemini-3.1-flash-lite', 'deepseek-v3.2', 'deepseek-v4-flash', 'glm-5.2', 'glm-5.3', 'kimi-k3', 'kimi-k2.6', 'claude-sonnet-4-5', 'mimo-v2.5', 'gpt-5.5'].includes(model)) ? model : 'logfare:auto')
     : model;
 
-  // Optional trend-style analysis (extra LLM call — skipped on Vercel).
+  // Trend reference analysis (skipped on Vercel to protect the time budget — the
+  // concept still lands via TREND_CONCEPTS + the effect name).
   let styleText = '';
+  let visionConcept = '';
   if (trendThumbnail && !IS_VERCEL) {
-    try { styleText = await analyzeTrendStyle(trendThumbnail, effectName, promptModel); } catch (e) { styleText = ''; }
+    try {
+      const analysis = await analyzeTrendReference(trendThumbnail, effectName, promptModel, mode);
+      styleText = analysis.style;
+      visionConcept = analysis.concept;
+    } catch (e) { styleText = ''; visionConcept = ''; }
   }
+  const concept = mode === 'concept' ? resolveTrendConcept(slug, effectName, visionConcept) : '';
   const styleBlock = styleText ? `\n\nVISUAL STYLE (from the trend reference — every scene must be rendered in this exact style):\n${styleText}` : '';
 
   // Timeline beats scale with the chosen per-scene length.
@@ -805,6 +923,17 @@ const totalSec = perScene * sceneCount;
   bnds[0] = 0; bnds[beatCount] = perScene;
   const beatExample = bnds.slice(0, -1).map((b, k) => `"${b}–${bnds[k + 1]}s: ..."`).join(', ');
   const vidWords = perScene <= 8 ? '120-200' : (perScene <= 10 ? '150-240' : (perScene <= 15 ? '200-320' : '320-480'));
+
+  // The trend is either a VISUAL STYLE (flashloop formats) or a CONCEPT (sjinn
+  // trends). Getting this distinction right is what keeps output on-trend.
+  const modeRules = mode === 'style'
+    ? `- "${effectName}" is a VISUAL STYLE, not the subject of the video. Every scene must be RENDERED in this style — its rendering technique, line work, colour palette, shading and texture.
+- The SUBJECT of the scenes comes from the user's idea. If no idea is given, pick a simple, relatable, visually interesting subject and follow it through the film.
+- NEVER make the story about the style itself (for "Watercolor", do NOT show paint or brushes — show the subject painted in watercolor).
+- Keep the same main subject and setting across scenes so it plays as one continuous film.`
+    : `- "${effectName}" is a viral TREND. Every scene must make its concept instantly recognisable as "${effectName}".
+- Keep the core concept, the subject type and the signature action the same across scenes — vary only surface detail (specific person/object, wardrobe, exact setting, framing).
+- Do NOT drift into an unrelated story or a different subject matter.${concept ? `\n- THE TREND CONCEPT (this is exactly what the film must show): ${concept}` : ''}`;
 
   const system = `You are a top short-form video scriptwriter for viral AI formats. Write a complete ${sceneCount}-scene script (${totalSec} seconds total, exactly ${perScene} seconds per scene) for the effect "${effectName}".
 
@@ -818,15 +947,16 @@ OUTPUT FORMAT — return ONLY a JSON object, nothing else:
 
 RULES:
 - EXACTLY ${sceneCount} scenes. Every scene is exactly ${perScene} seconds — the video engine renders ~${perScene}s clips, so the timeline MUST fit inside ${perScene}s.
+${modeRules}
 - TO THE POINT, zero filler. NO "CAMERA:" sections, NO camera-angle/movement instructions, NO lighting/mood/setting bullet lists, NO audio or style paragraphs inside the prompts, NO negative instructions.
 - Each scene's "imagePrompt": 80-140 words — the first-frame reference image for that scene. Concrete subject, exact action, setting, colors, materials. End with: ${ratio}.
-- Each scene's "videoPrompt": ${vidWords} words — a TIMELINE of ${beatCount} time-stamped beats that covers the full ${perScene} seconds. Format: ${beatExample} — consecutive segments with no gaps, ending exactly at ${perScene}s. The FIRST segment must deliver the hook. Each segment is one concrete action beat with vivid specifics (textures, scale, lighting, expressions, sounds, miniature-detail observations). NO "CAMERA:" section, no camera-movement instructions, no audio/style filler paragraphs.
-- Hit the word targets above exactly — count your words as you write. If a videoPrompt is under the target, add more detail to each time-stamped beat until it fits. Be vivid and specific so a video model can animate it precisely, but never pad with filler.
-- STORY: Scene 1 opens with the strongest hook (cold open). Scenes flow seamlessly — each scene starts exactly where the previous one ended (same characters, same place, same light, continuous motion). The last scene ends on a satisfying payoff.
-- Interpret "${effectName}" as the theme and write a specific, vivid, viral-worthy scene — never generic filler.${tagline ? '\n- Trend tagline: ' + tagline : ''}${userIdea ? '\n- User idea (honor it): ' + userIdea : ''}${styleBlock}${refBlock}
-- Keep every prompt tight and concrete.`;
+- Each scene's "videoPrompt": ${vidWords} words — a TIMELINE of ${beatCount} time-stamped beats that covers the full ${perScene} seconds. Format: ${beatExample} — consecutive segments with no gaps, ending exactly at ${perScene}s. The FIRST segment must deliver the hook. Each segment is one concrete action beat with vivid specifics (textures, scale, lighting, expressions, sounds).
+- Hit the word targets above exactly — count your words as you write. Be vivid and specific so a video model can animate it precisely, but never pad with filler.
+- STORY: Scene 1 opens with the strongest hook (cold open). Scenes flow seamlessly — each scene starts exactly where the previous one ended (same characters, same place, same light, continuous motion). The last scene ends on a satisfying payoff.${tagline ? '\n- Trend tagline: ' + tagline : ''}${userIdea ? '\n- User idea (honor it without losing the concept above): ' + userIdea : ''}${styleBlock}${refBlock}
+- Keep every prompt tight, concrete and on-concept.`;
 
-  let promptText = `Write the full ${sceneCount}-scene script for "${effectName}"${tagline ? ' — ' + tagline : ''}. ${perScene}s per scene, ${ratio}.${userIdea ? '\nUser idea: ' + userIdea : ''}\nReturn ONLY the JSON object described in your instructions.`;
+  let promptText = `Write the full ${sceneCount}-scene script for "${effectName}"${tagline ? ' — ' + tagline : ''}. ${perScene}s per scene, ${ratio}.
+Mode: ${mode === 'style' ? 'VISUAL STYLE — apply this look to a subject.' : 'VIRAL CONCEPT — faithfully reproduce this trend.'}${userIdea ? '\nUser idea: ' + userIdea : ''}\nReturn ONLY the JSON object described in your instructions.`;
   let parsed = {};
   let raw = '';
   let lastScriptErr = null;
@@ -849,8 +979,8 @@ RULES:
       scene: i + 1,
       title: String(s.title || s.sceneTitle || `Scene ${i + 1}`).slice(0, 80),
       hook: String(s.hook || s.hookline || '').slice(0, 200),
-      imagePrompt: capPrompt(enforceEffectRelevance(String(s.imagePrompt || s.image_prompt || '').trim(), effectName, tagline, userIdea, perScene, ratio, 'image'), 200),
-      videoPrompt: scrubCameraFluff(capPrompt(enforceEffectRelevance(String(s.videoPrompt || s.video_prompt || '').trim(), effectName, tagline, userIdea, perScene, ratio, 'video'), 420))
+      imagePrompt: capPrompt(enforceEffectRelevance(String(s.imagePrompt || s.image_prompt || '').trim(), effectName, tagline, userIdea, perScene, ratio, 'image', { mode, concept }), 200),
+      videoPrompt: scrubCameraFluff(capPrompt(enforceEffectRelevance(String(s.videoPrompt || s.video_prompt || '').trim(), effectName, tagline, userIdea, perScene, ratio, 'video', { mode, concept }), 420))
     }));
 
   // Fallback: fill any missing scenes one-by-one so the scene count is always right.
@@ -860,7 +990,7 @@ RULES:
       try {
         const prevEnd = scenes[i - 1] ? ` Previous scene ends here: ${scenes[i - 1].videoPrompt}` : '';
         const sceneIdea = String(userIdea || '') + prevEnd;
-        const one = await generateFlashloopScene(effectName, tagline, sceneIdea, perScene, ratio, promptModel, references, '', perScene);
+        const one = await generateFlashloopScene(effectName, tagline, sceneIdea, perScene, ratio, promptModel, references, '', perScene, mode, slug);
         scenes.push({ scene: i + 1, title: `Scene ${i + 1}`, hook: '', imagePrompt: one.imagePrompt, videoPrompt: one.videoPrompt });
       } catch (e) { logLine(`flashloop per-scene fill failed: ${e.message}`); lastScriptErr = lastScriptErr || e; break; }
     }
@@ -5056,19 +5186,23 @@ Return ONLY a JSON object:
     if (p === '/api/flashloop/generate-prompt' && req.method === 'POST') {
       try {
         const body = await readBody(req);
-        const { slug = '', name = '', tagline = '', idea = '', duration = 15, sceneLength = 8, ratio = '9:16', model = 'gpt-5.5', references = [], trendThumbnail = '' } = body || {};
+const { slug = '', name = '', tagline = '', idea = '', duration = 15, sceneLength = 8, ratio = '9:16', model = 'gpt-5.5', references = [], trendThumbnail = '', source = '' } = body || {};
         const effectName = String(name || slug).trim();
         if (!effectName) return sendJson(res, 400, { error: 'effect name or slug required' });
         const selectedModel = (MODELS.includes(model) || LOGFARE_MODELS.includes(model)) ? model : 'logfare:auto';
         const refs = Array.isArray(references) ? references.filter(r => r && String(r.name || '').trim()) : [];
+        // Flashloop formats are visual STYLES; SJinn trends are viral CONCEPTS.
+        // Branching keeps generated prompts on-trend instead of inventing a scene.
+        const trendMode = resolveTrendMode(source, slug, effectName, tagline);
+        logLine(`flashloop generate-prompt: "${effectName}" source=${source || 'n/a'} → mode=${trendMode}`);
         // Credit gate: writing a full multi-scene script is a real multi-LLM call.
         if (!(await requireCredits(req, res, CREDIT_COSTS.flashloopScript, 'generate script'))) return;
       // duration selects the TOTAL length mode (short ~1min, long ~2min) and
       // sceneLength is the PER-SCENE seconds (5/8/10/15); the scene count adapts.
         const mode = Number(duration) || 15;
 const perScene = [5, 8, 10, 15, 30].includes(Number(sceneLength)) ? Number(sceneLength) : 8;
-        const script = await generateFlashloopScript(effectName, String(tagline || ''), String(idea || ''), mode, String(ratio), selectedModel, refs, String(trendThumbnail || ''), perScene);
-        return sendJson(res, 200, { ok: true, slug, name: effectName, sceneDuration: mode, sceneLength: perScene, ratio, model: selectedModel, ...script });
+        const script = await generateFlashloopScript(effectName, String(tagline || ''), String(idea || ''), mode, String(ratio), selectedModel, refs, String(trendThumbnail || ''), perScene, trendMode, String(slug || ''));
+        return sendJson(res, 200, { ok: true, slug, name: effectName, sceneDuration: mode, sceneLength: perScene, ratio, model: selectedModel, trendMode, ...script });
       } catch (e) { logLine('flashloop prompt: ' + e.message); return sendJson(res, 500, { error: e.message }); }
     }
 
@@ -5113,7 +5247,7 @@ RULES:
     if (p === '/api/flashloop/generate-i2i' && req.method === 'POST') {
       try {
         const body = await readBody(req);
-        const { prompt = '', refImageUrl = '', ratio = '9:16', model = 'seedream-5', trendName = '', tagline = '' } = body || {};
+        const { prompt = '', refImageUrl = '', ratio = '9:16', model = 'seedream-5', trendName = '', tagline = '', slug = '', source = '' } = body || {};
         if (!prompt) return sendJson(res, 400, { error: 'prompt required' });
         // Credit gate: one first-frame image render.
         if (!(await requireCredits(req, res, CREDIT_COSTS.flashloopI2I, 'generate image'))) return;
@@ -5183,10 +5317,14 @@ RULES:
           }
         } catch (fetchErr) { logLine(`flashloop i2i: ref fetch failed (${fetchErr.message}), using original URL`); }
 
-        // Build style-anchored prompt
+        // Build a mode-aware anchor prefix. Concept trends must reproduce the trend
+        // (subject + action + look); style formats only take the LOOK from the ref.
         let stylePrefix = '';
         if (trendName) {
-          stylePrefix = `MATCH THE REFERENCE IMAGE STYLE EXACTLY. The reference image shows the "${trendName}" trend${tagline ? ' — ' + tagline : ''}. Replicate its exact visual style: color palette, lighting, texture, rendering technique, materials, mood, and aesthetic. `;
+          const trendMode = resolveTrendMode(source, slug, trendName, tagline);
+          stylePrefix = trendMode === 'style'
+            ? `MATCH THE REFERENCE IMAGE STYLE EXACTLY. The reference image is from the "${trendName}" style${tagline ? ' — ' + tagline : ''}. Replicate its exact visual style: color palette, lighting, texture, rendering technique, materials, mood, and aesthetic — applied to the subject described below. `
+            : `FAITHFULLY RECREATE THE "${trendName}" TREND. The reference image shows this trend${tagline ? ' — ' + tagline : ''}. Keep the same concept, subject type and look so the result is instantly recognisable as "${trendName}", while following the scene description below. `;
         }
         const anchoredPrompt = stylePrefix + prompt;
         const sanitized = sanitizePrompt(anchoredPrompt);
