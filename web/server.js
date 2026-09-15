@@ -310,7 +310,7 @@ function extractTrendContent(raw) {
     const ch = raw[i];
     if (!inString) {
       if (ch === '{') depth++;
-      else if (ch === '}') { depth--; if (depth === 0) { try { return JSON.parse(raw.slice(braceIdx, i + 1)); } catch { return null; } } }
+      else if (ch === '}') { depth--; if (depth === 0) { return JSON.parse(raw.slice(braceIdx, i + 1)); } }
       else if (ch === '"') inString = true;
     } else {
       if (escape) escape = false;
@@ -319,58 +319,6 @@ function extractTrendContent(raw) {
     }
   }
   return null;
-}
-
-// Decode every Next.js flight chunk in a page into one concatenated stream.
-// React Server Components split the payload across `self.__next_f.push([1,"…"])`
-// string literals, each JSON/JS-escaped separately.
-function decodeFlightPayload(html) {
-  const pushRe = /self\.__next_f\.push\(\[1,\s*"((?:[^"\\]|\\.)*)"\]\)/g;
-  let m; let all = '';
-  while ((m = pushRe.exec(html)) !== null) {
-    try { all += JSON.parse('"' + m[1] + '"'); } catch { /* skip malformed chunk */ }
-  }
-  return all;
-}
-
-// Flatten a flight stream into its text rows: `<id>:T<hexLen>,<text>`.
-// Flashloop stores each trend example's REAL prompt in one of these rows and
-// references it from trendContent as "$42" — this is what makes a trend's
-// actual example videos readable as text (the prompt that produced them).
-function parseFlightRows(flightText) {
-  const rows = {};
-  if (!flightText) return rows;
-  const re = /(^|\n)([0-9a-f]+):T([0-9a-f]+),/g;
-  let m;
-  while ((m = re.exec(flightText)) !== null) {
-    const id = m[2];
-    const len = parseInt(m[3], 16);
-    if (!isFinite(len) || len <= 0) continue;
-    rows[id] = flightText.substr(re.lastIndex, len);
-  }
-  return rows;
-}
-
-// Resolve a flight reference ("$42") to its raw text; plain values pass through.
-function resolveFlightRef(value, rows) {
-  const s = String(value == null ? '' : value).trim();
-  const m = s.match(/^\$([0-9a-f]+)$/i);
-  if (!m) return s.startsWith('$') ? '' : s;
-  return (rows && rows[m[1]]) || '';
-}
-
-// Normalize Flashloop's trendContent example objects into media descriptors the
-// trend-template builder can actually use (video, poster, resolved prompt).
-function normalizeTrendExamples(examples, rows) {
-  return (Array.isArray(examples) ? examples : [])
-    .map(e => ({
-      videoUrl: String(e?.videoUrl || e?.video_url || '').trim(),
-      posterUrl: String(e?.posterUrl || e?.poster || '').trim(),
-      prompt: resolveFlightRef(e?.prompt, rows).trim(),
-      duration: Number(e?.duration) || 0,
-      aspectRatio: String(e?.aspectRatio || '')
-    }))
-    .filter(e => e.videoUrl || e.posterUrl || e.prompt);
 }
 
 async function scrapeFlashloop() {
@@ -386,81 +334,140 @@ async function scrapeFlashloop() {
 
     // 1) Try to extract the embedded Next.js payload(s) and locate trendContent.
     let trendContent = null;
-    let flightText = ''; // decoded flight stream — also carries the REAL example prompts
     // The payload is a JS string literal; we must allow escaped quotes/backslashes.
     const pushRe = /self\.__next_f\.push\(\[1,\s*"((?:[^"\\]|\\.)*)"\]\)/g;
     let m;
     while ((m = pushRe.exec(html)) !== null) {
-      let raw = '';
-      for (let va = 0; va < 2 && !okTrendTemplate(raw, src, s, trendName); va++) {
-        raw = await trendVisionAttempt(va, system, content, raw);
-      }
-      template = normalizeTrendTemplate(parseTrendTemplateJson(raw), { source: src, slug: s, name: trendName });
-      if (template) logLine(`trend template "${trendName}": built from real examples (${template.beats.length} beats, ${frames.length} frames)`);
-      else logLine(`trend template "${trendName}": model returned an unusable template`);
-    } catch (e) { logLine('trend template LLM failed: ' + e.message); }
-  }
-  if (!template) {
-    template = heuristicTrendTemplate({ source: src, slug: s, name: trendName, tagline: liveTagline, curated });
-    logLine(`trend template "${trendName}": using curated fallback (no example media readable)`);
-  }
-  template.meta = {
-    builtAt: Date.now(),
-    fromCache: false,
-    grounded: !!(frames.length || examplePrompts.length || prose),
-    groundedOn: {
-      examples: wantMedia.filter(m => m.kind === 'video').length,
-      frames: frames.length,
-      prompts: examplePrompts.length,
-      prose: !!prose,
-      sources: sources.slice(0, 6)
+      let raw;
+      try {
+        // The captured group is a JS/JSON-escaped string; decode it first.
+        raw = JSON.parse('"' + m[1] + '"');
+      } catch { continue; }
+      trendContent = extractTrendContent(raw);
+      if (trendContent) break;
     }
+
+    // 2) Fallback: search the raw HTML for poster URLs grouped by slug.
+    if (!trendContent) {
+      const slugRe = /([a-z0-9-]+-cv)[\s\S]{0,1000}?"posterUrl"\s*:\s*"(https:\/\/assets\.flashloop\.app\/[^"]+)"/g;
+      while ((m = slugRe.exec(html)) !== null) {
+        const slug = m[1];
+        const posterUrl = m[2];
+        const name = kebabToTitle(slug);
+        formats.push({ slug, name, thumbnail: posterUrl, tagline: '' });
+      }
+    } else {
+      for (const [slug, data] of Object.entries(trendContent)) {
+        const examples = Array.isArray(data?.examples) ? data.examples : [];
+        const thumbnail = examples.find(e => e?.posterUrl)?.posterUrl || '';
+        const tagline = data?.tagline || '';
+        formats.push({ slug, name: kebabToTitle(slug), thumbnail, tagline });
+      }
+    }
+
+    // Deduplicate by slug, keep first found.
+    const seen = new Set();
+    formats = formats.filter(f => { if (seen.has(f.slug)) return false; seen.add(f.slug); return true; });
+    logLine(`flashloop scrape: ${formats.length} viral formats captured`);
+    flashloopCache.data = formats;
+    flashloopCache.until = Date.now() + 10 * 60 * 1000;
+    return formats;
+  } catch (e) { logLine('flashloop scrape failed: ' + e.message); return []; }
+}
+
+// Build a 'flashloop' video-shaped object suitable for the trends UI
+function flashloopAsVideo(fmt) {
+  return {
+    id: 'flashloop_' + fmt.name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, ''),
+    slug: fmt.slug,
+    name: fmt.name,
+    title: fmt.name + ' — viral AI format',
+    platform: 'flashloop',
+    url: 'https://www.flashloop.app/effects',
+    videoUrl: 'https://www.flashloop.app/effects',
+    views: fmt.views || 0,
+    viewsDisplay: fmt.viewsDisplay || '',
+    likes: 0, duration: 0, author: 'Flashloop',
+    thumbnail: fmt.thumbnail || null,
+    cover: fmt.thumbnail || null,
+    tagline: fmt.tagline || '',
+    flashloop: true, fetchedAt: Date.now()
   };
-  store[key] = { builtAt: Date.now(), meta: template.meta, template: { ...template, meta: undefined } };
-  saveTrendTemplateStore(store);
-  return template;
 }
 
-// Render the trend template as a prompt-injection block for the LLM writers.
-function trendTemplateBlock(template) {
-  if (!template) return '';
-  const lines = [];
-  if (template.concept) lines.push(`- WHAT THIS TREND IS: ${template.concept}`);
-  if (template.subjectType) lines.push(`- SUBJECT TYPE: ${template.subjectType}`);
-  if (template.signatureAction) lines.push(`- SIGNATURE ACTION (must be visible): ${template.signatureAction}`);
-  if (Array.isArray(template.beats) && template.beats.length) lines.push(`- BEAT STRUCTURE (keep this ORDER of moments/shots): ${template.beats.map((b, i) => `(${i + 1}) ${b}`).join(' ')}`);
-  if (template.setting) lines.push(`- TYPICAL SETTING: ${template.setting}`);
-  if (template.style) lines.push(`- LOOK / RENDERING STYLE: ${template.style}`);
-  if (template.dialogue) lines.push(`- AUDIO / DIALOGUE PATTERN: ${template.dialogue}`);
-  if (template.mustInclude?.length) lines.push(`- MUST INCLUDE: ${template.mustInclude.join(', ')}`);
-  if (template.avoid?.length) lines.push(`- NEVER DRIFT INTO: ${template.avoid.join(', ')}`);
-  if (!lines.length) return '';
-  const g = (template.meta && template.meta.groundedOn) || {};
-  const from = template.meta && template.meta.grounded
-    ? ` — built by watching this trend's OWN examples (${g.examples || 0} example video(s), ${g.frames || 0} sampled still(s)${g.prompts ? ', ' + g.prompts + ' real example prompt(s)' : ''}${g.prose ? ', plus the platform description' : ''})`
-    : ' — curated trend knowledge';
-  return `\n\nTHE TREND TEMPLATE for "${template.name}"${from}. Every scene must fit this template:\n${lines.join('\n')}\nFollow this template's concept, subject type, signature action and beat order. Vary only surface detail (specific person/object, wardrobe/colours, exact place, framing). Anyone scrolling past must instantly recognise it as "${template.name}".`;
+// ─── SJinn Trend Prompts ──────────────────────────────────────────────────
+// Scrapes https://sjinn.ai/trend-prompts for viral AI video prompt templates.
+// Each trend has a name, slug, and result thumbnail from the SJinn platform.
+// Cached 10 minutes per process.
+const sjinnCache = { data: null, until: 0 };
+
+async function scrapeSjinn() {
+  if (sjinnCache.data && Date.now() < sjinnCache.until) return sjinnCache.data;
+  try {
+    const res = await fetch('https://sjinn.ai/trend-prompts', {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36' },
+      signal: AbortSignal.timeout(VERCEL_TIMEOUT)
+    });
+    if (!res.ok) { logLine('sjinn scrape: HTTP ' + res.status); return []; }
+    const html = await res.text();
+
+    const trends = [];
+    const chunks = html.split(/<a\b/);
+    for (let i = 1; i < chunks.length; i++) {
+      const chunk = chunks[i];
+      const hrefM = chunk.match(/href="\/trend-prompts\/([^"]+)"/);
+      if (!hrefM) continue;
+      const slug = hrefM[1];
+      const srcM = chunk.match(/src="(https:\/\/[^"]+)"/);
+      const altM = chunk.match(/alt="([^"]*)"/);
+      const thumbnail = srcM ? srcM[1] : '';
+      const name = (altM && altM[1]) || slug.split('-').map(w => w ? w[0].toUpperCase() + w.slice(1) : '').join(' ');
+      trends.push({ slug, name, thumbnail, tagline: '' });
+    }
+
+    const seen = new Set();
+    const deduped = trends.filter(t => { if (seen.has(t.slug)) return false; seen.add(t.slug); return true; });
+    logLine(`sjinn scrape: ${deduped.length} viral prompts captured`);
+    sjinnCache.data = deduped;
+    sjinnCache.until = Date.now() + 10 * 60 * 1000;
+    return deduped;
+  } catch (e) { logLine('sjinn scrape failed: ' + e.message); return []; }
 }
 
-// A prompt that mentions NONE of the template's markers has drifted off-trend —
-// exactly the "irrelevant prompt" bug. Jolt it back onto the trend.
-function enforceTrendTemplate(text, template, type = 'image') {
-  const t = String(text || '').trim();
-  if (!t || !template) return t;
-  const hay = t.toLowerCase();
-  const markers = [...(template.mustInclude || []), String(template.signatureAction || ''), String(template.concept || '')]
-    .map(m => String(m).toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').trim())
-    .filter(m => m.length > 8);
-  const onTrend = !markers.length || markers.some(m => {
-    if (hay.includes(m)) return true;
-    const words = m.split(/\s+/).filter(w => w.length > 4);
-    if (!words.length) return false;
-    return words.filter(w => hay.includes(w)).length / words.length >= 0.5;
-  });
-  if (onTrend) return t;
-  const lead = [template.signatureAction || template.concept, (template.mustInclude || []).slice(0, 3).join(', ')].filter(Boolean).join(' — ');
-  if (!lead) return t;
-  return `Recreate the "${template.name}" trend faithfully: ${lead}. ${t}`.slice(0, type === 'video' ? 2600 : 1300);
+// Hardcoded SJinn trends used as a fallback when the live scrape fails (keeps the
+// SJinn tab from ever rendering empty — thumbnails are on edit.comfyonline.app).
+const SJINN_FALLBACK = [
+  { slug: 'slime-face', name: 'Slime Face', thumbnail: 'https://edit.comfyonline.app/result/c0f72f12-1c59-481b-8153-63507a0cf861.jpg', tagline: 'Slime portrait ASMR' },
+  { slug: 'micro-camera-animal', name: 'Micro Camera Animal', thumbnail: 'https://edit.comfyonline.app/result/21414077-1074-4697-8e82-f88014e9e804.jpg', tagline: 'Tiny animal macro lens' },
+  { slug: 'topiary-shorts', name: 'Topiary Shorts', thumbnail: 'https://edit.comfyonline.app/result/79e06e43-7a8c-44b4-b0b8-933c450f74e7.jpg', tagline: 'Plant sculpture viral' },
+  { slug: 'food-eating-itself', name: 'Food Eating Itself', thumbnail: 'https://edit.comfyonline.app/result/7405f2e3-b236-4346-91a7-5ed4e3b87ebb.jpg', tagline: 'Food cannibalism trend' },
+  { slug: 'fruit-avatar', name: 'Fruit Avatar', thumbnail: 'https://edit.comfyonline.app/result/de450048-be72-4533-88a2-12482c19ba61.png', tagline: 'Human-fruit hybrid portrait' },
+  { slug: 'matchstick-shorts', name: 'Matchstick Shorts', thumbnail: 'https://edit.comfyonline.app/result/38da8934-a505-4a1e-bbba-4c817e9f0e91.png', tagline: 'Tiny matchstick world' },
+  { slug: 'rust-removal', name: 'Rust Removal', thumbnail: 'https://edit.comfyonline.app/result/3c89e4f4-254b-48b7-89e7-2d0c7d532727.png', tagline: 'Satisfying rust cleaning' },
+  { slug: 'object-talk', name: 'Object Talk', thumbnail: 'https://edit.comfyonline.app/result/33d64f76-d761-4748-897d-1d221e68372f.jpg', tagline: 'Objects with human faces' },
+  { slug: 'time-travel-vlog', name: 'Time Travel Vlog', thumbnail: 'https://edit.comfyonline.app/result/a2675b88-d086-4a64-a925-993944aee29d.jpg', tagline: 'Era-hopping vlog' },
+  { slug: 'fruit-movie-maker', name: 'Fruit Movie Maker', thumbnail: 'https://edit.comfyonline.app/result/6451c532-7df1-41cd-bfa2-135a16b4e979.jpg', tagline: 'Fruit-directed films' },
+  { slug: 'flying-dragon', name: 'Flying Dragon', thumbnail: 'https://edit.comfyonline.app/result/15a562cb-50b4-4a01-9511-d55b9ab769f1.png', tagline: 'Dragon soaring cinematic' },
+  { slug: 'mechanical-toy', name: 'Mechanical Toy', thumbnail: 'https://edit.comfyonline.app/result/78749edc-7e14-4f62-9e85-34b7d35f0355.png', tagline: 'Steampunk toy animation' },
+  { slug: 'mini-rescue', name: 'Mini Rescue', thumbnail: 'https://edit.comfyonline.app/result/2bd49c53-98bd-4834-8f25-c0f537b2bd9b.png', tagline: 'Tiny rescue mission' },
+  { slug: 'pov-roller-coaster', name: 'POV Roller Coaster', thumbnail: 'https://edit.comfyonline.app/result/d500621a-8a29-48f6-9355-b67f5e67fc23.png', tagline: 'First-person coaster ride' }
+];
+
+function sjinnAsVideo(trend) {
+  return {
+    id: 'sjinn_' + trend.name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, ''),
+    slug: trend.slug,
+    name: trend.name,
+    title: trend.name + ' — viral AI video prompt',
+    platform: 'sjinn',
+    url: 'https://sjinn.ai/trend-prompts/' + trend.slug,
+    videoUrl: 'https://sjinn.ai/trend-prompts/' + trend.slug,
+    views: 0, viewsDisplay: '', likes: 0, duration: 0, author: 'SJinn',
+    thumbnail: trend.thumbnail || null,
+    cover: trend.thumbnail || null,
+    tagline: trend.tagline || '',
+    sjinn: true, fetchedAt: Date.now()
+  };
 }
 
 // Structural templates for one-shot Flashloop scene generation.
@@ -692,11 +699,10 @@ CREATIVE DIRECTION FOR THIS GENERATION (MANDATORY — pick a DIFFERENT scene tha
 // mode 'style'   → the trend name is a rendering STYLE; the subject comes from the idea.
 // styleText/concept are pre-extracted (from analyzeTrendReference); the reference image
 // itself is NOT attached to this call, so the LLM cannot copy unrelated scene content.
-async function generateFlashloopImagePrompt(effectName, tagline, userIdea, ratio, model = 'gpt-5.5', cleanRefs = [], styleText = '', mode = 'concept', concept = '', template = null) {
+async function generateFlashloopImagePrompt(effectName, tagline, userIdea, ratio, model = 'gpt-5.5', cleanRefs = [], styleText = '', mode = 'concept', concept = '') {
   const refBlock = formatFlashloopRefs(cleanRefs);
   const hasStyle = !!styleText;
   const hasConcept = mode === 'concept' && !!concept;
-  const templateBlock = trendTemplateBlock(template);
 
   const styleBlock = hasStyle
     ? `\n\nVISUAL STYLE (extracted from the "${effectName}" trend reference — render in this exact style):\n${styleText}`
@@ -721,7 +727,7 @@ ${subjectRule}
 - Keep the prompt CONCISE: 80-150 words max. This is a single frozen frame anchor.
 - Cover: (1) WHO/WHAT is in frame and what they're doing, (2) framing/distance, (3) lighting and colour palette, (4) key materials/textures, (5) style keywords.
 - If a user idea is provided, incorporate it naturally without losing the concept above.
-- The example below is a FORMAT template with no subject — match its conciseness and structure, never its wording.${conceptBlock}${templateBlock}${styleBlock}${refBlock}
+- The example below is a FORMAT template with no subject — match its conciseness and structure, never its wording.${conceptBlock}${styleBlock}${refBlock}
 
 Return ONLY a JSON object with "title" and "imagePrompt". Do not output any explanation outside the JSON.`;
 
@@ -746,7 +752,7 @@ Return { "title": "...", "imagePrompt": "..." }. Keep imagePrompt under 150 word
   const raw = await chatWithLogfareFallback(model, [{ role: 'system', content: system }, { role: 'user', content: userText }], 4000, 1.0);
   let parsed = {};
   try { parsed = parseJsonLenient(raw); } catch (e) { parsed = {}; }
-  const imagePrompt = enforceTrendTemplate(enforceEffectRelevance(parsed.imagePrompt || raw, effectName, tagline, userIdea, 0, ratio, 'image', { mode, concept }), template, 'image');
+  const imagePrompt = enforceEffectRelevance(parsed.imagePrompt || raw, effectName, tagline, userIdea, 0, ratio, 'image', { mode, concept });
   return {
     title: parsed.title || effectName,
     imagePrompt
@@ -754,11 +760,10 @@ Return { "title": "...", "imagePrompt": "..." }. Keep imagePrompt under 150 word
 }
 
 // Generate only the motion / video prompt (img2video), using the generated image prompt as context.
-async function generateFlashloopVideoPrompt(effectName, tagline, userIdea, duration, ratio, model = 'gpt-5.5', cleanRefs = [], imagePrompt = '', styleText = '', mode = 'concept', concept = '', template = null) {
+async function generateFlashloopVideoPrompt(effectName, tagline, userIdea, duration, ratio, model = 'gpt-5.5', cleanRefs = [], imagePrompt = '', styleText = '', mode = 'concept', concept = '') {
   const refBlock = formatFlashloopRefs(cleanRefs);
   const hasStyle = !!styleText;
   const hasConcept = mode === 'concept' && !!concept;
-  const templateBlock = trendTemplateBlock(template);
 
   const styleBlock = hasStyle
     ? `\n\nVISUAL STYLE (from the "${effectName}" trend reference — maintain this exact rendering throughout every frame):\n${styleText}`
@@ -784,7 +789,7 @@ ${subjectRule}
 - Structure it as a TIMELINE of time-stamped beats covering the full ${duration} seconds — e.g. "0–5s: ...", "5–10s: ...", "10–15s: ..." — consecutive segments with no gaps, ending exactly at ${duration}s. The FIRST segment must deliver the HOOK. Each segment is one concrete action beat with vivid specifics (textures, scale, lighting, expressions, sounds).
 - NO "CAMERA:" section, no camera-movement instructions, no audio/style filler paragraphs.
 - Preserve the exact subject, position, colours, lighting and composition of the supplied first-frame image while animating.
-- The template below is a FORMAT skeleton with no subject — match its structure, never its wording.${conceptBlock}${templateBlock}${styleBlock}${refBlock}
+- The template below is a FORMAT skeleton with no subject — match its structure, never its wording.${conceptBlock}${styleBlock}${refBlock}
 
 Return ONLY a JSON object with "title" and "videoPrompt". Do not output any explanation outside the JSON.`;
 
@@ -812,7 +817,7 @@ Return { "title": "...", "videoPrompt": "..." }. Keep videoPrompt 180-280 words,
   const raw = await chatWithLogfareFallback(model, [{ role: 'system', content: system }, { role: 'user', content: userText }], 16000, 1.0);
   let parsed = {};
   try { parsed = parseJsonLenient(raw); } catch (e) { parsed = {}; }
-  const videoPrompt = scrubCameraFluff(capPrompt(enforceTrendTemplate(enforceEffectRelevance(parsed.videoPrompt || raw, effectName, tagline, userIdea, duration, ratio, 'video', { mode, concept }), template, 'video'), 420));
+  const videoPrompt = scrubCameraFluff(capPrompt(enforceEffectRelevance(parsed.videoPrompt || raw, effectName, tagline, userIdea, duration, ratio, 'video', { mode, concept }), 420));
   return {
     title: parsed.title || effectName,
     videoPrompt
@@ -823,7 +828,7 @@ Return { "title": "...", "videoPrompt": "..." }. Keep videoPrompt 180-280 words,
 // Returns both a first-frame/reference image prompt (img2img) and a motion
 // prompt for image-to-video (img2video) that preserves the generated frame.
 // mode = 'concept' (reproduce the viral trend) | 'style' (apply the look to a subject).
-async function generateFlashloopScene(effectName, tagline, userIdea, duration, ratio, model = 'gpt-5.5', references = [], trendThumbnail = '', sceneLength = 0, mode = 'concept', slug = '', template = null) {
+async function generateFlashloopScene(effectName, tagline, userIdea, duration, ratio, model = 'gpt-5.5', references = [], trendThumbnail = '', sceneLength = 0, mode = 'concept', slug = '') {
   // sceneLength (seconds per scene) overrides `duration` when provided so the
   // per-scene fill fallback matches the script's chosen timeframe exactly.
   const perSceneLen = [5, 8, 10, 15, 30].includes(Number(sceneLength)) ? Number(sceneLength) : Number(duration) || 8;
@@ -840,7 +845,7 @@ async function generateFlashloopScene(effectName, tagline, userIdea, duration, r
     visionConcept = analysis.concept;
     logLine(`trend reference analysed for "${effectName}" (${mode}): style ${styleText.length}c, concept ${visionConcept.length}c`);
   }
-  const concept = mode === 'concept' ? (resolveTrendConcept(slug, effectName, visionConcept) || (template && template.concept) || '') : '';
+  const concept = mode === 'concept' ? resolveTrendConcept(slug, effectName, visionConcept) : '';
 
   // Prefer a fast reliable model on Vercel to avoid timeouts
   const promptModel = IS_VERCEL
@@ -848,7 +853,7 @@ async function generateFlashloopScene(effectName, tagline, userIdea, duration, r
     : model;
 
   // Generate prompts (the reference image is NOT attached — the LLM cannot copy it)
-  const imageResult = await generateFlashloopImagePrompt(effectName, tagline, userIdea, ratio, promptModel, cleanRefs, styleText, mode, concept, template);
+  const imageResult = await generateFlashloopImagePrompt(effectName, tagline, userIdea, ratio, promptModel, cleanRefs, styleText, mode, concept);
 
   // Ensure the image prompt is never empty; if the LLM returned nothing useful, build a minimal anchor.
   if (!imageResult.imagePrompt || !imageResult.imagePrompt.trim()) {
@@ -859,21 +864,18 @@ async function generateFlashloopScene(effectName, tagline, userIdea, duration, r
 
   let videoResult = {};
   try {
-    videoResult = await generateFlashloopVideoPrompt(effectName, tagline, userIdea, perSceneLen, ratio, promptModel, cleanRefs, imageResult.imagePrompt, styleText, mode, concept, template);
+    videoResult = await generateFlashloopVideoPrompt(effectName, tagline, userIdea, perSceneLen, ratio, promptModel, cleanRefs, imageResult.imagePrompt, styleText, mode, concept);
   } catch (e) { logLine('flashloop video prompt failed: ' + e.message); }
 
-  // Ensure the video prompt is never empty — build a detailed fallback that walks
-  // the template's own beats when we have them.
+  // Ensure the video prompt is never empty — build a detailed fallback.
   if (!videoResult.videoPrompt || !videoResult.videoPrompt.trim()) {
     const d3 = Math.round(perSceneLen * 0.3);
     const d6 = Math.round(perSceneLen * 0.6);
-    const tBeats = (template && Array.isArray(template.beats) && template.beats.length) ? template.beats : null;
-    const beat = (i, fallback) => (tBeats && tBeats[i]) ? tBeats[i] : fallback;
     videoResult.videoPrompt = `Create an exactly ${perSceneLen}-second video for "${effectName}"${tagline ? ' — ' + tagline : ''}${userIdea ? ' — ' + userIdea : ''}, as a time-stamped timeline:
-0–${d3}s: HOOK — ${beat(0, mode === 'concept' ? 'the trend\'s signature moment, front and centre.' : 'the subject\'s most striking moment, front and centre.')}
-${d3}–${d6}s: ${beat(1, 'The main action unfolds in a few concrete beats with detail.')}
-${d6}–${perSceneLen}s: ${beat(2, beat(tBeats ? tBeats.length - 1 : 0, 'The action peaks, then settles into a strong final moment.'))}
-${(template && template.signatureAction) ? template.signatureAction + ' ' : ''}${concept ? concept + ' ' : ''}Use the supplied first-frame image as the strict visual reference — preserve the exact subject, position, colors, lighting, and composition. Smooth continuous motion. Cinematic, ${ratio}. No text or logos.`;
+0–${d3}s: HOOK — ${mode === 'concept' ? 'the trend\'s signature moment, front and centre.' : 'the subject\'s most striking moment, front and centre.'}
+${d3}–${d6}s: The main action unfolds in a few concrete beats with detail.
+${d6}–${perSceneLen}s: The action peaks, then settles into a strong final moment.
+${concept ? concept + ' ' : ''}Use the supplied first-frame image as the strict visual reference — preserve the exact subject, position, colors, lighting, and composition. Smooth continuous motion. Cinematic, ${ratio}. No text or logos.`;
   }
 
   return {
@@ -887,7 +889,7 @@ ${(template && template.signatureAction) ? template.signatureAction + ' ' : ''}$
 // scene opens with a hook, no camera/lighting/mood fluff. One LLM call writes all
 // scenes so the story flows seamlessly. Scene count is FIXED by the per-scene
 // length: 30s → 4 scenes, 15s → 8 scenes (both add up to 2 minutes of footage).
-async function generateFlashloopScript(effectName, tagline, userIdea, sceneDuration, ratio, model = 'gpt-5.5', references = [], trendThumbnail = '', sceneLength = 8, mode = 'concept', slug = '', template = null) {
+async function generateFlashloopScript(effectName, tagline, userIdea, sceneDuration, ratio, model = 'gpt-5.5', references = [], trendThumbnail = '', sceneLength = 8, mode = 'concept', slug = '') {
 // Scenes are sized to the RENDER engine: Make Video renders each scene with
 // omni-flash (~8s clips) by default, but the user can pick another per-scene
 // length (5s/10s/15s). Total stays on target: short → ~64s, long → ~120s.
@@ -897,7 +899,6 @@ const sceneCount = Math.max(2, Math.round(targetTotal / perScene));
 const totalSec = perScene * sceneCount;
   const cleanRefs = cleanFlashloopRefs(references);
   const refBlock = formatFlashloopRefs(cleanRefs);
-  const templateBlock = trendTemplateBlock(template);
   const promptModel = IS_VERCEL
     ? ((LOGFARE_MODELS.includes(model) || ['gemini-2.5-pro', 'gemini-3.1-pro', 'gemini-3.1-flash-lite', 'deepseek-v3.2', 'deepseek-v4-flash', 'glm-5.2', 'glm-5.3', 'kimi-k3', 'kimi-k2.6', 'claude-sonnet-4-5', 'mimo-v2.5', 'gpt-5.5'].includes(model)) ? model : 'logfare:auto')
     : model;
@@ -913,7 +914,7 @@ const totalSec = perScene * sceneCount;
       visionConcept = analysis.concept;
     } catch (e) { styleText = ''; visionConcept = ''; }
   }
-  const concept = mode === 'concept' ? (resolveTrendConcept(slug, effectName, visionConcept) || (template && template.concept) || '') : '';
+  const concept = mode === 'concept' ? resolveTrendConcept(slug, effectName, visionConcept) : '';
   const styleBlock = styleText ? `\n\nVISUAL STYLE (from the trend reference — every scene must be rendered in this exact style):\n${styleText}` : '';
 
   // Timeline beats scale with the chosen per-scene length.
@@ -948,11 +949,10 @@ RULES:
 - EXACTLY ${sceneCount} scenes. Every scene is exactly ${perScene} seconds — the video engine renders ~${perScene}s clips, so the timeline MUST fit inside ${perScene}s.
 ${modeRules}
 - TO THE POINT, zero filler. NO "CAMERA:" sections, NO camera-angle/movement instructions, NO lighting/mood/setting bullet lists, NO audio or style paragraphs inside the prompts, NO negative instructions.
-${template ? `- THE TREND TEMPLATE below is mandatory: the film must walk its BEAT STRUCTURE in order across the scenes, keep its subject type, and show its signature action. Every scene's imagePrompt MUST mention its materials/objects; every videoPrompt MUST contain its signature action. Never replace the trend with a generic story.` : ''}
 - Each scene's "imagePrompt": 80-140 words — the first-frame reference image for that scene. Concrete subject, exact action, setting, colors, materials. End with: ${ratio}.
 - Each scene's "videoPrompt": ${vidWords} words — a TIMELINE of ${beatCount} time-stamped beats that covers the full ${perScene} seconds. Format: ${beatExample} — consecutive segments with no gaps, ending exactly at ${perScene}s. The FIRST segment must deliver the hook. Each segment is one concrete action beat with vivid specifics (textures, scale, lighting, expressions, sounds).
 - Hit the word targets above exactly — count your words as you write. Be vivid and specific so a video model can animate it precisely, but never pad with filler.
-- STORY: Scene 1 opens with the strongest hook (cold open). Scenes flow seamlessly — each scene starts exactly where the previous one ended (same characters, same place, same light, continuous motion). The last scene ends on a satisfying payoff.${tagline ? '\n- Trend tagline: ' + tagline : ''}${userIdea ? '\n- User idea (honor it without losing the concept above): ' + userIdea : ''}${concept ? '\n- THE TREND CONCEPT (exactly what the film must show): ' + concept : ''}${templateBlock}${styleBlock}${refBlock}
+- STORY: Scene 1 opens with the strongest hook (cold open). Scenes flow seamlessly — each scene starts exactly where the previous one ended (same characters, same place, same light, continuous motion). The last scene ends on a satisfying payoff.${tagline ? '\n- Trend tagline: ' + tagline : ''}${userIdea ? '\n- User idea (honor it without losing the concept above): ' + userIdea : ''}${styleBlock}${refBlock}
 - Keep every prompt tight, concrete and on-concept.`;
 
   let promptText = `Write the full ${sceneCount}-scene script for "${effectName}"${tagline ? ' — ' + tagline : ''}. ${perScene}s per scene, ${ratio}.
@@ -979,8 +979,8 @@ Mode: ${mode === 'style' ? 'VISUAL STYLE — apply this look to a subject.' : 'V
       scene: i + 1,
       title: String(s.title || s.sceneTitle || `Scene ${i + 1}`).slice(0, 80),
       hook: String(s.hook || s.hookline || '').slice(0, 200),
-      imagePrompt: capPrompt(enforceTrendTemplate(enforceEffectRelevance(String(s.imagePrompt || s.image_prompt || '').trim(), effectName, tagline, userIdea, perScene, ratio, 'image', { mode, concept }), template, 'image'), 200),
-      videoPrompt: scrubCameraFluff(capPrompt(enforceTrendTemplate(enforceEffectRelevance(String(s.videoPrompt || s.video_prompt || '').trim(), effectName, tagline, userIdea, perScene, ratio, 'video', { mode, concept }), template, 'video'), 420))
+      imagePrompt: capPrompt(enforceEffectRelevance(String(s.imagePrompt || s.image_prompt || '').trim(), effectName, tagline, userIdea, perScene, ratio, 'image', { mode, concept }), 200),
+      videoPrompt: scrubCameraFluff(capPrompt(enforceEffectRelevance(String(s.videoPrompt || s.video_prompt || '').trim(), effectName, tagline, userIdea, perScene, ratio, 'video', { mode, concept }), 420))
     }));
 
   // Fallback: fill any missing scenes one-by-one so the scene count is always right.
@@ -990,7 +990,7 @@ Mode: ${mode === 'style' ? 'VISUAL STYLE — apply this look to a subject.' : 'V
       try {
         const prevEnd = scenes[i - 1] ? ` Previous scene ends here: ${scenes[i - 1].videoPrompt}` : '';
         const sceneIdea = String(userIdea || '') + prevEnd;
-        const one = await generateFlashloopScene(effectName, tagline, sceneIdea, perScene, ratio, promptModel, references, '', perScene, mode, slug, template);
+        const one = await generateFlashloopScene(effectName, tagline, sceneIdea, perScene, ratio, promptModel, references, '', perScene, mode, slug);
         scenes.push({ scene: i + 1, title: `Scene ${i + 1}`, hook: '', imagePrompt: one.imagePrompt, videoPrompt: one.videoPrompt });
       } catch (e) { logLine(`flashloop per-scene fill failed: ${e.message}`); lastScriptErr = lastScriptErr || e; break; }
     }
@@ -1628,51 +1628,6 @@ async function chatWithLogfare(model, messages, maxTokens = 16000, temperature =
   const content = j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content;
   if (!content || !String(content).trim()) throw new Error(`logfare ${model}: empty response`);
   return String(content);
-}
-
-// Vision timeout for the trend-template analysis call (the auto-picked model
-// reasons, so short caps produce truncated, useless JSON — the old 100s cap was
-// the real "empty template" bug). Retries use it too; the template caches for a
-// day, so this only ever costs time on the very first click per trend.
-const TREND_VISION_TIMEOUT = 240000;
-
-// Single-model Logfare call (no chains, no PaxSenix hand-off) — used ONLY for
-// trend-template analysis, which MUST run on a vision-capable model and must
-// never touch PaxSenix (whose chat models declared no image modalities and 403
-// vision requests). Sends only public trend material + the trend name.
-//
-// NOTE: the "logfare content" privacy rule says Logfare is used ONLY for
-// prompt writing — trend templates ARE prompt writing (they ship inside the
-// prompts verbatim), and nothing but public trend pages/material ever reaches them.
-async function chatWithLogfareModel(model, messages, maxTokens = 1600, temperature = 0.4) {
-  if (!LOGFARE_API_KEY) throw new Error('no Logfare key (env LOGFARE_API_KEY or pipeline/logfare_apikey.txt)');
-  const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), TREND_VISION_TIMEOUT);
-  try {
-    const res = await fetch(`${LOGFARE_API}/chat/completions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + LOGFARE_API_KEY },
-      body: JSON.stringify({ model, messages, max_tokens: maxTokens, temperature }),
-      signal: ac.signal
-    });
-    const raw = await res.text();
-    let j = {};
-    try { j = JSON.parse(raw); } catch { throw new Error(`logfare ${model}: non-JSON response (HTTP ${res.status})`); }
-    if (!res.ok || j.error) {
-      const msg = (j.error && (j.error.message || JSON.stringify(j.error))) || ('HTTP ' + res.status);
-      throw new Error(`logfare ${model}: ${msg}`);
-    }
-    // Logfare auto picks a reasoning-capable model: the answer may sit in
-    // `reasoning_content` with an empty final `content` — take whichever is richer.
-    const content = (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || '';
-    const reasoning = (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.reasoning_content) || '';
-    const best = String(content).length >= String(reasoning).length ? content : reasoning;
-    if (!best || !String(best).trim()) throw new Error(`logfare ${model}: empty response`);
-    if (process.env.TREND_DEBUG) {
-      try { fs.appendFileSync(path.join(STORYBOARD_DIR, 'trend-debug.log'), `\n==== ${new Date().toISOString()} model=${model} ====\n${String(best).slice(-2500)}\n`); } catch {}
-    }
-    return String(best);
-  } finally { clearTimeout(timer); }
 }
 
 // Prompt-writing chain used ONLY by the flashloop/sjinn script generators.
@@ -5231,7 +5186,7 @@ Return ONLY a JSON object:
     if (p === '/api/flashloop/generate-prompt' && req.method === 'POST') {
       try {
         const body = await readBody(req);
-const { slug = '', name = '', tagline = '', idea = '', duration = 15, sceneLength = 8, ratio = '9:16', model = 'gpt-5.5', references = [], trendThumbnail = '', source = '', useTrendTemplate = true, refreshTemplate = false } = body || {};
+const { slug = '', name = '', tagline = '', idea = '', duration = 15, sceneLength = 8, ratio = '9:16', model = 'gpt-5.5', references = [], trendThumbnail = '', source = '' } = body || {};
         const effectName = String(name || slug).trim();
         if (!effectName) return sendJson(res, 400, { error: 'effect name or slug required' });
         const selectedModel = (MODELS.includes(model) || LOGFARE_MODELS.includes(model)) ? model : 'logfare:auto';
@@ -5242,24 +5197,12 @@ const { slug = '', name = '', tagline = '', idea = '', duration = 15, sceneLengt
         logLine(`flashloop generate-prompt: "${effectName}" source=${source || 'n/a'} → mode=${trendMode}`);
         // Credit gate: writing a full multi-scene script is a real multi-LLM call.
         if (!(await requireCredits(req, res, CREDIT_COSTS.flashloopScript, 'generate script'))) return;
-        // Ground the script in the trend's OWN example videos: sample frames from
-        // them (+ read the prompts that made them) and turn that into a template
-        // every scene must follow, so prompts stay on-trend instead of invented.
-        let trendTemplate = null;
-        if (useTrendTemplate !== false) {
-          try {
-            trendTemplate = await buildTrendTemplate({
-              source, slug, name: effectName, tagline: String(tagline || ''), thumbnail: String(trendThumbnail || ''),
-              model: selectedModel, refresh: !!refreshTemplate
-            });
-          } catch (e) { logLine('trend template build failed: ' + e.message); }
-        }
       // duration selects the TOTAL length mode (short ~1min, long ~2min) and
       // sceneLength is the PER-SCENE seconds (5/8/10/15); the scene count adapts.
         const mode = Number(duration) || 15;
 const perScene = [5, 8, 10, 15, 30].includes(Number(sceneLength)) ? Number(sceneLength) : 8;
-        const script = await generateFlashloopScript(effectName, String(tagline || ''), String(idea || ''), mode, String(ratio), selectedModel, refs, String(trendThumbnail || ''), perScene, trendMode, String(slug || ''), trendTemplate);
-        return sendJson(res, 200, { ok: true, slug, name: effectName, sceneDuration: mode, sceneLength: perScene, ratio, model: selectedModel, trendMode, trendTemplate, ...script });
+        const script = await generateFlashloopScript(effectName, String(tagline || ''), String(idea || ''), mode, String(ratio), selectedModel, refs, String(trendThumbnail || ''), perScene, trendMode, String(slug || ''));
+        return sendJson(res, 200, { ok: true, slug, name: effectName, sceneDuration: mode, sceneLength: perScene, ratio, model: selectedModel, trendMode, ...script });
       } catch (e) { logLine('flashloop prompt: ' + e.message); return sendJson(res, 500, { error: e.message }); }
     }
 
@@ -5304,7 +5247,7 @@ RULES:
     if (p === '/api/flashloop/generate-i2i' && req.method === 'POST') {
       try {
         const body = await readBody(req);
-        const { prompt = '', refImageUrl = '', ratio = '9:16', model = 'seedream-5', trendName = '', tagline = '', slug = '', source = '', trendTemplate = null } = body || {};
+        const { prompt = '', refImageUrl = '', ratio = '9:16', model = 'seedream-5', trendName = '', tagline = '', slug = '', source = '' } = body || {};
         if (!prompt) return sendJson(res, 400, { error: 'prompt required' });
         // Credit gate: one first-frame image render.
         if (!(await requireCredits(req, res, CREDIT_COSTS.flashloopI2I, 'generate image'))) return;
@@ -5382,12 +5325,6 @@ RULES:
           stylePrefix = trendMode === 'style'
             ? `MATCH THE REFERENCE IMAGE STYLE EXACTLY. The reference image is from the "${trendName}" style${tagline ? ' — ' + tagline : ''}. Replicate its exact visual style: color palette, lighting, texture, rendering technique, materials, mood, and aesthetic — applied to the subject described below. `
             : `FAITHFULLY RECREATE THE "${trendName}" TREND. The reference image shows this trend${tagline ? ' — ' + tagline : ''}. Keep the same concept, subject type and look so the result is instantly recognisable as "${trendName}", while following the scene description below. `;
-        }
-        // The studio sends back the trend template derived from the trend's own
-        // example videos, so the rendered first frame lands on the same concept.
-        if (trendTemplate && (trendTemplate.signatureAction || trendTemplate.concept)) {
-          const must = Array.isArray(trendTemplate.mustInclude) ? trendTemplate.mustInclude.filter(Boolean).slice(0, 5).join(', ') : '';
-          stylePrefix += `TREND TEMPLATE (from this trend's own example videos): ${trendTemplate.concept || ''}${trendTemplate.signatureAction ? ' Signature action: ' + trendTemplate.signatureAction + '.' : ''}${must ? ' Must include: ' + must + '.' : ''} `;
         }
         const anchoredPrompt = stylePrefix + prompt;
         const sanitized = sanitizePrompt(anchoredPrompt);
@@ -6311,24 +6248,6 @@ ${infl.description || '(no description - describe a beautiful confident influenc
 };
 
 module.exports = requestHandler;
-
-// Internals exposed for the offline regression tests (pipeline/test-trend-template.js)
-// and for ad-hoc debugging. Attaching properties to the handler keeps the module's
-// shape identical for Vercel's api/*.js wrappers.
-module.exports.__internal = {
-  buildTrendTemplate,
-  sampleTrendFrames,
-  scrapeFlashloop,
-  fetchFlashloopTrendDetail,
-  fetchSjinnTrendDetail,
-  trendTemplateBlock,
-  enforceTrendTemplate,
-  parseTrendTemplateJson,
-  parseFlightRows,
-  decodeFlightPayload,
-  loadTrendTemplateStore,
-  TREND_TEMPLATES_FILE
-};
 
 if (!IS_VERCEL) {
   const server = http.createServer(requestHandler);
