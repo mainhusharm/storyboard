@@ -1645,7 +1645,9 @@ async function chatWithLogfare(model, messages, maxTokens = 16000, temperature =
   const res = await fetch(`${LOGFARE_API}/chat/completions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + LOGFARE_API_KEY },
-    body: JSON.stringify({ model, messages, max_tokens: maxTokens, temperature }),
+    // A random seed makes each request a distinct sample, so clicking Generate
+    // twice can never return the same script (Logfare accepts seed).
+    body: JSON.stringify({ model, messages, max_tokens: maxTokens, temperature, seed: Math.floor(Math.random() * 2147483647) }),
     signal: AbortSignal.timeout(250000)
   });
   const j = await res.json().catch(() => ({}));
@@ -1656,15 +1658,18 @@ async function chatWithLogfare(model, messages, maxTokens = 16000, temperature =
   }
   const ch = (j.choices && j.choices[0]) || {};
   const m = ch.message || {};
-  // Reasoning-capable models (logfare/auto) can put the answer in `reasoning`
-  // and may return an empty `content` when the token budget runs out mid-thought.
-  const rawText = m.content
-    || m.reasoning_content
-    || m.reasoning
-    || (typeof ch.text === 'string' ? ch.text : '');
-  const text = Array.isArray(rawText)
-    ? rawText.map(p => (typeof p === 'string' ? p : (p && p.text) || '')).join('')
-    : String(rawText || '');
+  // Reasoning-capable models (logfare/auto) return the answer in `content`. When
+  // the token budget runs out mid-thought `content` is empty and only a reasoning
+  // trace exists — that trace is NOT the answer, so salvage the final JSON object
+  // from it if there is one, otherwise report the truncation.
+  let text = Array.isArray(m.content)
+    ? m.content.map(p => (typeof p === 'string' ? p : (p && p.text) || '')).join('')
+    : String(m.content || '');
+  if (!text.trim()) {
+    const trace = String(m.reasoning_content || m.reasoning || (typeof ch.text === 'string' ? ch.text : '') || '');
+    const jsonStart = trace.lastIndexOf('{');
+    if (jsonStart >= 0) text = trace.slice(jsonStart);
+  }
   if (!text.trim()) {
     const why = ch.finish_reason === 'length'
       ? 'token budget exhausted before any answer (raise max_tokens)'
