@@ -24,13 +24,24 @@ module.exports = function createTrendTemplates(deps) {
 
   const TREND_TEMPLATES_FILE = path.join(STORYBOARD_DIR, 'trend-templates.json');
   const TEMPLATE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // a week
+  // Bump when the extraction/distillation changes so stale cache entries rebuild.
+  const TEMPLATE_VERSION = 3;
   const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
   const MAX_VIDEO_BYTES = 40 * 1024 * 1024;
 
   const fetchText = async (url, ms = 20000) => {
-    const res = await fetch(url, { headers: { 'User-Agent': UA, Accept: 'text/html,application/json,*/*' }, signal: AbortSignal.timeout(ms) });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return res.text();
+    // Trend pages can rate-limit (429) or blip; retry before degrading the template.
+    let lastErr = null;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const res = await fetch(url, { headers: { 'User-Agent': UA, Accept: 'text/html,application/json,*/*' }, signal: AbortSignal.timeout(ms) });
+        if (res.ok) return await res.text();
+        lastErr = new Error(`HTTP ${res.status}`);
+        if (res.status !== 429 && res.status < 500) break;
+      } catch (e) { lastErr = e; }
+      await new Promise(r => setTimeout(r, 1200 * attempt));
+    }
+    throw lastErr || new Error('fetch failed');
   };
 
   // ---------- Flashloop flight payload ----------
@@ -110,32 +121,40 @@ module.exports = function createTrendTemplates(deps) {
   function extractProse(html) {
     const parts = [];
     let m;
-    const patterns = [
+    const stripTags = (t) => String(t || '')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&#x27;/g, "'").replace(/&quot;/g, '"')
+      .replace(/\s+/g, ' ').trim();
+
+    // 1) The page's own headings/paragraphs carry HOW the trend works (subject rules,
+    //    what the prompts produce, what the video shows) — that is the real grounding.
+    const blocks = [];
+    for (const b of html.matchAll(/<(h1|h2|h3|h4|p|li)[^>]*>([\s\S]*?)<\/\1>/gi)) {
+      const t = stripTags(b[2]);
+      if (t.length > 40) blocks.push(t);
+    }
+    if (blocks.length) parts.push(blocks.slice(0, 40).join(' \u2022 '));
+
+    // 2) Meta / structured descriptions.
+    for (const re of [
       /<meta[^>]+name="description"[^>]+content="([^"]+)"/g,
       /<meta[^>]+property="og:description"[^>]+content="([^"]+)"/g,
       /"(?:description|summary|about|prose|prompt|instructions|details)"\s*:\s*"((?:[^"\\]|\\.)*)"/g
-    ];
-    for (const re of patterns) {
+    ]) {
       while ((m = re.exec(html)) !== null) {
         let t = m[1];
         try { t = JSON.parse('"' + t + '"'); } catch { /* keep raw */ }
-        t = String(t).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+        t = stripTags(t);
         if (t.length > 40) parts.push(t);
       }
     }
-    // Visible text as a last resort (strip scripts/styles/tags).
-    if (!parts.length) {
-      const text = html
-        .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-        .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-        .replace(/<[^>]+>/g, ' ')
-        .replace(/&nbsp;/g, ' ')
-        .replace(/&amp;/g, '&')
-        .replace(/\s+/g, ' ')
-        .trim();
+
+    // 3) Last resort: the visible page text.
+    if (!blocks.length) {
+      const text = stripTags(html.replace(/<script[\s\S]*?<\/script>/gi, ' ').replace(/<style[\s\S]*?<\/style>/gi, ' '));
       if (text.length > 120) parts.push(text.slice(0, 4000));
     }
-    return [...new Set(parts)].join(' \u2014 ').slice(0, 4000);
+    return [...new Set(parts)].join(' \u2014 ').slice(0, 6000);
   }
 
   async function fetchFlashloopTrendDetail(slug) {
@@ -314,7 +333,7 @@ module.exports = function createTrendTemplates(deps) {
     const key = `${src}:${slug || name}`;
     const store = loadTrendTemplateStore();
     const cached = store[key];
-    if (!refresh && cached && cached.template && Date.now() - (cached.builtAt || 0) < TEMPLATE_TTL_MS) {
+    if (!refresh && cached && cached.template && cached.ver === TEMPLATE_VERSION && Date.now() - (cached.builtAt || 0) < TEMPLATE_TTL_MS) {
       return { ...cached.template, meta: { ...(cached.meta || {}), fromCache: true } };
     }
 
@@ -394,6 +413,7 @@ OUTPUT — return ONLY a JSON object, no markdown:
 RULES:
 - Base every field ONLY on the supplied material. Do not invent a different subject.
 - beats must describe the ORDER of moments seen in the examples, at least 3 beats.
+- If the material explains HOW this trend's prompts work (subject rules, what the image prompt describes vs what the video prompt describes, steps, what happens in the video), encode those mechanics exactly into concept/signatureAction/beats/mustInclude.
 - Be concrete and specific (materials, scale, lighting, motion), not generic.`;
       const user = `Trend: "${name}"${(tagline || detailTagline) ? ' — ' + (tagline || detailTagline) : ''}
 Source: ${src}
@@ -426,7 +446,7 @@ ${evidence}`;
         sources: sampled.sources.slice(0, 6)
       }
     };
-    store[key] = { builtAt: Date.now(), meta: template.meta, template: { ...template, meta: undefined } };
+    store[key] = { ver: TEMPLATE_VERSION, builtAt: Date.now(), meta: template.meta, template: { ...template, meta: undefined } };
     saveTrendTemplateStore(store);
     return template;
   }
