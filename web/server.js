@@ -678,6 +678,14 @@ const CREATIVE_ANGLES = ['eye-level medium shot', 'low angle looking up', 'high 
 const CREATIVE_LIGHTING = ['golden hour warm backlight with lens flare', 'soft overcast diffused daylight', 'dramatic low-key chiaroscuro with deep shadows', 'neon-lit night scene with cyan and magenta practicals', 'candlelit warm intimate glow', 'cold blue moonlight with hard rim light', 'vibrant saturated studio color grading', 'rainy window light with soft haze', 'harsh noon sun with crisp shadows', 'misty dawn with volumetric god rays'];
 const CREATIVE_MOODS = ['cozy and nostalgic', 'mysterious and suspenseful', 'energetic and upbeat', 'serene and meditative', 'luxurious and aspirational', 'gritty and raw documentary', 'whimsical and dreamlike', 'dramatic and epic', 'minimal and elegant', 'chaotic and kinetic'];
 const CREATIVE_SETTINGS = ['a sunlit apartment interior', 'a bustling city street', 'a quiet countryside field', 'a neon-lit urban alley at night', 'a minimalist white studio', 'a cozy cafe with warm lamps', 'a rooftop at dusk overlooking the skyline', 'a rain-soaked sidewalk with reflections', 'a lush botanical garden greenhouse', 'an empty train station platform'];
+// Prompt-friendly variation for the LAST-RESORT fallback prompts (used when every
+// LLM is down). Without it the static fallbacks repeat byte-identically on every
+// generation, which looks like the app ignoring the user's clicks.
+function randomVisualVariation() {
+  const pick = a => a[Math.floor(Math.random() * a.length)];
+  return `${pick(CREATIVE_SETTINGS)}, ${pick(CREATIVE_LIGHTING)}, ${pick(CREATIVE_MOODS)} mood, ${pick(CREATIVE_ANGLES)}`;
+}
+
 function randomCreativeDirection() {
   const pick = a => a[Math.floor(Math.random() * a.length)];
   const angle = pick(CREATIVE_ANGLES);
@@ -849,7 +857,7 @@ async function generateFlashloopScene(effectName, tagline, userIdea, duration, r
 
   // Prefer a fast reliable model on Vercel to avoid timeouts
   const promptModel = IS_VERCEL
-    ? ((LOGFARE_MODELS.includes(model) || ['gemini-2.5-pro', 'gemini-3.1-pro', 'gemini-3.1-flash-lite', 'deepseek-v3.2', 'deepseek-v4-flash', 'glm-5.2', 'glm-5.3', 'kimi-k3', 'kimi-k2.6', 'claude-sonnet-4-5', 'mimo-v2.5', 'gpt-5.5'].includes(model)) ? model : 'logfare:auto')
+    ? (isFlashloopPromptModel(model) ? model : 'logfare:auto')
     : model;
 
   // Generate prompts (the reference image is NOT attached — the LLM cannot copy it)
@@ -857,9 +865,10 @@ async function generateFlashloopScene(effectName, tagline, userIdea, duration, r
 
   // Ensure the image prompt is never empty; if the LLM returned nothing useful, build a minimal anchor.
   if (!imageResult.imagePrompt || !imageResult.imagePrompt.trim()) {
+    const v = randomVisualVariation();
     imageResult.imagePrompt = mode === 'style'
-      ? `First-frame reference image rendered in the "${effectName}" visual style${tagline ? ' — ' + tagline : ''}${userIdea ? ' — ' + userIdea : ''}. A specific subject in a clear setting, ${ratio}, first frame only.`
-      : `First-frame reference image recreating the viral "${effectName}" trend${tagline ? ' — ' + tagline : ''}. ${concept || 'A specific, instantly recognisable scene from this trend.'}${userIdea ? ' ' + userIdea : ''} ${ratio}, first frame only.`;
+      ? `First-frame reference image rendered in the "${effectName}" visual style${tagline ? ' — ' + tagline : ''}${userIdea ? ' — ' + userIdea : ''}. A specific subject in a clear setting: ${v}. ${ratio}, first frame only.`
+      : `First-frame reference image recreating the viral "${effectName}" trend${tagline ? ' — ' + tagline : ''}. ${concept || 'A specific, instantly recognisable scene from this trend.'}${userIdea ? ' ' + userIdea : ''} Scene: ${v}. ${ratio}, first frame only.`;
   }
 
   let videoResult = {};
@@ -875,7 +884,7 @@ async function generateFlashloopScene(effectName, tagline, userIdea, duration, r
 0–${d3}s: HOOK — ${mode === 'concept' ? 'the trend\'s signature moment, front and centre.' : 'the subject\'s most striking moment, front and centre.'}
 ${d3}–${d6}s: The main action unfolds in a few concrete beats with detail.
 ${d6}–${perSceneLen}s: The action peaks, then settles into a strong final moment.
-${concept ? concept + ' ' : ''}Use the supplied first-frame image as the strict visual reference — preserve the exact subject, position, colors, lighting, and composition. Smooth continuous motion. Cinematic, ${ratio}. No text or logos.`;
+${concept ? concept + ' ' : ''}Scene: ${randomVisualVariation()}. Use the supplied first-frame image as the strict visual reference — preserve the exact subject, position, colors, lighting, and composition. Smooth continuous motion. Cinematic, ${ratio}. No text or logos.`;
   }
 
   return {
@@ -900,7 +909,7 @@ const totalSec = perScene * sceneCount;
   const cleanRefs = cleanFlashloopRefs(references);
   const refBlock = formatFlashloopRefs(cleanRefs);
   const promptModel = IS_VERCEL
-    ? ((LOGFARE_MODELS.includes(model) || ['gemini-2.5-pro', 'gemini-3.1-pro', 'gemini-3.1-flash-lite', 'deepseek-v3.2', 'deepseek-v4-flash', 'glm-5.2', 'glm-5.3', 'kimi-k3', 'kimi-k2.6', 'claude-sonnet-4-5', 'mimo-v2.5', 'gpt-5.5'].includes(model)) ? model : 'logfare:auto')
+    ? (isFlashloopPromptModel(model) ? model : 'logfare:auto')
     : model;
 
   // Trend reference analysis (skipped on Vercel to protect the time budget — the
@@ -955,8 +964,11 @@ ${modeRules}
 - STORY: Scene 1 opens with the strongest hook (cold open). Scenes flow seamlessly — each scene starts exactly where the previous one ended (same characters, same place, same light, continuous motion). The last scene ends on a satisfying payoff.${tagline ? '\n- Trend tagline: ' + tagline : ''}${userIdea ? '\n- User idea (honor it without losing the concept above): ' + userIdea : ''}${styleBlock}${refBlock}
 - Keep every prompt tight, concrete and on-concept.`;
 
+  // Upstream models ignore temperature and return byte-identical output for
+  // identical input, so every regeneration of the same effect looked the same.
+  const variation = `\n\nVariation #${Date.now().toString(36)} — write a fresh ${sceneCount}-scene story for this effect. Do NOT repeat a previous generation's scenes, subjects, beats or wording.`;
   let promptText = `Write the full ${sceneCount}-scene script for "${effectName}"${tagline ? ' — ' + tagline : ''}. ${perScene}s per scene, ${ratio}.
-Mode: ${mode === 'style' ? 'VISUAL STYLE — apply this look to a subject.' : 'VIRAL CONCEPT — faithfully reproduce this trend.'}${userIdea ? '\nUser idea: ' + userIdea : ''}\nReturn ONLY the JSON object described in your instructions.`;
+Mode: ${mode === 'style' ? 'VISUAL STYLE — apply this look to a subject.' : 'VIRAL CONCEPT — faithfully reproduce this trend.'}${userIdea ? '\nUser idea: ' + userIdea : ''}\nReturn ONLY the JSON object described in your instructions.${variation}`;
   let parsed = {};
   let raw = '';
   let lastScriptErr = null;
@@ -1111,6 +1123,15 @@ const MODELS = ['gemini-2.5-pro', 'gemini-3.1-pro', 'gemini-3.1-flash-lite', 'gp
 // PaxSenix models. gemma-4-26b + logfare/auto work without opt-in; the rest require
 // model-training opt-in on the Logfare account and fall back to logfare/auto until then.
 const LOGFARE_MODELS = ['logfare:auto', 'gemma-4-26b', 'glm-5.3', 'kimi-k3', 'kimi-k3:fast', 'deepseek-v4-flash-0731', 'deepseek-v4-pro-0813', 'qwen-3.8-27b', 'moondream3.1'];
+// Flashloop/SJinn models come from the UI as either a PaxSenix id or a
+// "logfare:<model>" id; accept both so a Logfare pick is never silently swapped.
+function isFlashloopPromptModel(m) {
+  const s = String(m || '');
+  if (!s) return false;
+  if (MODELS.includes(s)) return true;
+  const bare = s.startsWith('logfare:') ? s.slice('logfare:'.length) : s;
+  return bare === 'auto' || LOGFARE_MODELS.includes(bare);
+}
 const IMAGE_MODELS = ['nano-banana-pro', 'nano-banana-2', 'nano-banana-2-lite', 'seedream-5', 'seedream-4', 'seedream-4.5', 'grok-imagine-2', 'grok-imagine', 'gpt-image-2'];
 // Grok Imagine is xAI's image model on PaxSenix: GET /ai-image/grok-imagine
 // (text-to-image, params: prompt + ratio) and POST /ai-img2img/grok-imagine
@@ -1612,8 +1633,15 @@ async function chatCompletion(model, messages, maxTokens = 16384, temperature = 
 // Logfare chat — OpenAI-compatible gateway. NOTE: Logfare logs request content,
 // so this must ONLY ever be called from the flashloop/sjinn prompt-writing path.
 // Models without training opt-in (no data training): logfare/auto, gemma-4-26b.
+// Last-known Logfare health (surfaced at /api/health so the key/endpoint can be
+// verified from a browser without reading server logs).
+const logfareStatus = { key: !!LOGFARE_API_KEY, lastOkAt: 0, lastModel: '', lastError: '' };
+
 async function chatWithLogfare(model, messages, maxTokens = 16000, temperature = 0.7) {
-  if (!LOGFARE_API_KEY) throw new Error('no Logfare key (env LOGFARE_API_KEY or pipeline/logfare_apikey.txt)');
+  if (!LOGFARE_API_KEY) {
+    logfareStatus.lastError = 'no Logfare key (set env LOGFARE_API_KEY on Vercel, or pipeline/logfare_apikey.txt locally)';
+    throw new Error('no Logfare key (env LOGFARE_API_KEY or pipeline/logfare_apikey.txt)');
+  }
   const res = await fetch(`${LOGFARE_API}/chat/completions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + LOGFARE_API_KEY },
@@ -1623,28 +1651,53 @@ async function chatWithLogfare(model, messages, maxTokens = 16000, temperature =
   const j = await res.json().catch(() => ({}));
   if (!res.ok || j.error) {
     const msg = (j.error && (j.error.message || JSON.stringify(j.error))) || ('HTTP ' + res.status);
+    logfareStatus.lastError = `${model}: ${msg}`;
     throw new Error(`logfare ${model}: ${msg}`);
   }
-  const content = j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content;
-  if (!content || !String(content).trim()) throw new Error(`logfare ${model}: empty response`);
-  return String(content);
+  const ch = (j.choices && j.choices[0]) || {};
+  const m = ch.message || {};
+  // Reasoning-capable models (logfare/auto) can put the answer in `reasoning`
+  // and may return an empty `content` when the token budget runs out mid-thought.
+  const rawText = m.content
+    || m.reasoning_content
+    || m.reasoning
+    || (typeof ch.text === 'string' ? ch.text : '');
+  const text = Array.isArray(rawText)
+    ? rawText.map(p => (typeof p === 'string' ? p : (p && p.text) || '')).join('')
+    : String(rawText || '');
+  if (!text.trim()) {
+    const why = ch.finish_reason === 'length'
+      ? 'token budget exhausted before any answer (raise max_tokens)'
+      : 'empty response';
+    logfareStatus.lastError = `${model}: ${why}`;
+    throw new Error(`logfare ${model}: ${why}`);
+  }
+  logfareStatus.lastOkAt = Date.now(); logfareStatus.lastModel = model; logfareStatus.lastError = '';
+  return text;
 }
 
 // Prompt-writing chain used ONLY by the flashloop/sjinn script generators.
 // A "logfare:<model>" model from the UI pins that Logfare model first, then
-// logfare/auto, then the regular PaxSenix chain as last resort.
+// logfare/auto, then gemma-4-26b, then the PaxSenix chain as last resort.
 async function chatWithLogfareFallback(model, messages, maxTokens = 16000, temperature = 0.7) {
   const raw = String(model || '');
   const isLogfare = raw.startsWith('logfare:');
-  const pinned = isLogfare ? raw.slice('logfare:'.length) : '';
-  const chain = [pinned || 'logfare:auto', 'logfare:auto'].filter((m, i, a) => m && a.indexOf(m) === i);
+  const pinnedRaw = isLogfare ? raw.slice('logfare:'.length) : '';
+  // "logfare:auto" pins auto, whose real Logfare model id is "logfare/auto".
+  const pinned = pinnedRaw === 'auto' ? 'logfare/auto' : pinnedRaw;
+  const chain = [pinned, 'logfare/auto', 'gemma-4-26b'].filter((m, i, a) => m && a.indexOf(m) === i);
   let lastErr = null;
   for (const m of chain) {
     try { return await chatWithLogfare(m, messages, maxTokens, temperature); }
     catch (e) { lastErr = e; logLine(`chatWithLogfareFallback: ${m} failed (${e.message}) — trying next`); }
   }
   // All Logfare models failed — hand off to the regular PaxSenix chain.
-  return chatWithFallback(isLogfare ? 'gemini-2.5-pro' : raw, messages, maxTokens, temperature);
+  try {
+    return await chatWithFallback(isLogfare ? 'gemini-2.5-pro' : raw, messages, maxTokens, temperature);
+  } catch (e) {
+    logfareStatus.lastError = lastErr ? lastErr.message : e.message;
+    throw new Error(`Logfare+fallback LLMs unavailable — ${lastErr ? lastErr.message : ''}${e && e.message ? ' | PaxSenix: ' + e.message : ''}`);
+  }
 }
 
 async function chatWithFallback(model, messages, maxTokens = 16000, temperature = 0.7) {
@@ -4020,7 +4073,7 @@ const requestHandler = async (req, res) => {
         return sendJson(res, 200, status);
       } catch (e) { return sendJson(res, 200, { hasAudio: false, matchesCurrent: false, withSpeech: 0, error: e.message }); }
     }
-    if (p === '/api/health' || p === '/api/ping') return sendJson(res, 200, { ok: true, vercel: IS_VERCEL, path: p, url: rawUrl, hasKey: !!API_KEY });
+    if (p === '/api/health' || p === '/api/ping') return sendJson(res, 200, { ok: true, vercel: IS_VERCEL, path: p, url: rawUrl, hasKey: !!API_KEY, logfare: { key: !!LOGFARE_API_KEY, lastOkAt: logfareStatus.lastOkAt, lastModel: logfareStatus.lastModel, lastError: logfareStatus.lastError } });
     if (p === '/api/models') return sendJson(res, 200, { chat: MODELS, image: IMAGE_MODELS, video: VIDEO_MODELS, voices: VOICES, languages: LANGUAGES, narrationModes: NARRATION_MODES, narrationEngines: NARRATION_ENGINES, styles: STYLE_KEYS.map(k => ({ key: k, label: STYLES[k].label })) });
 
     // --- CREDITS ---
@@ -5189,7 +5242,7 @@ Return ONLY a JSON object:
 const { slug = '', name = '', tagline = '', idea = '', duration = 15, sceneLength = 8, ratio = '9:16', model = 'gpt-5.5', references = [], trendThumbnail = '', source = '' } = body || {};
         const effectName = String(name || slug).trim();
         if (!effectName) return sendJson(res, 400, { error: 'effect name or slug required' });
-        const selectedModel = (MODELS.includes(model) || LOGFARE_MODELS.includes(model)) ? model : 'logfare:auto';
+        const selectedModel = isFlashloopPromptModel(model) ? model : 'logfare:auto';
         const refs = Array.isArray(references) ? references.filter(r => r && String(r.name || '').trim()) : [];
         // Flashloop formats are visual STYLES; SJinn trends are viral CONCEPTS.
         // Branching keeps generated prompts on-trend instead of inventing a scene.
@@ -5215,7 +5268,7 @@ const perScene = [5, 8, 10, 15, 30].includes(Number(sceneLength)) ? Number(scene
         if (!String(script).trim()) return sendJson(res, 400, { error: 'script required' });
         if (!String(instruction).trim()) return sendJson(res, 400, { error: 'edit instruction required' });
         if (!(await requireCredits(req, res, 1, 'edit script'))) return;
-        const selectedModel = (MODELS.includes(model) || LOGFARE_MODELS.includes(model)) ? model : 'logfare:auto';
+        const selectedModel = isFlashloopPromptModel(model) ? model : 'logfare:auto';
         const system = `You are a precise script editor for short-form AI video prompts. The user gives you their full script and an edit instruction. Apply ONLY the requested changes — keep everything else word-for-word identical.
 
 OUTPUT FORMAT — return the FULL edited script as plain text, nothing else. Preserve the exact structure:
