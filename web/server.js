@@ -1122,7 +1122,7 @@ const MODELS = ['gemini-2.5-pro', 'gemini-3.1-pro', 'gemini-3.1-flash-lite', 'gp
 // Selected from the UI with a "logfare:" prefix so they never collide with same-named
 // PaxSenix models. gemma-4-26b + logfare/auto work without opt-in; the rest require
 // model-training opt-in on the Logfare account and fall back to logfare/auto until then.
-const LOGFARE_MODELS = ['logfare:auto', 'gemma-4-26b', 'glm-5.3', 'kimi-k3', 'kimi-k3:fast', 'deepseek-v4-flash-0731', 'deepseek-v4-pro-0813', 'qwen-3.8-27b', 'moondream3.1'];
+const LOGFARE_MODELS = ['logfare:auto', 'gemma-4-26b', 'glm-5.3', 'kimi-k3:fast', 'deepseek-v4-flash-0731', 'deepseek-v4-pro-0813', 'qwen-3.8-27b', 'moondream3.1'];
 // Flashloop/SJinn models come from the UI as either a PaxSenix id or a
 // "logfare:<model>" id; accept both so a Logfare pick is never silently swapped.
 function isFlashloopPromptModel(m) {
