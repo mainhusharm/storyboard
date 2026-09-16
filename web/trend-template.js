@@ -25,7 +25,7 @@ module.exports = function createTrendTemplates(deps) {
   const TREND_TEMPLATES_FILE = path.join(STORYBOARD_DIR, 'trend-templates.json');
   const TEMPLATE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // a week
   // Bump when the extraction/distillation changes so stale cache entries rebuild.
-  const TEMPLATE_VERSION = 3;
+  const TEMPLATE_VERSION = 4; // v4: templates grounded in the example video (vision)
   const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
   const MAX_VIDEO_BYTES = 40 * 1024 * 1024;
 
@@ -250,6 +250,35 @@ module.exports = function createTrendTemplates(deps) {
     return { frames, sources };
   }
 
+  // Ask the vision model what the trend OWN example video actually shows. This is
+  // the strongest grounding for SJinn (which publishes no example prompts): it turns
+  // the sampled frames into concrete subject / action / setting / style facts.
+  async function describeExampleFrames(frames, opts) {
+    const o = opts || {};
+    if (!Array.isArray(frames) || !frames.length) return "";
+    const prompt = "These frames are sampled from the \"" + o.name + "\" trend's OWN example video"
+      + (o.tagline ? " (" + o.tagline + ")" : "") + ".\n"
+      + "Describe factually what this trend's video shows, so a different clip could be produced that sits next to it and looks like the same trend. Cover:\n"
+      + "- the exact subject(s) and what they are made of\n"
+      + "- the setting/background and any props\n"
+      + "- the action, and its ORDER across the frames (first, next, last)\n"
+      + "- camera framing and movement, lighting and colour palette\n"
+      + "- any on-screen text, captions or logos\n"
+      + "- the overall look (live action, 3D render, anime, macro, etc.)\n"
+      + "Also state what this trend is NOT - what would make a clip look off-trend.\n"
+      + "Return plain prose, 120-220 words, no markdown.";
+    try {
+      const content = [{ type: "text", text: prompt }].concat(frames.slice(0, 3).map(function (f) { return { type: "image_url", image_url: { url: f } }; }));
+      const out = await chatText([{ role: "user", content: content }], 8000, 0.4);
+      const txt = String(out || "").trim().slice(0, 2200);
+      if (txt) logLine("trend template \"" + o.name + "\": example video described from " + Math.min(frames.length, 3) + " frame(s)");
+      return txt;
+    } catch (e) {
+      logLine("trend template \"" + o.name + "\": example-video vision failed (" + e.message + ")");
+      return "";
+    }
+  }
+
   // ---------- store ----------
   function loadTrendTemplateStore() {
     try { return JSON.parse(fs.readFileSync(TREND_TEMPLATES_FILE, 'utf8')) || {}; } catch { return {}; }
@@ -385,12 +414,15 @@ module.exports = function createTrendTemplates(deps) {
       ...imageUrls.map((u, i) => ({ kind: 'image', url: u, label: `${name} reference image ${i + 1}` }))
     ], { maxFrames: 3 });
 
-    const grounded = !!(videoUrls.length || sampled.frames.length || examplePrompts.length || prose);
+    const videoDescription = await describeExampleFrames(sampled.frames, { name: name, tagline: tagline || detailTagline });
+    if (videoDescription) logLine('trend template: example-video description grounded the template');
+    const grounded = !!(videoUrls.length || sampled.frames.length || examplePrompts.length || prose || videoDescription);
     let template = null;
 
     // Distil from the trend's own material (text-only: works with the Logfare chain).
-    if (examplePrompts.length || prose || sampled.frames.length) {
+    if (examplePrompts.length || prose || sampled.frames.length || videoDescription) {
       const evidence = [
+        videoDescription ? ("WHAT THE TREND'S OWN EXAMPLE VIDEO ACTUALLY SHOWS (authoritative - every field must match this):\n" + videoDescription) : "",
         examplePrompts.length ? `REAL PROMPTS THAT PRODUCED THIS TREND'S EXAMPLE VIDEOS:\n- ` + examplePrompts.map(p => p.slice(0, 700)).join('\n- ') : '',
         prose ? `PAGE / TREND DESCRIPTION:\n${prose.slice(0, 2000)}` : '',
         videoUrls.length ? `EXAMPLE MEDIA: ${videoUrls.length} video(s)${sampled.frames.length ? `, ${sampled.frames.length} frame(s) sampled` : ''}` : ''
@@ -412,6 +444,7 @@ OUTPUT — return ONLY a JSON object, no markdown:
 
 RULES:
 - Base every field ONLY on the supplied material. Do not invent a different subject.
+- If a description of the trend's OWN example video is supplied it OUTRANKS the page copy: subject, setting, action order and look must match it exactly.
 - beats must describe the ORDER of moments seen in the examples, at least 3 beats.
 - If the material explains HOW this trend's prompts work (subject rules, what the image prompt describes vs what the video prompt describes, steps, what happens in the video), encode those mechanics exactly into concept/signatureAction/beats/mustInclude.
 - Be concrete and specific (materials, scale, lighting, motion), not generic.`;
@@ -430,7 +463,7 @@ ${evidence}`;
     }
 
     if (!template) {
-      template = heuristicTrendTemplate({ source: src, slug, name, tagline: tagline || detailTagline, prose, examplePrompts, concept });
+      template = heuristicTrendTemplate({ source: src, slug, name, tagline: tagline || detailTagline, prose: (videoDescription ? videoDescription + (prose ? " \u2014 " + prose : "") : prose), examplePrompts, concept });
       logLine(`trend template "${name}": curated fallback (no usable example material)`);
     }
 
@@ -443,6 +476,7 @@ ${evidence}`;
         frames: sampled.frames.length,
         prompts: examplePrompts.length,
         prose: !!prose,
+        vision: !!videoDescription,
         sources: sampled.sources.slice(0, 6)
       }
     };

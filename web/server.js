@@ -1661,14 +1661,32 @@ async function chatWithLogfare(model, messages, maxTokens = 16000, temperature =
     logfareStatus.lastError = 'no Logfare key (set env LOGFARE_API_KEY on Vercel, or pipeline/logfare_apikey.txt locally)';
     throw new Error('no Logfare key (env LOGFARE_API_KEY or pipeline/logfare_apikey.txt)');
   }
-  const res = await fetch(`${LOGFARE_API}/chat/completions`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + LOGFARE_API_KEY },
-    // A random seed makes each request a distinct sample, so clicking Generate
-    // twice can never return the same script (Logfare accepts seed).
-    body: JSON.stringify({ model, messages, max_tokens: maxTokens, temperature, seed: Math.floor(Math.random() * 2147483647) }),
-    signal: AbortSignal.timeout(250000)
-  });
+  // Retry rate limits / transient gateway errors: a silent 429 used to degrade
+  // trend templates and script generation to generic fallbacks.
+  let res = null;
+  let lastAttemptErr = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      res = await fetch(`${LOGFARE_API}/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + LOGFARE_API_KEY },
+        // A random seed makes each request a distinct sample, so clicking Generate
+        // twice can never return the same script (Logfare accepts seed).
+        body: JSON.stringify({ model, messages, max_tokens: maxTokens, temperature, seed: Math.floor(Math.random() * 2147483647) }),
+        signal: AbortSignal.timeout(250000)
+      });
+      if (res.status !== 429 && res.status < 500) break;
+      lastAttemptErr = new Error(`HTTP ${res.status}`);
+    } catch (e) { lastAttemptErr = e; }
+    if (attempt < 3) {
+      logLine(`logfare ${model}: ${lastAttemptErr.message} - retry in ${attempt * 3}s`);
+      await new Promise(r => setTimeout(r, attempt * 3000));
+    }
+  }
+  if (!res) {
+    logfareStatus.lastError = `${model}: ${lastAttemptErr ? lastAttemptErr.message : 'request failed'}`;
+    throw new Error(`logfare ${model}: ${lastAttemptErr ? lastAttemptErr.message : 'request failed'}`);
+  }
   const j = await res.json().catch(() => ({}));
   if (!res.ok || j.error) {
     const msg = (j.error && (j.error.message || JSON.stringify(j.error))) || ('HTTP ' + res.status);
@@ -1713,7 +1731,19 @@ async function chatWithLogfareFallback(model, messages, maxTokens = 16000, tempe
   let lastErr = null;
   for (const m of chain) {
     try { return await chatWithLogfare(m, messages, maxTokens, temperature); }
-    catch (e) { lastErr = e; logLine(`chatWithLogfareFallback: ${m} failed (${e.message}) — trying next`); }
+    catch (e) {
+      lastErr = e;
+      // A reasoning model can burn the whole budget thinking and return nothing:
+      // retry the same model with a bigger budget before falling over.
+      if (/token budget exhausted/i.test(e.message) && maxTokens < 32000) {
+        const bigger = Math.min(32000, maxTokens * 3);
+        logLine(`chatWithLogfareFallback: ${m} ran out of tokens at ${maxTokens} - retrying with ${bigger}`);
+        try { return await chatWithLogfare(m, messages, bigger, temperature); }
+        catch (e2) { lastErr = e2; logLine(`chatWithLogfareFallback: ${m} failed again (${e2.message}) - trying next`); }
+      } else {
+        logLine(`chatWithLogfareFallback: ${m} failed (${e.message}) - trying next`);
+      }
+    }
   }
   // All Logfare models failed — hand off to the regular PaxSenix chain.
   try {
