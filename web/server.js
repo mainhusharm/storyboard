@@ -357,11 +357,15 @@ async function scrapeFlashloop() {
         formats.push({ slug, name, thumbnail: posterUrl, tagline: '' });
       }
     } else {
+      // The flight payload carries each example's REAL prompt as a referenced text
+      // row, so the listing hands the trend template builder the prompts that
+      // actually produced this trend's example videos.
+      const flightRows = trendTemplates.parseFlightRows(trendTemplates.decodeFlightPayload(html));
       for (const [slug, data] of Object.entries(trendContent)) {
-        const examples = Array.isArray(data?.examples) ? data.examples : [];
-        const thumbnail = examples.find(e => e?.posterUrl)?.posterUrl || '';
+        const examples = trendTemplates.normalizeTrendExamples(data?.examples, flightRows);
+        const thumbnail = (examples.find(e => e?.posterUrl)?.posterUrl) || '';
         const tagline = data?.tagline || '';
-        formats.push({ slug, name: kebabToTitle(slug), thumbnail, tagline });
+        formats.push({ slug, name: kebabToTitle(slug), thumbnail, tagline, examples });
       }
     }
 
@@ -836,7 +840,7 @@ Return { "title": "...", "videoPrompt": "..." }. Keep videoPrompt 180-280 words,
 // Returns both a first-frame/reference image prompt (img2img) and a motion
 // prompt for image-to-video (img2video) that preserves the generated frame.
 // mode = 'concept' (reproduce the viral trend) | 'style' (apply the look to a subject).
-async function generateFlashloopScene(effectName, tagline, userIdea, duration, ratio, model = 'gpt-5.5', references = [], trendThumbnail = '', sceneLength = 0, mode = 'concept', slug = '') {
+async function generateFlashloopScene(effectName, tagline, userIdea, duration, ratio, model = 'gpt-5.5', references = [], trendThumbnail = '', sceneLength = 0, mode = 'concept', slug = '', template = null) {
   // sceneLength (seconds per scene) overrides `duration` when provided so the
   // per-scene fill fallback matches the script's chosen timeframe exactly.
   const perSceneLen = [5, 8, 10, 15, 30].includes(Number(sceneLength)) ? Number(sceneLength) : Number(duration) || 8;
@@ -861,7 +865,7 @@ async function generateFlashloopScene(effectName, tagline, userIdea, duration, r
     : model;
 
   // Generate prompts (the reference image is NOT attached — the LLM cannot copy it)
-  const imageResult = await generateFlashloopImagePrompt(effectName, tagline, userIdea, ratio, promptModel, cleanRefs, styleText, mode, concept);
+  const imageResult = await generateFlashloopImagePrompt(effectName, tagline, userIdea, ratio, promptModel, cleanRefs, (styleText || '') + trendTemplateBlock(template), mode, concept);
 
   // Ensure the image prompt is never empty; if the LLM returned nothing useful, build a minimal anchor.
   if (!imageResult.imagePrompt || !imageResult.imagePrompt.trim()) {
@@ -873,7 +877,7 @@ async function generateFlashloopScene(effectName, tagline, userIdea, duration, r
 
   let videoResult = {};
   try {
-    videoResult = await generateFlashloopVideoPrompt(effectName, tagline, userIdea, perSceneLen, ratio, promptModel, cleanRefs, imageResult.imagePrompt, styleText, mode, concept);
+    videoResult = await generateFlashloopVideoPrompt(effectName, tagline, userIdea, perSceneLen, ratio, promptModel, cleanRefs, imageResult.imagePrompt, (styleText || '') + trendTemplateBlock(template), mode, concept);
   } catch (e) { logLine('flashloop video prompt failed: ' + e.message); }
 
   // Ensure the video prompt is never empty — build a detailed fallback.
@@ -887,6 +891,12 @@ ${d6}–${perSceneLen}s: The action peaks, then settles into a strong final mome
 ${concept ? concept + ' ' : ''}Scene: ${randomVisualVariation()}. Use the supplied first-frame image as the strict visual reference — preserve the exact subject, position, colors, lighting, and composition. Smooth continuous motion. Cinematic, ${ratio}. No text or logos.`;
   }
 
+  // Relevance guard: pull an off-trend prompt back onto this trend's template.
+  if (template) {
+    imageResult.imagePrompt = enforceTrendTemplate(imageResult.imagePrompt, template, 'image');
+    videoResult.videoPrompt = enforceTrendTemplate(videoResult.videoPrompt, template, 'video');
+  }
+
   return {
     title: videoResult.title || imageResult.title || effectName,
     imagePrompt: imageResult.imagePrompt,
@@ -898,7 +908,7 @@ ${concept ? concept + ' ' : ''}Scene: ${randomVisualVariation()}. Use the suppli
 // scene opens with a hook, no camera/lighting/mood fluff. One LLM call writes all
 // scenes so the story flows seamlessly. Scene count is FIXED by the per-scene
 // length: 30s → 4 scenes, 15s → 8 scenes (both add up to 2 minutes of footage).
-async function generateFlashloopScript(effectName, tagline, userIdea, sceneDuration, ratio, model = 'gpt-5.5', references = [], trendThumbnail = '', sceneLength = 8, mode = 'concept', slug = '') {
+async function generateFlashloopScript(effectName, tagline, userIdea, sceneDuration, ratio, model = 'gpt-5.5', references = [], trendThumbnail = '', sceneLength = 8, mode = 'concept', slug = '', template = null) {
 // Scenes are sized to the RENDER engine: Make Video renders each scene with
 // omni-flash (~8s clips) by default, but the user can pick another per-scene
 // length (5s/10s/15s). Total stays on target: short → ~64s, long → ~120s.
@@ -962,7 +972,7 @@ ${modeRules}
 - Each scene's "videoPrompt": ${vidWords} words — a TIMELINE of ${beatCount} time-stamped beats that covers the full ${perScene} seconds. Format: ${beatExample} — consecutive segments with no gaps, ending exactly at ${perScene}s. The FIRST segment must deliver the hook. Each segment is one concrete action beat with vivid specifics (textures, scale, lighting, expressions, sounds).
 - Hit the word targets above exactly — count your words as you write. Be vivid and specific so a video model can animate it precisely, but never pad with filler.
 - STORY: Scene 1 opens with the strongest hook (cold open). Scenes flow seamlessly — each scene starts exactly where the previous one ended (same characters, same place, same light, continuous motion). The last scene ends on a satisfying payoff.${tagline ? '\n- Trend tagline: ' + tagline : ''}${userIdea ? '\n- User idea (honor it without losing the concept above): ' + userIdea : ''}${styleBlock}${refBlock}
-- Keep every prompt tight, concrete and on-concept.`;
+- Keep every prompt tight, concrete and on-concept.${trendTemplateBlock(template)}`;
 
   // Upstream models ignore temperature and return byte-identical output for
   // identical input, so every regeneration of the same effect looked the same.
@@ -995,6 +1005,15 @@ Mode: ${mode === 'style' ? 'VISUAL STYLE — apply this look to a subject.' : 'V
       videoPrompt: scrubCameraFluff(capPrompt(enforceEffectRelevance(String(s.videoPrompt || s.video_prompt || '').trim(), effectName, tagline, userIdea, perScene, ratio, 'video', { mode, concept }), 420))
     }));
 
+  // Relevance guard: every scene must read as this trend, not a generic scene.
+  if (template && scenes.length) {
+    scenes = scenes.map(s => ({
+      ...s,
+      imagePrompt: enforceTrendTemplate(s.imagePrompt, template, 'image'),
+      videoPrompt: enforceTrendTemplate(s.videoPrompt, template, 'video')
+    }));
+  }
+
   // Fallback: fill any missing scenes one-by-one so the scene count is always right.
   if (scenes.length < sceneCount) {
     logLine(`flashloop script: got ${scenes.length}/${sceneCount} scenes — filling the rest individually`);
@@ -1002,7 +1021,7 @@ Mode: ${mode === 'style' ? 'VISUAL STYLE — apply this look to a subject.' : 'V
       try {
         const prevEnd = scenes[i - 1] ? ` Previous scene ends here: ${scenes[i - 1].videoPrompt}` : '';
         const sceneIdea = String(userIdea || '') + prevEnd;
-        const one = await generateFlashloopScene(effectName, tagline, sceneIdea, perScene, ratio, promptModel, references, '', perScene, mode, slug);
+        const one = await generateFlashloopScene(effectName, tagline, sceneIdea, perScene, ratio, promptModel, references, '', perScene, mode, slug, template);
         scenes.push({ scene: i + 1, title: `Scene ${i + 1}`, hook: '', imagePrompt: one.imagePrompt, videoPrompt: one.videoPrompt });
       } catch (e) { logLine(`flashloop per-scene fill failed: ${e.message}`); lastScriptErr = lastScriptErr || e; break; }
     }
@@ -4026,6 +4045,21 @@ async function saveUploadedRef(infl, dataUrl) {
   return filename;
 }
 
+// ---------------- trend templates (Flashloop / SJinn grounding) ----------------
+// Reads each trend's OWN example material (example videos + the real prompts that
+// produced them, or SJinn's demo video + prose) and distils one template that every
+// generated prompt must follow. Implementation lives in web/trend-template.js.
+const trendTemplates = require('./trend-template')({
+  fs, fsp, path, execFile, ffmpegBin, STORYBOARD_DIR,
+  logLine, isVercel: IS_VERCEL, parseJsonLenient, extractTrendContent,
+  resolveTrendConcept, kebabToTitle, scrapeFlashloop, scrapeSjinn,
+  chatText: (messages, maxTokens = 4000, temperature = 0.7) => chatWithLogfareFallback('logfare:auto', messages, maxTokens, temperature)
+});
+
+// Aliases used by the Flashloop/SJinn prompt writers.
+const trendTemplateBlock = (t) => trendTemplates.trendTemplateBlock(t);
+const enforceTrendTemplate = (prompt, template, kind) => trendTemplates.enforceTrendTemplate(prompt, template, kind);
+
 const requestHandler = async (req, res) => {
   // Normalize URL for Vercel (catch-all / rewrites may alter req.url)
   let rawUrl = req.url || '/';
@@ -5259,8 +5293,17 @@ const { slug = '', name = '', tagline = '', idea = '', duration = 15, sceneLengt
       // sceneLength is the PER-SCENE seconds (5/8/10/15); the scene count adapts.
         const mode = Number(duration) || 15;
 const perScene = [5, 8, 10, 15, 30].includes(Number(sceneLength)) ? Number(sceneLength) : 8;
-        const script = await generateFlashloopScript(effectName, String(tagline || ''), String(idea || ''), mode, String(ratio), selectedModel, refs, String(trendThumbnail || ''), perScene, trendMode, String(slug || ''));
-        return sendJson(res, 200, { ok: true, slug, name: effectName, sceneDuration: mode, sceneLength: perScene, ratio, model: selectedModel, trendMode, ...script });
+        // Ground the script in this trend's own example material (cached a week).
+        let trendTpl = null;
+        try {
+          trendTpl = await trendTemplates.buildTrendTemplate({
+            source: String(source || (trendMode === 'style' ? 'flashloop' : 'sjinn')),
+            slug: String(slug || ''), name: effectName, tagline: String(tagline || ''),
+            thumbnail: String(trendThumbnail || ''), concept: resolveTrendConcept(String(slug || ''), effectName, '')
+          });
+        } catch (e) { logLine('generate-prompt: trend template unavailable — ' + e.message); }
+        const script = await generateFlashloopScript(effectName, String(tagline || ''), String(idea || ''), mode, String(ratio), selectedModel, refs, String(trendThumbnail || ''), perScene, trendMode, String(slug || ''), trendTpl);
+        return sendJson(res, 200, { ok: true, slug, name: effectName, sceneDuration: mode, sceneLength: perScene, ratio, model: selectedModel, trendMode, trendTemplate: trendTpl ? { name: trendTpl.name, concept: trendTpl.concept, beats: trendTpl.beats, grounded: trendTpl.meta && trendTpl.meta.grounded } : null, ...script });
       } catch (e) { logLine('flashloop prompt: ' + e.message); return sendJson(res, 500, { error: e.message }); }
     }
 
@@ -6306,6 +6349,18 @@ ${infl.description || '(no description - describe a beautiful confident influenc
 };
 
 module.exports = requestHandler;
+// Exposed for pipeline/test-trend-template.js (regression test for this layer).
+module.exports.__internal = {
+  scrapeFlashloop, scrapeSjinn,
+  fetchFlashloopTrendDetail: trendTemplates.fetchFlashloopTrendDetail,
+  fetchSjinnTrendDetail: trendTemplates.fetchSjinnTrendDetail,
+  sampleTrendFrames: trendTemplates.sampleTrendFrames,
+  buildTrendTemplate: trendTemplates.buildTrendTemplate,
+  trendTemplateBlock: trendTemplates.trendTemplateBlock,
+  enforceTrendTemplate: trendTemplates.enforceTrendTemplate,
+  loadTrendTemplateStore: trendTemplates.loadTrendTemplateStore,
+  TREND_TEMPLATES_FILE: trendTemplates.TREND_TEMPLATES_FILE
+};
 
 if (!IS_VERCEL) {
   const server = http.createServer(requestHandler);

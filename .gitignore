@@ -48,3 +48,5 @@ desktop.ini
 
 # Logs
 *.log
+# Generated trend template cache (rebuilt from the live trend pages)
+storyboard/trend-templates.json
