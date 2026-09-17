@@ -912,11 +912,15 @@ async function generateFlashloopScript(effectName, tagline, userIdea, sceneDurat
 // Scenes are sized to the RENDER engine: Make Video renders each scene with
 // omni-flash (~8s clips) by default, but the user can pick another per-scene
 // length (5s/10s/15s). Total stays on target: short → ~64s, long → ~120s.
-const perScene = [5, 8, 10, 15, 30].includes(Number(sceneLength)) ? Number(sceneLength) : 8;
+let perScene = [5, 8, 10, 15, 30].includes(Number(sceneLength)) ? Number(sceneLength) : 8;
 const durMode = Number(sceneDuration) || 15;
-// Total-length modes: 5 = a single 30s clip (one prompt), 15 = ~64s, 30 = ~120s.
+// Total-length modes: 5 = a single 30s prompt, 15 = ~64s, 30 = ~120s.
+// The 30s mode ALWAYS yields one scene at 30s, whatever Scene Length is set —
+// the user picked it precisely to get a single ready-to-use prompt.
+if (durMode <= 5) perScene = 30;
 const targetTotal = durMode >= 30 ? 120 : (durMode <= 5 ? 30 : 64);
 const sceneCount = Math.max(durMode <= 5 ? 1 : 2, Math.round(targetTotal / perScene));
+logLine(`flashloop script: mode ${durMode} -> ${sceneCount} scene(s) x ${perScene}s (${sceneCount * perScene}s total)`);
 const totalSec = perScene * sceneCount;
   const cleanRefs = cleanFlashloopRefs(references);
   const refBlock = formatFlashloopRefs(cleanRefs);
@@ -1035,7 +1039,7 @@ Mode: ${mode === 'style' ? 'VISUAL STYLE — apply this look to a subject.' : 'V
       : 'Script LLM returned no usable scenes');
   }
 
-  return { title: parsed.title || effectName, sceneDuration: perScene, sceneCount: scenes.length, scenes };
+  return { title: parsed.title || effectName, sceneDuration: perScene, sceneLength: perScene, sceneCount: scenes.length, scenes };
 }
 
 // TikWM direct trending feed (free, no login). Returns real trending TikTok videos.
