@@ -125,8 +125,9 @@
         <select id="duration">
           <option value="15" selected>~1 min — 8 scenes</option>
           <option value="30">~2 min — 15 scenes</option>
+          <option value="5">30s — 1 prompt (single clip)</option>
         </select>
-        <div class="hint">Total video length. Scene count adapts to the per-scene timeframe below.</div>
+        <div class="hint">Total video length. Scene count adapts to the per-scene timeframe below (30s = one single prompt).</div>
       </div>
       <div class="field">
         <label for="sceneLength">Scene Length</label>
@@ -154,7 +155,6 @@
           <option value="logfare:auto" selected>Logfare Auto (recommended)</option>
           <option value="logfare:gemma-4-26b">Gemma 4 26B — Logfare</option>
           <option value="logfare:glm-5.3">GLM 5.3 — Logfare (needs opt-in)</option>
-          <option value="logfare:kimi-k3">Kimi K3 — Logfare (needs opt-in)</option>
           <option value="logfare:kimi-k3:fast">Kimi K3 Fast — Logfare (needs opt-in)</option>
           <option value="logfare:deepseek-v4-flash-0731">DeepSeek V4 Flash — Logfare (needs opt-in)</option>
           <option value="logfare:deepseek-v4-pro-0813">DeepSeek V4 Pro — Logfare (needs opt-in)</option>
@@ -215,7 +215,11 @@
       <div class="field" style="margin-bottom:14px">
         <label for="i2iModel">i2i Model</label>
         <select id="i2iModel">
-          <option value="seedream-5" selected>Seedream 5 (recommended)</option>
+          <option value="aqua:agnes-image" selected>Agnes Image — AquaDevs (fast)</option>
+          <option value="aqua:nanobanana-pro">NanoBanana Pro — AquaDevs</option>
+          <option value="aqua:nanobanana-2">NanoBanana 2 — AquaDevs</option>
+          <option value="aqua:gptimage-2">GPT Image 2 — AquaDevs</option>
+          <option value="seedream-5">Seedream 5 (PaxSenix)</option>
           <option value="seedream-4">Seedream 4</option>
           <option value="seedream-4.5">Seedream 4.5</option>
           <option value="grok-imagine-2">Grok Imagine 2</option>
@@ -338,6 +342,24 @@ function renderRefs(){
 renderRefs();
 
 function getRefs(){ return references.filter(r => r.name.trim()).map(r => ({ name: r.name.trim().replace(/^@/,''), description: r.description.trim() })); }
+
+// 30s mode means ONE 30s prompt: lock Scene Length to 30s so the two dropdowns
+// can never disagree (a mismatch is what returned 2 scenes before).
+function syncSceneLength() {
+  const d = $('duration'), sl = $('sceneLength');
+  if (!d || !sl) return;
+  const single = d.value === '5';
+  if (single) sl.value = '30';
+  sl.disabled = single;
+  const hint = sl.parentElement && sl.parentElement.querySelector('.hint');
+  if (hint) {
+    hint.textContent = single
+      ? 'Locked to 30s — the 30s option always produces one single 30-second prompt.'
+      : "Each scene's video prompt is timed exactly to this. 8s matches omni-flash clips; pick what your render engine needs.";
+  }
+}
+$('duration').addEventListener('change', syncSceneLength);
+syncSceneLength();
 
 $('btnGenerate').onclick = async () => {
   const idea = $('idea').value.trim();
@@ -505,9 +527,9 @@ $('btnGenerateImage').onclick = async () => {
     });
     const j = await res.json().catch(() => ({ error: 'Invalid response from server' }));
     if (!res.ok || j.error) throw new Error(j.error || 'Failed to start i2i generation');
-    if (!j.taskUrl) throw new Error('No task URL returned from server');
-    // Poll for the result
-    const imageUrl = await pollTask(j.taskUrl);
+    if (!j.imageUrl && !j.taskUrl) throw new Error('No image URL returned from server');
+    // AquaDevs returns the image URL directly; PaxSenix returns a task to poll.
+    const imageUrl = j.imageUrl ? j.imageUrl : await pollTask(j.taskUrl);
     if (!imageUrl) throw new Error('Image generation timed out or failed');
     $('i2iImage').src = imageUrl;
     $('i2iDownload').href = imageUrl;
