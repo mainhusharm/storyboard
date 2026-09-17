@@ -5506,6 +5506,7 @@ RULES:
       try {
         const body = await readBody(req);
         const { prompt = '', refImageUrl = '', ratio = '9:16', model = 'seedream-5', trendName = '', tagline = '', slug = '', source = '' } = body || {};
+      let aquaFailureNote = '';
         if (!prompt) return sendJson(res, 400, { error: 'prompt required' });
         // Credit gate: one first-frame image render.
         if (!(await requireCredits(req, res, CREDIT_COSTS.flashloopI2I, 'generate image'))) return;
@@ -5549,6 +5550,7 @@ RULES:
             // Cloudflare can still challenge datacenter IPs no matter the headers.
             // Don't dead-end the user: fall through to the PaxSenix image path.
             logLine('aqua image failed: ' + e.message + ' — falling back to PaxSenix');
+            aquaFailureNote = e.message;
             selectedModel = 'nano-banana-2';
           }
         }
@@ -5561,7 +5563,7 @@ RULES:
           const q = `${imageEndpoint(selectedModel)}?prompt=${encodeURIComponent(sanitized)}&model=${encodeURIComponent(selectedModel)}&ratio=${encodeURIComponent(String(ratio))}`;
           logLine(`flashloop image: text-to-image ${selectedModel} (no trend reference)`);
           const taskUrl = await submitTask(q);
-          if (!taskUrl) return sendJson(res, 500, { error: `Failed to submit image task with ${selectedModel} after retries` });
+          if (!taskUrl) return sendJson(res, 500, { error: (aquaFailureNote ? `Aqua image failed (${aquaFailureNote}) and PaxSenix fallback failed too. ` : '') + `Failed to submit image task with ${selectedModel} after retries` });
           return sendJson(res, 200, { ok: true, taskUrl, model: selectedModel, mode: 't2i' });
         }
 
@@ -5642,7 +5644,7 @@ RULES:
           await new Promise(r => setTimeout(r, 3000 * attempt));
         }
 
-        if (!taskUrl) return sendJson(res, 500, { error: `Failed to submit i2i task with ${selectedModel} after 5 attempts` });
+        if (!taskUrl) return sendJson(res, 500, { error: (aquaFailureNote ? `Aqua image failed (${aquaFailureNote}) and PaxSenix fallback failed too. ` : '') + `Failed to submit i2i task with ${selectedModel} after 5 attempts` });
         return sendJson(res, 200, { ok: true, taskUrl, model: selectedModel, mode: 'i2i' });
       } catch (e) { logLine('flashloop i2i: ' + e.message); return sendJson(res, 500, { error: e.message }); }
     }
