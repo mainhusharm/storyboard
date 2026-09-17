@@ -1152,6 +1152,10 @@ function isFlashloopPromptModel(m) {
   return bare === 'auto' || LOGFARE_MODELS.includes(bare);
 }
 const IMAGE_MODELS = ['nano-banana-pro', 'nano-banana-2', 'nano-banana-2-lite', 'seedream-5', 'seedream-4', 'seedream-4.5', 'grok-imagine-2', 'grok-imagine', 'gpt-image-2'];
+// AquaDevs image models (POST https://api.aquadevs.com/v1/images/generations).
+// Selected from the UI as "aqua:<id>" so they never collide with same-named
+// PaxSenix models. These return a direct image URL (no task polling).
+const AQUA_IMAGE_MODELS = ['agnes-image', 'nanobanana-2', 'nanobanana-pro', 'gptimage-2'];
 // Grok Imagine is xAI's image model on PaxSenix: GET /ai-image/grok-imagine
 // (text-to-image, params: prompt + ratio) and POST /ai-img2img/grok-imagine
 // (image-to-image, body: prompt/model/ratio/image_urls — same shape as seedream,
@@ -1487,6 +1491,92 @@ async function paxFetch(url, opts = {}, timeoutMs = 120000) {
     const res = await fetch(url, { ...opts, signal: ctrl.signal, headers: { Authorization: `Bearer ${API_KEY}`, ...(opts.headers || {}) } });
     return res;
   } finally { clearTimeout(t); }
+}
+
+// AquaDevs text-to-image / image-edit. Direct models answer with an image URL
+// (no task_url to poll). Ratios differ from PaxSenix: square | portrait | landscape.
+function aquaRatio(ratio) {
+  const r = String(ratio || '').trim();
+  if (r === '1:1' || r === 'square') return 'square';
+  if (r === '9:16' || r === 'portrait') return 'portrait';
+  if (r === '16:9' || r === '4:3' || r === 'landscape') return 'landscape';
+  return 'portrait';
+}
+function isAquaImageModel(model) { return /^aqua:/.test(String(model || '')); }
+// Poll an AquaDevs image task until it produces a URL (the edit/i2i path returns
+// a task_url instead of a direct image). Tolerant of the exact response shape.
+function aquaTaskUrl(t) { return String(t || '').trim(); }
+function aquaUrlFrom(j) {
+  if (!j || typeof j !== 'object') return '';
+  // AquaDevs wraps the finished image in `result` (e.g. {status:'completed', result:{url}}).
+  for (const k of ['result', 'response', 'output', 'data', 'image']) {
+    const v = j[k];
+    if (v && typeof v === 'object' && !Array.isArray(v)) { const n = aquaUrlFrom(v); if (n) return n; }
+  }
+  if (typeof j.url === 'string' && /^https?:/.test(j.url)) return j.url;
+  if (Array.isArray(j.urls) && typeof j.urls[0] === 'string') return j.urls[0];
+  if (j.image && typeof j.image === 'string' && /^https?:/.test(j.image)) return j.image;
+  if (j.output && typeof j.output === 'string' && /^https?:/.test(j.output)) return j.output;
+  if (Array.isArray(j.data) && j.data[0]) {
+    const d = j.data[0];
+    if (typeof d === 'string' && /^https?:/.test(d)) return d;
+    if (d && typeof d.url === 'string') return d.url;
+    if (d && typeof d.b64_json === 'string' && d.b64_json) return 'data:image/png;base64,' + d.b64_json;
+  }
+  return '';
+}
+async function aquaPollImage(taskUrl, maxMs = 170000) {
+  const deadline = Date.now() + maxMs;
+  let last = '';
+  while (Date.now() < deadline) {
+    try {
+      const r = await fetch(taskUrl, { headers: { Authorization: 'Bearer ' + AQUA_API_KEY }, signal: AbortSignal.timeout(45000) });
+      const j = await r.json().catch(() => ({}));
+      const url = aquaUrlFrom(j);
+      if (url) return url;
+      last = String((j && (j.status || j.state || j.message)) || r.status);
+      if (/fail|error|cancel/i.test(last)) throw new Error('aqua task failed: ' + JSON.stringify(j).slice(0, 180));
+    } catch (e) {
+      if (/aqua task failed/.test(e.message)) throw e;
+      last = e.message;
+    }
+    await new Promise(r => setTimeout(r, 4000));
+  }
+  throw new Error('aqua task still ' + (last || 'pending') + ' after ' + Math.round(maxMs / 1000) + 's');
+}
+
+async function generateAquaImage(model, prompt, ratio = '9:16', imageUrl = '') {
+  const id = String(model).replace(/^aqua:/, '');
+  if (!AQUA_IMAGE_MODELS.includes(id)) throw new Error('unknown Aqua image model: ' + id);
+  if (!AQUA_API_KEY) throw new Error('no AquaDevs key (env AQUA_API_KEY or pipeline/aqua_apikey.txt)');
+  const body = { model: id, prompt: String(prompt || ''), ratio: aquaRatio(ratio) };
+  if (imageUrl) body.image = imageUrl;
+  let lastErr = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const res = await fetch(`${AQUA_API}/v1/images/generations`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer ' + AQUA_API_KEY, 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(240000)
+      });
+      const text = await res.text();
+      let j = null; try { j = JSON.parse(text); } catch { j = null; }
+      const directUrl = res.ok ? aquaUrlFrom(j) : '';
+      if (directUrl) { logLine(`aqua image: ${id} done in ${(j && j.latency) || '?'}s`); return directUrl; }
+      // Edit/i2i (and some models) answer with a task to poll instead.
+      const taskUrl = aquaTaskUrl(j && (j.task_url || j.taskUrl || (j.task_id ? 'https://api.aquadevs.com/v1/images/tasks/' + j.task_id : '')));
+      if (res.ok && taskUrl) {
+        logLine(`aqua image: ${id} queued (${(j && j.status) || 'pending'}) - polling`);
+        return await aquaPollImage(taskUrl);
+      }
+      // A task-style response (task_id) is not used by these models — keep it clear.
+      lastErr = new Error(j ? JSON.stringify(j).slice(0, 200) : `HTTP ${res.status} ${text.slice(0, 120)}`);
+      logLine(`aqua image ${id} attempt ${attempt}: ${lastErr.message}`);
+    } catch (e) { lastErr = e; logLine(`aqua image ${id} attempt ${attempt}: ${e.message}`); }
+    await new Promise(r => setTimeout(r, 3000 * attempt));
+  }
+  throw lastErr || new Error('aqua image failed');
 }
 
 async function submitTask(pathAndQuery, logFn = logLine) {
@@ -5383,8 +5473,46 @@ RULES:
         // Credit gate: one first-frame image render.
         if (!(await requireCredits(req, res, CREDIT_COSTS.flashloopI2I, 'generate image'))) return;
 
-        // Respect the selected image model; fall back to seedream-5 if invalid
-        const selectedModel = (model && IMAGE_MODELS.includes(model)) ? model : 'seedream-5';
+        // Respect the selected image model: PaxSenix ids or "aqua:<id>".
+        const selectedModel = (model && (IMAGE_MODELS.includes(model) || isAquaImageModel(model))) ? model : 'seedream-5';
+
+        // ---- AquaDevs provider (PaxSenix image models are unreliable/down) ----
+        // Direct models answer with the image URL, so the client skips polling.
+        if (isAquaImageModel(selectedModel)) {
+          try {
+            let ref = '';
+            if (refImageUrl) {
+              try {
+                const ir = await fetch(refImageUrl, { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(30000) });
+                if (ir.ok) {
+                  const buf = Buffer.from(await ir.arrayBuffer());
+                  let ext = 'jpg', mime = 'image/jpeg';
+                  if (buf[0] === 0x89 && buf[1] === 0x50) { ext = 'png'; mime = 'image/png'; }
+                  else if (buf[0] === 0x52 && buf[1] === 0x49) { ext = 'webp'; mime = 'image/webp'; }
+                  const fd2 = new FormData();
+                  fd2.append('files[]', new Blob([buf], { type: mime }), 'ref.' + ext);
+                  const up = await fetch('https://uguu.se/upload.php', { method: 'POST', body: fd2, signal: AbortSignal.timeout(30000) });
+                  const uj = await up.json().catch(() => ({}));
+                  if (uj && uj.success && uj.files && uj.files[0] && uj.files[0].url) ref = uj.files[0].url;
+                }
+              } catch (e) { logLine('aqua image: ref re-host failed (' + e.message + ') - using prompt only'); }
+            }
+            let stylePrefix = '';
+            if (trendName) {
+              const tm = resolveTrendMode(source, slug, trendName, tagline);
+              stylePrefix = tm === 'style'
+                ? 'MATCH THE REFERENCE IMAGE STYLE EXACTLY. The reference is from the "' + trendName + '" style' + (tagline ? ' - ' + tagline : '') + '. Replicate its colour palette, lighting, texture and rendering technique with the subject described below. '
+                : 'FAITHFULLY RECREATE THE "' + trendName + '" TREND. The reference shows this trend' + (tagline ? ' - ' + tagline : '') + '. Keep the same concept, subject type and look so the result is instantly recognisable as "' + trendName + '", while following the scene description below. ';
+            }
+            const p = sanitizePrompt(stylePrefix + String(prompt));
+            logLine('aqua image: ' + selectedModel + (ref ? ' i2i' : ' t2i') + ' @ ' + aquaRatio(ratio));
+            const imageUrl = await generateAquaImage(selectedModel, p, ratio, ref);
+            return sendJson(res, 200, { ok: true, imageUrl, model: selectedModel, mode: ref ? 'i2i' : 't2i', provider: 'aqua' });
+          } catch (e) {
+            logLine('aqua image failed: ' + e.message);
+            return sendJson(res, 500, { error: 'Aqua image failed: ' + e.message });
+          }
+        }
 
         // No reference image? Fall back to plain text-to-image so the Generate
         // Image button ALWAYS works — the scene's first-frame image prompt is

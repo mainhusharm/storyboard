@@ -214,7 +214,11 @@
       <div class="field" style="margin-bottom:14px">
         <label for="i2iModel">i2i Model</label>
         <select id="i2iModel">
-          <option value="seedream-5" selected>Seedream 5 (recommended)</option>
+          <option value="aqua:agnes-image" selected>Agnes Image — AquaDevs (fast)</option>
+          <option value="aqua:nanobanana-pro">NanoBanana Pro — AquaDevs</option>
+          <option value="aqua:nanobanana-2">NanoBanana 2 — AquaDevs</option>
+          <option value="aqua:gptimage-2">GPT Image 2 — AquaDevs</option>
+          <option value="seedream-5">Seedream 5 (PaxSenix)</option>
           <option value="seedream-4">Seedream 4</option>
           <option value="seedream-4.5">Seedream 4.5</option>
           <option value="grok-imagine-2">Grok Imagine 2</option>
@@ -504,9 +508,9 @@ $('btnGenerateImage').onclick = async () => {
     });
     const j = await res.json().catch(() => ({ error: 'Invalid response from server' }));
     if (!res.ok || j.error) throw new Error(j.error || 'Failed to start i2i generation');
-    if (!j.taskUrl) throw new Error('No task URL returned from server');
-    // Poll for the result
-    const imageUrl = await pollTask(j.taskUrl);
+    if (!j.imageUrl && !j.taskUrl) throw new Error('No image URL returned from server');
+    // AquaDevs returns the image URL directly; PaxSenix returns a task to poll.
+    const imageUrl = j.imageUrl ? j.imageUrl : await pollTask(j.taskUrl);
     if (!imageUrl) throw new Error('Image generation timed out or failed');
     $('i2iImage').src = imageUrl;
     $('i2iDownload').href = imageUrl;
