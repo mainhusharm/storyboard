@@ -913,8 +913,10 @@ async function generateFlashloopScript(effectName, tagline, userIdea, sceneDurat
 // omni-flash (~8s clips) by default, but the user can pick another per-scene
 // length (5s/10s/15s). Total stays on target: short → ~64s, long → ~120s.
 const perScene = [5, 8, 10, 15, 30].includes(Number(sceneLength)) ? Number(sceneLength) : 8;
-const targetTotal = Number(sceneDuration) >= 30 ? 120 : 64;
-const sceneCount = Math.max(2, Math.round(targetTotal / perScene));
+const durMode = Number(sceneDuration) || 15;
+// Total-length modes: 5 = a single 30s clip (one prompt), 15 = ~64s, 30 = ~120s.
+const targetTotal = durMode >= 30 ? 120 : (durMode <= 5 ? 30 : 64);
+const sceneCount = Math.max(durMode <= 5 ? 1 : 2, Math.round(targetTotal / perScene));
 const totalSec = perScene * sceneCount;
   const cleanRefs = cleanFlashloopRefs(references);
   const refBlock = formatFlashloopRefs(cleanRefs);
