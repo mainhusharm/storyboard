@@ -917,9 +917,12 @@ const durMode = Number(sceneDuration) || 15;
 // Total-length modes: 5 = a single 30s prompt, 15 = ~64s, 30 = ~120s.
 // The 30s mode ALWAYS yields one scene at 30s, whatever Scene Length is set —
 // the user picked it precisely to get a single ready-to-use prompt.
+// A 30s scene length (or the 30s total option) means the user wants ONE prompt,
+// not a multi-scene script - that is the whole point of a 30-second clip.
+const singlePrompt = durMode <= 5 || perScene >= 30;
 if (durMode <= 5) perScene = 30;
-const targetTotal = durMode >= 30 ? 120 : (durMode <= 5 ? 30 : 64);
-const sceneCount = Math.max(durMode <= 5 ? 1 : 2, Math.round(targetTotal / perScene));
+const targetTotal = singlePrompt ? 30 : (durMode >= 30 ? 120 : 64);
+const sceneCount = singlePrompt ? 1 : Math.max(2, Math.round(targetTotal / perScene));
 logLine(`flashloop script: mode ${durMode} -> ${sceneCount} scene(s) x ${perScene}s (${sceneCount * perScene}s total)`);
 const totalSec = perScene * sceneCount;
   const cleanRefs = cleanFlashloopRefs(references);

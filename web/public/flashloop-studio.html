@@ -360,6 +360,14 @@ function syncSceneLength() {
 }
 $('duration').addEventListener('change', syncSceneLength);
 syncSceneLength();
+// Picking a 30s scene length means 'one 30s prompt' - switch the total to 30s so
+// the two dropdowns stay consistent and the script comes back as a single prompt.
+$('sceneLength').addEventListener('change', () => {
+  if ($('sceneLength').value === '30' && $('duration').value !== '5') {
+    $('duration').value = '5';
+    syncSceneLength();
+  }
+});
 
 $('btnGenerate').onclick = async () => {
   const idea = $('idea').value.trim();
