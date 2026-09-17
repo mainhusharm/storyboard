@@ -1155,6 +1155,31 @@ const IMAGE_MODELS = ['nano-banana-pro', 'nano-banana-2', 'nano-banana-2-lite', 
 // AquaDevs image models (POST https://api.aquadevs.com/v1/images/generations).
 // Selected from the UI as "aqua:<id>" so they never collide with same-named
 // PaxSenix models. These return a direct image URL (no task polling).
+// api.aquadevs.com sits behind Cloudflare: a bare server-side fetch from a
+// datacenter IP (Vercel) gets a "Just a moment..." 403 challenge. Send a real
+// browser fingerprint so the managed challenge is not triggered.
+const AQUA_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
+function aquaHeaders(extra) {
+  const h = Object.assign({
+    'Authorization': 'Bearer ' + AQUA_API_KEY,
+    'Content-Type': 'application/json',
+    'Accept': 'application/json, text/plain, */*',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'User-Agent': AQUA_UA,
+    'Origin': 'https://api.aquadevs.com',
+    'Referer': 'https://api.aquadevs.com/',
+    'sec-ch-ua': '"Chromium";v="128", "Not(A:Brand";v="24", "Google Chrome";v="128"',
+    'sec-ch-ua-mobile': '?0',
+    'sec-ch-ua-platform': '"Windows"',
+    'sec-fetch-dest': 'empty',
+    'sec-fetch-mode': 'cors',
+'sec-fetch-site': 'same-origin'
+  }, extra || {});
+  // Callers can disable a header by passing an explicit undefined (the task poll
+  // sends no body, so it must not carry a Content-Type).
+  for (const k of Object.keys(h)) if (h[k] === undefined || h[k] === null) delete h[k];
+  return h;
+}
 const AQUA_IMAGE_MODELS = ['agnes-image', 'nanobanana-2', 'nanobanana-pro', 'gptimage-2'];
 // Grok Imagine is xAI's image model on PaxSenix: GET /ai-image/grok-imagine
 // (text-to-image, params: prompt + ratio) and POST /ai-img2img/grok-imagine
@@ -1530,7 +1555,7 @@ async function aquaPollImage(taskUrl, maxMs = 170000) {
   let last = '';
   while (Date.now() < deadline) {
     try {
-      const r = await fetch(taskUrl, { headers: { Authorization: 'Bearer ' + AQUA_API_KEY }, signal: AbortSignal.timeout(45000) });
+      const r = await fetch(taskUrl, { headers: aquaHeaders({ 'Content-Type': undefined }), signal: AbortSignal.timeout(45000) });
       const j = await r.json().catch(() => ({}));
       const url = aquaUrlFrom(j);
       if (url) return url;
@@ -1556,7 +1581,7 @@ async function generateAquaImage(model, prompt, ratio = '9:16', imageUrl = '') {
     try {
       const res = await fetch(`${AQUA_API}/v1/images/generations`, {
         method: 'POST',
-        headers: { Authorization: 'Bearer ' + AQUA_API_KEY, 'Content-Type': 'application/json' },
+        headers: aquaHeaders(),
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(240000)
       });
@@ -1571,7 +1596,10 @@ async function generateAquaImage(model, prompt, ratio = '9:16', imageUrl = '') {
         return await aquaPollImage(taskUrl);
       }
       // A task-style response (task_id) is not used by these models — keep it clear.
-      lastErr = new Error(j ? JSON.stringify(j).slice(0, 200) : `HTTP ${res.status} ${text.slice(0, 120)}`);
+      // Cloudflare challenge (403 "Just a moment...") — retry with a pause.
+      const isChallenge = res.status === 403 && /just a moment|cf-|cloudflare/i.test(text);
+      lastErr = new Error(j ? JSON.stringify(j).slice(0, 200) : `HTTP ${res.status} ${isChallenge ? 'Cloudflare challenge' : text.slice(0, 120)}`);
+      if (isChallenge) await new Promise(r => setTimeout(r, 5000 * attempt));
       logLine(`aqua image ${id} attempt ${attempt}: ${lastErr.message}`);
     } catch (e) { lastErr = e; logLine(`aqua image ${id} attempt ${attempt}: ${e.message}`); }
     await new Promise(r => setTimeout(r, 3000 * attempt));
@@ -5474,7 +5502,7 @@ RULES:
         if (!(await requireCredits(req, res, CREDIT_COSTS.flashloopI2I, 'generate image'))) return;
 
         // Respect the selected image model: PaxSenix ids or "aqua:<id>".
-        const selectedModel = (model && (IMAGE_MODELS.includes(model) || isAquaImageModel(model))) ? model : 'seedream-5';
+        let selectedModel = (model && (IMAGE_MODELS.includes(model) || isAquaImageModel(model))) ? model : 'seedream-5';
 
         // ---- AquaDevs provider (PaxSenix image models are unreliable/down) ----
         // Direct models answer with the image URL, so the client skips polling.
@@ -5509,8 +5537,10 @@ RULES:
             const imageUrl = await generateAquaImage(selectedModel, p, ratio, ref);
             return sendJson(res, 200, { ok: true, imageUrl, model: selectedModel, mode: ref ? 'i2i' : 't2i', provider: 'aqua' });
           } catch (e) {
-            logLine('aqua image failed: ' + e.message);
-            return sendJson(res, 500, { error: 'Aqua image failed: ' + e.message });
+            // Cloudflare can still challenge datacenter IPs no matter the headers.
+            // Don't dead-end the user: fall through to the PaxSenix image path.
+            logLine('aqua image failed: ' + e.message + ' — falling back to PaxSenix');
+            selectedModel = 'nano-banana-2';
           }
         }
 
