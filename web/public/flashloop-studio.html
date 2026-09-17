@@ -343,6 +343,24 @@ renderRefs();
 
 function getRefs(){ return references.filter(r => r.name.trim()).map(r => ({ name: r.name.trim().replace(/^@/,''), description: r.description.trim() })); }
 
+// 30s mode means ONE 30s prompt: lock Scene Length to 30s so the two dropdowns
+// can never disagree (a mismatch is what returned 2 scenes before).
+function syncSceneLength() {
+  const d = $('duration'), sl = $('sceneLength');
+  if (!d || !sl) return;
+  const single = d.value === '5';
+  if (single) sl.value = '30';
+  sl.disabled = single;
+  const hint = sl.parentElement && sl.parentElement.querySelector('.hint');
+  if (hint) {
+    hint.textContent = single
+      ? 'Locked to 30s — the 30s option always produces one single 30-second prompt.'
+      : "Each scene's video prompt is timed exactly to this. 8s matches omni-flash clips; pick what your render engine needs.";
+  }
+}
+$('duration').addEventListener('change', syncSceneLength);
+syncSceneLength();
+
 $('btnGenerate').onclick = async () => {
   const idea = $('idea').value.trim();
   const sceneDuration = Number($('duration').value);
