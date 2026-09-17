@@ -5544,7 +5544,18 @@ RULES:
             }
             const p = sanitizePrompt(stylePrefix + String(prompt));
             logLine('aqua image: ' + selectedModel + (ref ? ' i2i' : ' t2i') + ' @ ' + aquaRatio(ratio));
-            const imageUrl = await generateAquaImage(selectedModel, p, ratio, ref);
+            // The image-EDIT path (the `image` param) can break upstream while
+            // text-to-image keeps working (AquaDevs origin 502s under load). The
+            // prompt already carries the trend description, so retry as t2i
+            // before falling back to PaxSenix (whose image service is down).
+            let imageUrl;
+            try {
+              imageUrl = await generateAquaImage(selectedModel, p, ratio, ref);
+            } catch (i2iErr) {
+              if (!ref) throw i2iErr;
+              logLine('aqua image: i2i failed (' + i2iErr.message + ') - retrying as text-to-image with the trend description');
+              imageUrl = await generateAquaImage(selectedModel, p, ratio, '');
+            }
             return sendJson(res, 200, { ok: true, imageUrl, model: selectedModel, mode: ref ? 'i2i' : 't2i', provider: 'aqua' });
           } catch (e) {
             // Cloudflare can still challenge datacenter IPs no matter the headers.
