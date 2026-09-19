@@ -108,6 +108,52 @@ Verified endpoints:
 - **Seamless chaining**: `POST /api/videos` (and `/api/run-all`) accept `chainContinuity: true` —
   videos then render sequentially, each anchored to the previous scene's last frame.
 
+## Logfare media (image models + narration TTS)
+
+Logfare's OpenAI-compatible gateway also serves the image models and Deepgram
+Aura-2 TTS that the **image model** dropdowns offer — Logfare is no longer a
+prompt-writing-only backend. Shapes verified live against `logfare.ai/v1`:
+- `POST /images/generations` `{ model, prompt }` → `{ data:[{ b64_json }] }` (JPEG,
+  base64 only — there is **no URL** to fetch).
+- `POST /images/edits` **multipart** (`model`, `prompt`, `image` file) → same shape.
+  This is the Logfare img2img path (character consistency anchors). A JSON body
+  with an image URL is rejected (`Missing 'model' field`).
+- `POST /audio/speech` `{ model:'aura-2-en', input, voice, response_format:'mp3' }`
+  → raw mp3 bytes.
+- **Aspect ratio**: `size` / `ratio` / `aspect_ratio` are IGNORED — most models
+  answer 1024x1024 (`lucid-origin` happens to return 1120x630), so every render is
+  centre-cropped to the requested ratio with ffmpeg (`cropToRatio`) before storage.
+- Models: `flux-2-klein-9b`, `lucid-origin`, `phoenix-1.0` (`LOGFARE_IMAGE_MODELS`,
+  added to `/api/models` → `image`). `/v1/models` also lists `flux-2-klein-4b`,
+  `flux-2-dev`, `flux-1-schnell`, `sdxl-lightning` and `melotts` (unused so far).
+- **No task to poll**: a Logfare render is one blocking POST that returns the
+  finished bytes, so `submitTask`/`submitImg2ImgTask` hand the pipeline an
+  already-finished local file behind the `logfare-local:<path>` marker; `waitTask`
+  returns it as-is and `download()` copies it into place. The Flashloop/SJinn i2i
+  route re-hosts the render to catbox/uguu instead, because the browser `<img>` and
+  the Make Video stage need a public URL.
+- `imageEndpoint()`/`img2ImgEndpoint()` know nothing about these ids — the Logfare
+  branch intercepts before them, so the PaxSenix paths are untouched.
+- Regression test: `node pipeline/test-logfare-models.js` (offline: model lists,
+  `/api/models` payload, crop shapes, engine list; `--live` also renders one image
+  per model and one TTS chunk).
+
+## Flashloop/SJinn character references
+
+The Flashloop studio's **Character References** list (name + description + optional
+photo) is posted to `/api/flashloop/generate-prompt`; the names/descriptions are
+injected into both the img2img and img2video prompts.
+- `POST /api/flashloop/upload-ref` `{ dataUrl }` (png/jpg/webp base64, ≤8MB) stores the
+  photo as `frames/ref_*.png`, re-hosts it to catbox/uguu and returns `{ url, local }`.
+  `refImageBuffer()` reads the local `/frames/...` path straight off disk (or a
+  `logfare-local:` render, or an http URL), so a reference works offline and on a
+  Vercel cold instance; `cleanOutputs()` never archives `ref_*.png`.
+- The first NAMED reference with a photo becomes the i2i anchor for the scene image
+  and for every Make Video scene (`refAnchorUrl()`); with no photo the trend
+  thumbnail anchors the style, exactly as before.
+- The **+ Add @Reference** button had NO click handler (the list only ever rendered
+  its empty state); it now appends a row with a 📷 photo picker.
+
 ## Fresh trends (Tavily)
 
 `tavilySearch()` queries `topic: 'news'` with a 7-day `days` recency window first so trend terms
@@ -116,10 +162,17 @@ search when news returns nothing (niche categories). Results are additionally fi
 `published_date` when present. `tavilyTrendTerms()` queries for "this week" trends and pulls from
 up to 10 results.
 
-## Narration TTS engines (Fish Audio default · MIMO option)
+## Narration TTS engines (Fish Audio default · MIMO · Logfare Aura-2)
 
 Storyboard narration picks an engine from the **Narration engine** dropdown
-(`/api/models` → `narrationEngines`): `fish` (default) | `mimo`.
+(`/api/models` → `narrationEngines`): `fish` (default) | `mimo` | `logfare`.
+Every chunk runs through an **engine chain**: the selected engine first, then the
+other engines as automatic fallbacks, so narration never breaks.
+- `logfare` — **Deepgram Aura-2** (`aura-2-en`) through Logfare
+  (`POST https://logfare.ai/v1/audio/speech` with `{ model, input, voice,
+  response_format:'mp3' }` → raw mp3 bytes, no polling). Voices: female `luna`,
+  male `orion`. **English only** — Aura-2-en is an English model, so non-English
+  narration skips this engine and uses Fish Audio / MIMO.
 - `fish` — **Fish Audio** free TTS: `POST https://api.fish.audio/v1/tts` with the model passed
   as a custom `model: s2.1-pro-free` HTTP header and the voice chosen via `reference_id`:
   female = `9a9cf47702da476aa4629e2506d4a857` ("Hannah"), male = `bf322df2096a46f18c579d0baa36f41d`
@@ -138,7 +191,7 @@ Storyboard narration picks an engine from the **Narration engine** dropdown
   - Key: env `FISH_API_KEY` or `pipeline/fish_apikey.txt` (gitignored).
 - `mimo` — AquaDevs MIMO via `POST /v1/audio/speech` on `api.aquadevs.com` (see below).
 - When the selected engine fails (missing key / non-200 / bad content-type), each chunk
-  automatically falls back to the other engine (`mimo` ↔ `fish`), so narration never breaks.
+  walks the rest of the engine chain (`fish` → `mimo` → `logfare`), so narration never breaks.
 
 ### ffmpeg on Vercel
 

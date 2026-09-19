@@ -123,11 +123,11 @@
       <div class="field">
         <label for="duration">Video Length</label>
         <select id="duration">
-          <option value="15" selected>~1 min — 8 scenes</option>
-          <option value="30">~2 min — 15 scenes</option>
+          <option value="15" selected>~1 min (8 scenes at 8s each)</option>
+          <option value="30">~2 min (15 scenes at 8s each)</option>
           <option value="5">30s — 1 prompt (single clip)</option>
         </select>
-        <div class="hint">Total video length. Scene count adapts to the per-scene timeframe below (30s = one single prompt).</div>
+        <div class="hint">Total video length — this sets the SCENE COUNT (total \u00f7 per-scene length below). Only the 30s option returns one single prompt.</div>
       </div>
       <div class="field">
         <label for="sceneLength">Scene Length</label>
@@ -184,7 +184,7 @@
       <label>Character References</label>
       <div id="references"></div>
       <button type="button" id="btnAddRef" style="width:auto;padding:8px 14px;font-size:12px">+ Add @Reference</button>
-      <div class="hint">Add characters like @Kairo and @Silas. Their descriptions are injected into both img2img and img2video prompts.</div>
+      <div class="hint">Add characters like @Kairo and @Silas. Their descriptions are injected into both img2img and img2video prompts. Upload a photo (📷) to lock the face — the first named reference with a photo becomes the img2img anchor instead of the trend thumbnail.</div>
     </div>
     <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center">
       <button id="btnGenerate" class="generate-btn">✨ Generate Full Script</button>
@@ -219,6 +219,9 @@
           <option value="aqua:nanobanana-pro">NanoBanana Pro — AquaDevs</option>
           <option value="aqua:nanobanana-2">NanoBanana 2 — AquaDevs</option>
           <option value="aqua:gptimage-2">GPT Image 2 — AquaDevs</option>
+          <option value="flux-2-klein-9b">FLUX.2 Klein 9B — Logfare</option>
+          <option value="lucid-origin">Leonardo Lucid Origin — Logfare</option>
+          <option value="phoenix-1.0">Leonardo Phoenix — Logfare</option>
           <option value="seedream-5">Seedream 5 (PaxSenix)</option>
           <option value="seedream-4">Seedream 4</option>
           <option value="seedream-4.5">Seedream 4.5</option>
@@ -229,7 +232,7 @@
             <option value="nano-banana-2-lite">Nano Banana 2 Lite</option>
           <option value="gpt-image-2">GPT Image 2</option>
         </select>
-        <div class="hint">Choose which PaxSenix img2img model to use. Falls back to Seedream 5 if the selected model fails.</div>
+        <div class="hint">PaxSenix, AquaDevs or Logfare image model. Logfare renders square and is centre-cropped to the ratio above; if the selected model fails the server falls back to PaxSenix.</div>
       </div>
       <div id="i2iLoading" style="display:none;align-items:center;gap:10px;color:var(--dim);font-size:13px;margin:12px 0"><div class="spinner"></div> Generating image via PaxSenix… This may take 1-3 minutes.</div>
       <div id="i2iError" style="display:none;background:rgba(248,113,113,.12);border:1px solid rgba(248,113,113,.3);color:var(--red);padding:12px 14px;border-radius:10px;font-size:13px;margin:12px 0"></div>
@@ -318,18 +321,31 @@ if (trendThumbnail) {
 let scenes = [];
 let scriptTitle = '';
 let sceneLen = 8; // seconds per scene (from the dropdown / server response)
+// Each reference is { name, description, imageUrl }. The photo is optional: with
+// one, the character becomes the i2i anchor for scene images (so the face stays
+// the same); without one only the description text is injected into the prompts.
 let references = [];
+let uploadingRef = -1; // index currently uploading a photo
 
 function renderRefs(){
   const container = $('references');
   if (!references.length) { container.innerHTML = '<div style="color:var(--faint);font-size:12px;padding:6px 0">No references added.</div>'; return; }
   container.innerHTML = references.map((r,i)=>`
     <div style="display:flex;gap:8px;align-items:flex-start;margin-bottom:8px" class="ref-row">
+      <div class="ref-photo" style="flex:none;width:66px">
+        ${r.imageUrl
+          ? `<img src="${escapeHtml(r.imageUrl)}" alt="reference" style="width:66px;height:66px;object-fit:cover;border-radius:8px;border:1px solid var(--line2);display:block">
+             <button type="button" data-clearimg="${i}" style="width:100%;margin-top:4px;padding:2px 0;justify-content:center;font-size:10px;background:transparent;border-color:var(--line2);color:var(--faint)">clear</button>`
+          : `<label title="Upload a reference photo" style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;width:66px;height:66px;border:1px dashed var(--line2);border-radius:8px;cursor:pointer;font-size:10px;color:var(--faint);text-align:center;line-height:1.25">
+               ${uploadingRef === i ? '<div class="spinner" style="width:14px;height:14px"></div>' : '📷<br>photo'}
+               <input type="file" accept="image/*" data-upload="${i}" style="display:none">
+             </label>`}
+      </div>
       <input type="text" data-idx="${i}" data-field="name" value="${escapeHtml(r.name)}" placeholder="Kairo" style="width:140px;flex:none;text-transform:lowercase">
-      <textarea data-idx="${i}" data-field="description" placeholder="calm swordsman, emerald-glowing blade, dark cloak..." style="min-height:50px;resize:vertical">${escapeHtml(r.description)}</textarea>
+      <textarea data-idx="${i}" data-field="description" placeholder="calm swordsman, emerald-glowing blade, dark cloak..." style="min-height:66px;resize:vertical">${escapeHtml(r.description)}</textarea>
       <button type="button" data-remove="${i}" style="width:auto;padding:8px 10px;background:rgba(248,113,113,.12);border-color:rgba(248,113,113,.3);color:var(--red)">×</button>
     </div>`).join('');
-  container.querySelectorAll('input,textarea').forEach(el=>{
+  container.querySelectorAll('[data-field]').forEach(el=>{
     el.oninput = () => {
       const i = Number(el.dataset.idx);
       references[i][el.dataset.field] = el.value;
@@ -338,36 +354,93 @@ function renderRefs(){
   container.querySelectorAll('button[data-remove]').forEach(btn=>{
     btn.onclick = () => { references.splice(Number(btn.dataset.remove),1); renderRefs(); };
   });
+  container.querySelectorAll('button[data-clearimg]').forEach(btn=>{
+    btn.onclick = () => { references[Number(btn.dataset.clearimg)].imageUrl = ''; renderRefs(); };
+  });
+  container.querySelectorAll('input[data-upload]').forEach(inp=>{
+    inp.onchange = () => { const f = inp.files && inp.files[0]; if (f) uploadRefImage(Number(inp.dataset.upload), f); };
+  });
 }
+
+// Upload a character photo: the server stores it under frames/ and re-hosts it, so
+// the image models get a URL they can actually fetch.
+async function uploadRefImage(i, file){
+  const err = $('error');
+  err.classList.remove('visible');
+  uploadingRef = i;
+  renderRefs();
+  try {
+    if (file.size > 8 * 1024 * 1024) throw new Error('image is larger than 8MB');
+    const dataUrl = await new Promise((resolve, reject) => {
+      const fr = new FileReader();
+      fr.onload = () => resolve(String(fr.result || ''));
+      fr.onerror = () => reject(new Error('could not read that file'));
+      fr.readAsDataURL(file);
+    });
+    const r = await fetch('/api/flashloop/upload-ref', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dataUrl })
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || j.error) throw new Error(j.error || ('HTTP ' + r.status));
+    references[i].imageUrl = j.url || j.local || '';
+    showToast('Reference photo added ✓');
+  } catch (e) {
+    err.textContent = 'Reference photo upload failed: ' + e.message;
+    err.classList.add('visible');
+  }
+  uploadingRef = -1;
+  renderRefs();
+}
+
+// "+ Add @Reference" — this button had NO click handler, so adding a character did
+// nothing at all (the list only ever rendered its empty state).
+$('btnAddRef').onclick = () => {
+  references.push({ name: '', description: '', imageUrl: '' });
+  renderRefs();
+  const inputs = $('references').querySelectorAll('input[data-field="name"]');
+  const last = inputs[inputs.length - 1];
+  if (last) last.focus();
+};
 renderRefs();
 
-function getRefs(){ return references.filter(r => r.name.trim()).map(r => ({ name: r.name.trim().replace(/^@/,''), description: r.description.trim() })); }
+// The first named reference WITH a photo anchors scene images (character
+// consistency); with no photo the trend thumbnail stays the anchor (style match).
+function refAnchorUrl(){
+  const r = references.find(x => x.imageUrl && String(x.name || '').trim());
+  return r ? r.imageUrl : '';
+}
 
-// 30s mode means ONE 30s prompt: lock Scene Length to 30s so the two dropdowns
-// can never disagree (a mismatch is what returned 2 scenes before).
+function getRefs(){ return references.filter(r => r.name.trim()).map(r => ({ name: r.name.trim().replace(/^@/,''), description: r.description.trim(), imageUrl: r.imageUrl || '' })); }
+
+// The TOTAL Video Length dropdown is the authority on the SCENE COUNT.
+// "30s — 1 prompt" is the only mode that yields a single prompt, so there Scene
+// Length is locked to 30s. Leaving that mode RESTORES the user's own scene
+// length: leaving the select stuck on 30s is what made every later ~1 min / ~2 min
+// run come back as one single 30-second prompt.
+let lastSceneLen = '8';   // user's own per-scene length, kept across 30s mode
+let wasSingle = false;    // were we in the 30s-total mode on the previous sync?
 function syncSceneLength() {
   const d = $('duration'), sl = $('sceneLength');
   if (!d || !sl) return;
   const single = d.value === '5';
-  if (single) sl.value = '30';
+  if (single) {
+    if (!wasSingle && sl.value !== '30') lastSceneLen = sl.value;
+    sl.value = '30';
+  } else if (wasSingle && sl.value === '30') {
+    sl.value = lastSceneLen || '8';
+  }
+  wasSingle = single;
   sl.disabled = single;
   const hint = sl.parentElement && sl.parentElement.querySelector('.hint');
   if (hint) {
     hint.textContent = single
       ? 'Locked to 30s — the 30s option always produces one single 30-second prompt.'
-      : "Each scene's video prompt is timed exactly to this. 8s matches omni-flash clips; pick what your render engine needs.";
+      : "Each scene's video prompt is timed exactly to this. The scene count is the total length above \u00f7 this value (e.g. ~2 min \u00f7 30s = 4 scenes).";
   }
 }
 $('duration').addEventListener('change', syncSceneLength);
 syncSceneLength();
-// Picking a 30s scene length means 'one 30s prompt' - switch the total to 30s so
-// the two dropdowns stay consistent and the script comes back as a single prompt.
-$('sceneLength').addEventListener('change', () => {
-  if ($('sceneLength').value === '30' && $('duration').value !== '5') {
-    $('duration').value = '5';
-    syncSceneLength();
-  }
-});
 
 $('btnGenerate').onclick = async () => {
   const idea = $('idea').value.trim();
@@ -382,7 +455,7 @@ $('btnGenerate').onclick = async () => {
     const res = await fetch('/api/flashloop/generate-prompt', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ slug, name, tagline, idea, sceneDuration, sceneLength: Number($('sceneLength').value) || 8, ratio, model: $('model').value, references: getRefs(), trendThumbnail, source })
+      body: JSON.stringify({ slug, name, tagline, idea, sceneDuration, duration: sceneDuration, sceneLength: Number($('sceneLength').value) || 8, ratio, model: $('model').value, references: getRefs(), trendThumbnail, source })
     });
     const rawText = await res.text();
     let j; try { j = JSON.parse(rawText); } catch { j = { error: rawText ? rawText.slice(0, 180) : ('HTTP ' + res.status) }; }
@@ -524,7 +597,7 @@ $('btnGenerateImage').onclick = async () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         prompt: sceneImageText(Number(($('i2iScene') && $('i2iScene').value) || 0)),
-        refImageUrl: trendThumbnail,
+        refImageUrl: refAnchorUrl() || trendThumbnail,
         ratio: $('ratio').value,
         model: $('i2iModel').value,
         trendName: name,
@@ -603,7 +676,7 @@ $('btnMakeVideo').onclick = async () => {
         mvLog(`scene ${i + 1}/${n}: generating first-frame image…`);
         const r = await fetch('/api/flashloop/generate-i2i', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ prompt: sceneImageText(i), refImageUrl: trendThumbnail, ratio, model: $('i2iModel').value, trendName: name, tagline })
+          body: JSON.stringify({ prompt: sceneImageText(i), refImageUrl: refAnchorUrl() || trendThumbnail, ratio, model: $('i2iModel').value, trendName: name, tagline })
         });
         const j = await r.json().catch(() => ({}));
         if (!r.ok || j.error) throw new Error(`scene ${i + 1} image: ${j.error || 'HTTP ' + r.status}`);

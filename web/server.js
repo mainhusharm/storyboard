@@ -37,10 +37,13 @@ if (!IS_VERCEL) { try { AQUA_API_KEY = AQUA_API_KEY || fs.readFileSync(path.join
 // Reads from env FISH_API_KEY first, then pipeline/fish_apikey.txt (gitignored).
 let FISH_API_KEY = process.env.FISH_API_KEY || '';
 if (!IS_VERCEL) { try { FISH_API_KEY = FISH_API_KEY || fs.readFileSync(path.join(ROOT, 'pipeline', 'fish_apikey.txt'), 'utf8').trim(); } catch {} }
-// Logfare (https://logfare.ai/v1) — OpenAI-compatible LLM gateway. ONLY used for
-// flashloop/sjinn script+prompt generation (generateFlashloopScript / generateFlashloopScene
-// / chatWithLogfare). Never used for storyboards, images, videos, TTS, or anything else:
-// Logfare logs all request content, so it must not see project data beyond prompt writing.
+// Logfare (https://logfare.ai/v1) — OpenAI-compatible gateway used for:
+//   1. flashloop/sjinn script+prompt generation (generateFlashloopScript /
+//      generateFlashloopScene) — its original, prompt-writing-only role; and
+//   2. the image models + Deepgram Aura-2 TTS the user explicitly picks in a
+//      model dropdown (see the Logfare media section below).
+// NOTE: Logfare is a third-party gateway that logs request content — nothing is
+// ever sent there unless the user selected a Logfare model or engine.
 let LOGFARE_API_KEY = process.env.LOGFARE_API_KEY || '';
 if (!IS_VERCEL) { try { LOGFARE_API_KEY = LOGFARE_API_KEY || fs.readFileSync(path.join(ROOT, 'pipeline', 'logfare_apikey.txt'), 'utf8').trim(); } catch {} }
 const FISH_API = 'https://api.fish.audio';
@@ -617,6 +620,16 @@ function resolveTrendMode(source, slug, name, tagline) {
   return 'concept';
 }
 
+// Prompt prefix that keeps a trend render faithful: STYLE formats ask for the look
+// on the scene below, CONCEPT trends ask for the recognisable trend itself.
+function trendPromptPrefix(source, slug, trendName, tagline) {
+  if (!trendName) return '';
+  const tm = resolveTrendMode(source, slug, trendName, tagline);
+  return tm === 'style'
+    ? 'MATCH THE REFERENCE IMAGE STYLE EXACTLY. The reference is from the "' + trendName + '" style' + (tagline ? ' - ' + tagline : '') + '. Replicate its colour palette, lighting, texture and rendering technique with the subject described below. '
+    : 'FAITHFULLY RECREATE THE "' + trendName + '" TREND. The reference shows this trend' + (tagline ? ' - ' + tagline : '') + '. Keep the same concept, subject type and look so the result is instantly recognisable as "' + trendName + '", while following the scene description below. ';
+}
+
 // Analyze a trend reference image.
 // - CONCEPT mode: capture WHAT the trend shows (subject, action, setting) so the
 //   prompt can reproduce the idea everyone is copying, plus the visual style.
@@ -906,25 +919,32 @@ ${concept ? concept + ' ' : ''}Scene: ${randomVisualVariation()}. Use the suppli
 
 // Generate a FULL multi-scene script for a Flashloop effect — to the point, every
 // scene opens with a hook, no camera/lighting/mood fluff. One LLM call writes all
-// scenes so the story flows seamlessly. Scene count is FIXED by the per-scene
-// length: 30s → 4 scenes, 15s → 8 scenes (both add up to 2 minutes of footage).
+// scenes so the story flows seamlessly. Scene count comes from the TOTAL length
+// the user picked, divided by the per-scene length (see flashloopScenePlan).
+// Scene plan for a Flashloop/SJinn script. The TOTAL length the user picks is
+// the authority for the scene count; Scene Length only says how many seconds
+// each scene runs. The one and only combination that yields a SINGLE prompt is
+// the explicit 30s total option — a 30s scene length on a 1 min / 2 min total
+// is 2 / 4 scenes (60s / 120s), never one prompt. Tying the single-prompt lock
+// to the scene length made "~2 min" come back as one 30s prompt forever.
+const FLASHLOOP_SCENE_LENGTHS = [5, 8, 10, 15, 30];
+function flashloopScenePlan(sceneDuration, sceneLength) {
+  const rawDur = Number(sceneDuration);
+  const durMode = Number.isFinite(rawDur) && rawDur > 0 ? rawDur : 15; // 5 = 30s, 15 = ~64s, 30 = ~120s
+  let perScene = FLASHLOOP_SCENE_LENGTHS.includes(Number(sceneLength)) ? Number(sceneLength) : 8;
+  const singlePrompt = durMode <= 5;
+  if (singlePrompt) perScene = 30;
+  const targetTotal = singlePrompt ? 30 : (durMode >= 30 ? 120 : 64);
+  const sceneCount = singlePrompt ? 1 : Math.max(2, Math.round(targetTotal / perScene));
+  return { durMode, perScene, singlePrompt, sceneCount, totalSec: perScene * sceneCount };
+}
+
 async function generateFlashloopScript(effectName, tagline, userIdea, sceneDuration, ratio, model = 'gpt-5.5', references = [], trendThumbnail = '', sceneLength = 8, mode = 'concept', slug = '', template = null) {
 // Scenes are sized to the RENDER engine: Make Video renders each scene with
 // omni-flash (~8s clips) by default, but the user can pick another per-scene
-// length (5s/10s/15s). Total stays on target: short → ~64s, long → ~120s.
-let perScene = [5, 8, 10, 15, 30].includes(Number(sceneLength)) ? Number(sceneLength) : 8;
-const durMode = Number(sceneDuration) || 15;
-// Total-length modes: 5 = a single 30s prompt, 15 = ~64s, 30 = ~120s.
-// The 30s mode ALWAYS yields one scene at 30s, whatever Scene Length is set —
-// the user picked it precisely to get a single ready-to-use prompt.
-// A 30s scene length (or the 30s total option) means the user wants ONE prompt,
-// not a multi-scene script - that is the whole point of a 30-second clip.
-const singlePrompt = durMode <= 5 || perScene >= 30;
-if (durMode <= 5) perScene = 30;
-const targetTotal = singlePrompt ? 30 : (durMode >= 30 ? 120 : 64);
-const sceneCount = singlePrompt ? 1 : Math.max(2, Math.round(targetTotal / perScene));
-logLine(`flashloop script: mode ${durMode} -> ${sceneCount} scene(s) x ${perScene}s (${sceneCount * perScene}s total)`);
-const totalSec = perScene * sceneCount;
+// length (5s/8s/10s/15s/30s). Total stays on target: 1 min → ~64s, 2 min → ~120s.
+const { durMode, perScene, sceneCount, totalSec } = flashloopScenePlan(sceneDuration, sceneLength);
+logLine(`flashloop script: mode ${durMode} -> ${sceneCount} scene(s) x ${perScene}s (${totalSec}s total)`);
   const cleanRefs = cleanFlashloopRefs(references);
   const refBlock = formatFlashloopRefs(cleanRefs);
   const promptModel = IS_VERCEL
@@ -1265,7 +1285,8 @@ const DEFAULT_NARRATION_MODE = 'tts';
 // an explicit option AND the silent fallback so narration never breaks.
 const NARRATION_ENGINES = [
   { id: 'fish', label: 'Fish Audio — s2.1-pro-free (default)' },
-  { id: 'mimo', label: 'MIMO — high quality voices (fallback option)' }
+  { id: 'mimo', label: 'MIMO — high quality voices (fallback option)' },
+  { id: 'logfare', label: 'Logfare — Deepgram Aura-2 (aura-2-en, English)' }
 ];
 const DEFAULT_NARRATION_ENGINE = 'fish';
 // Fish Audio TTS: the model is passed as a custom HTTP header and the voice is
@@ -1621,6 +1642,16 @@ async function submitTask(pathAndQuery, logFn = logLine) {
   // time). Rewrite any `model=nano-banana` param to the live `nano-banana-pro`
   // centrally, so every t2i call site is covered without touching each one.
   const pq = String(pathAndQuery).replace(/([?&]model=)nano-banana(?=&|$)/i, '$1nano-banana-pro');
+  // Logfare image models are not PaxSenix endpoints — render locally and hand the
+  // finished file back (waitTask/download understand the logfare-local: marker).
+  const lfModel = /[?&]model=([^&]+)/.exec(pq);
+  if (lfModel && isLogfareImageModel(decodeURIComponent(lfModel[1]))) {
+    const qv = (k, dflt) => { const m = new RegExp(`[?&]${k}=([^&]*)`).exec(pq); return m ? decodeURIComponent(m[1]) : dflt; };
+    try {
+      return LOGFARE_LOCAL_PREFIX + await generateLogfareImage(
+        decodeURIComponent(lfModel[1]), qv('prompt', ''), qv('ratio', '1:1'), null);
+    } catch (e) { logFn(`logfare image failed: ${e.message}`); return null; }
+  }
   for (let attempt = 1; attempt <= 4; attempt++) {
     if (storyboardCancelRequested(logFn)) { logFn('submit cancelled by user'); return null; }
     try {
@@ -1659,11 +1690,42 @@ async function enhancePrompt(prompt) {
   return prompt; // fallback to original
 }
 
+// The reference image bytes for img2img. A Logfare render is a LOCAL file (it is
+// stored behind the logfare-local: marker), so read it from disk; anything else is
+// fetched over http.
+async function refImageBuffer(url) {
+  if (isLogfareLocal(url)) { try { return await fsp.readFile(url.slice(LOGFARE_LOCAL_PREFIX.length)); } catch { return null; } }
+  // A photo uploaded through /api/flashloop/upload-ref is stored in frames/ and
+  // referenced as /frames/<name> — read it straight off disk (the hosted URL is
+  // only a fallback for when the local file is gone, e.g. a Vercel cold instance).
+  const rel = /^\/frames\/([^/?#]+)$/i.exec(String(url || ''));
+  if (rel) { try { return await fsp.readFile(path.join(FRAMES_DIR, decodeURIComponent(rel[1]))); } catch { return null; } }
+  if (!/^https?:/i.test(String(url || ''))) return null;
+  const r = await fetch(url, { signal: AbortSignal.timeout(60000) });
+  return r.ok ? Buffer.from(await r.arrayBuffer()) : null;
+}
+
 // img2img with reference image(s) — anchors character identity
 async function submitImg2ImgTask(prompt, refUrls, imageModel = 'seedream-5', ratio = '16:9') {
+  // Logfare img2img = multipart images/edits with the reference image BYTES.
+  if (isLogfareImageModel(imageModel)) {
+    try {
+      const refBuf = await refImageBuffer((refUrls || [])[0]);
+      return LOGFARE_LOCAL_PREFIX + await generateLogfareImage(imageModel, prompt, ratio, refBuf);
+    } catch (e) { logLine(`logfare img2img ${imageModel}: ${e.message}`); return null; }
+  }
   const model = (imageModel && img2ImgEndpoint(imageModel)) ? safeImageModel(imageModel) : 'seedream-5';
   const endpoint = img2ImgEndpoint(model);
-  const postBody = JSON.stringify({ prompt, model, ratio, image_urls: refUrls });
+  // PaxSenix can only fetch public http(s) URLs — re-host any local Logfare render
+  // first, so mixing a Logfare char-ref with a PaxSenix frame model still anchors.
+  const usableRefs = [];
+  for (const u of (refUrls || [])) {
+    if (isLogfareLocal(u)) {
+      try { usableRefs.push(await uploadToImageHost(u.slice(LOGFARE_LOCAL_PREFIX.length), logLine)); }
+      catch (e) { logLine(`img2img: local ref re-host failed (${e.message})`); }
+    } else if (u) usableRefs.push(u);
+  }
+  const postBody = JSON.stringify({ prompt, model, ratio, image_urls: usableRefs });
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
       const res = await paxFetch(`${API}${endpoint}`, {
@@ -1685,6 +1747,9 @@ async function submitImg2ImgTask(prompt, refUrls, imageModel = 'seedream-5', rat
 }
 
 async function waitTask(taskUrl, maxMin = 25, logFn = logLine, outInfo = null) {
+  // A Logfare render is already finished when submitTask returns it — nothing to
+  // poll, hand the local file straight back (download() copies it into place).
+  if (isLogfareLocal(taskUrl)) return taskUrl;
   const deadline = Date.now() + maxMin * 60000;
   let networkErrors = 0;
   let lastStatus = 'pending';
@@ -1714,6 +1779,11 @@ async function waitTask(taskUrl, maxMin = 25, logFn = logLine, outInfo = null) {
 }
 
 async function download(fileUrl, outPath) {
+  // Already-rendered local file (Logfare) — copy it instead of fetching a URL.
+  if (isLogfareLocal(fileUrl)) {
+    try { await fsp.copyFile(fileUrl.slice(LOGFARE_LOCAL_PREFIX.length), outPath); return true; }
+    catch (e) { logLine(`local image copy failed: ${e.message}`); return false; }
+  }
   // On Vercel a single invocation only gets 300s — a 3×180s download would blow the
   // whole budget even if the render itself finished fast. Cap attempts + timeout there.
   const attempts = IS_VERCEL ? 1 : 3;
@@ -1777,7 +1847,8 @@ async function chatCompletion(model, messages, maxTokens = 16384, temperature = 
 // times out (e.g. gpt-5.5 on PaxSenix can exceed the local 120s budget, which used
 // to dump users into the generic fallback prompts). Returns the raw LLM text.
 // Logfare chat — OpenAI-compatible gateway. NOTE: Logfare logs request content,
-// so this must ONLY ever be called from the flashloop/sjinn prompt-writing path.
+// so chatWithLogfare stays confined to the flashloop/sjinn prompt-writing path
+// (the image/TTS helpers below are a separate, user-selected opt-in path).
 // Models without training opt-in (no data training): logfare/auto, gemma-4-26b.
 // Last-known Logfare health (surfaced at /api/health so the key/endpoint can be
 // verified from a browser without reading server logs).
@@ -1879,6 +1950,111 @@ async function chatWithLogfareFallback(model, messages, maxTokens = 16000, tempe
     logfareStatus.lastError = lastErr ? lastErr.message : e.message;
     throw new Error(`Logfare+fallback LLMs unavailable — ${lastErr ? lastErr.message : ''}${e && e.message ? ' | PaxSenix: ' + e.message : ''}`);
   }
+}
+
+// ─── Logfare media: images + narration TTS ──────────────────────────────────
+// Logfare's OpenAI-compatible gateway also serves image models and Deepgram
+// Aura-2 TTS. Shapes verified live against logfare.ai/v1:
+//   POST /images/generations  { model, prompt }               → { data:[{ b64_json }] } (JPEG)
+//   POST /images/edits        multipart(model, prompt, image) → { data:[{ b64_json }] }
+//   POST /audio/speech        { model:'aura-2-en', input }    → raw mp3 bytes
+// Images ALWAYS come back 1024x1024 — size / ratio / aspect_ratio are ignored —
+// so every render is centre-cropped to the requested ratio here with ffmpeg.
+const LOGFARE_IMAGE_MODELS = ['flux-2-klein-9b', 'lucid-origin', 'phoenix-1.0'];
+const LOGFARE_TTS_MODEL = 'aura-2-en';
+// Deepgram Aura-2 speakers: luna (female) / orion (male) — both verified live.
+const LOGFARE_TTS_VOICES = { female: 'luna', male: 'orion' };
+function isLogfareImageModel(m) { return LOGFARE_IMAGE_MODELS.includes(String(m || '')); }
+// A Logfare render is ONE blocking POST that returns the finished bytes, so there
+// is no task to poll. It is handed back to the (submit → wait → download) pipeline
+// as an already-finished local file behind this prefix.
+const LOGFARE_LOCAL_PREFIX = 'logfare-local:';
+const isLogfareLocal = (u) => String(u || '').startsWith(LOGFARE_LOCAL_PREFIX);
+
+// Centre-crop a rendered (always square) image to the requested aspect ratio.
+function cropToRatio(inPath, ratio, outPath) {
+  const [w, h] = String(ratio || '1:1').split(':').map(Number);
+  const vf = (!w || !h || w === h) ? null : (w > h ? `crop=iw:iw*${h}/${w}` : `crop=ih*${w}/${h}:ih`);
+  const args = ['-y', '-i', inPath, ...(vf ? ['-vf', vf] : []), outPath];
+  return new Promise((resolve, reject) => {
+    execFile(ffmpegBin(), args, { timeout: 60000 }, err => err ? reject(err) : resolve(outPath));
+  });
+}
+
+// Render ONE image through Logfare → local PNG cropped to `ratio`. A `refBuf`
+// switches to the images/edits (img2img) endpoint, which needs the reference
+// image BYTES as multipart — Logfare hands back base64, never a URL.
+async function generateLogfareImage(model, prompt, ratio = '1:1', refBuf = null) {
+  if (!isLogfareImageModel(model)) throw new Error('unknown Logfare image model: ' + model);
+  if (!LOGFARE_API_KEY) throw new Error('no Logfare key (env LOGFARE_API_KEY or pipeline/logfare_apikey.txt)');
+  const raw = path.join(FRAMES_DIR, `lf_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}.jpg`);
+  let b64 = '';
+  for (let attempt = 1; attempt <= 2 && !b64; attempt++) {
+    try {
+      let res;
+      if (refBuf) {
+        const fd = new FormData();
+        fd.append('model', model);
+        fd.append('prompt', String(prompt || ''));
+        fd.append('image', new Blob([refBuf], { type: 'image/png' }), 'ref.png');
+        res = await fetch(`${LOGFARE_API}/images/edits`, {
+          method: 'POST',
+          headers: { Authorization: 'Bearer ' + LOGFARE_API_KEY },
+          body: fd,
+          signal: AbortSignal.timeout(240000)
+        });
+      } else {
+        res = await fetch(`${LOGFARE_API}/images/generations`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + LOGFARE_API_KEY },
+          body: JSON.stringify({ model, prompt: String(prompt || ''), n: 1 }),
+          signal: AbortSignal.timeout(240000)
+        });
+      }
+      const j = await res.json().catch(() => ({}));
+      b64 = String((j && j.data && j.data[0] && j.data[0].b64_json) || '');
+      if (!res.ok || !b64) {
+        const msg = (j && j.error && (j.error.message || JSON.stringify(j.error))) || `HTTP ${res.status}`;
+        logLine(`logfare image ${model} attempt ${attempt}: ${msg}`);
+        b64 = '';
+      }
+    } catch (e) { logLine(`logfare image ${model} attempt ${attempt}: ${e.message}`); }
+    if (!b64 && attempt < 2) await new Promise(r => setTimeout(r, 3000));
+  }
+  if (!b64) throw new Error(`logfare ${model}: no image returned`);
+  await fsp.writeFile(raw, Buffer.from(b64, 'base64'));
+  const out = raw.replace(/\.jpg$/, '.png');
+  await cropToRatio(raw, ratio, out);
+  try { fs.unlinkSync(raw); } catch {}
+  logLine(`logfare image: ${model} ${refBuf ? 'i2i' : 't2i'} @ ${ratio} → ${path.basename(out)}`);
+  return out;
+}
+
+// One narration chunk through Logfare (Deepgram Aura-2). English only — Aura-2-en
+// is an English model, so non-English narration is refused and the caller falls
+// through to the other engines. Returns true when the chunk file was written.
+async function logfareTtsChunk(chunkPath, text, voice) {
+  if (!LOGFARE_API_KEY) { logLine('logfare TTS: no Logfare key'); return false; }
+  try {
+    const res = await fetch(`${LOGFARE_API}/audio/speech`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + LOGFARE_API_KEY },
+      body: JSON.stringify({
+        model: LOGFARE_TTS_MODEL,
+        input: String(text),
+        voice: LOGFARE_TTS_VOICES[voice] || LOGFARE_TTS_VOICES.female,
+        response_format: 'mp3'
+      }),
+      signal: AbortSignal.timeout(180000)
+    });
+    const ct = res.headers.get('content-type') || '';
+    if (!res.ok || !/audio|octet-stream/i.test(ct)) {
+      logLine(`logfare TTS failed: HTTP ${res.status} ${ct} ${(await res.text().catch(() => '')).slice(0, 160)}`);
+      return false;
+    }
+    await fsp.writeFile(chunkPath, Buffer.from(await res.arrayBuffer()));
+    return fs.existsSync(chunkPath);
+  } catch (e) { logLine('logfare TTS error: ' + e.message); return false; }
 }
 
 async function chatWithFallback(model, messages, maxTokens = 16000, temperature = 0.7) {
@@ -3070,7 +3246,7 @@ async function generateFullNarration(frames, voice = DEFAULT_VOICE, language = D
 
   const fullText = buildNarrationText(frames);
 
-  if (engine && !['fish', 'mimo'].includes(engine)) logLine(`note: narration engine "${engine}" was removed — using ${DEFAULT_NARRATION_ENGINE}`);
+  if (engine && !['fish', 'mimo', 'logfare'].includes(engine)) logLine(`note: narration engine "${engine}" was removed — using ${DEFAULT_NARRATION_ENGINE}`);
   logLine(`full narration: ${fullText.length} chars from ${withSpeech.length} frames — ${voiceLabel} voice, ${langName} — engine: ${engine || DEFAULT_NARRATION_ENGINE}`);
 
   // Split into chunks if text is long
@@ -3180,30 +3356,36 @@ async function generateFullNarration(frames, voice = DEFAULT_VOICE, language = D
     return false;
   };
 
+  // Logfare (Deepgram Aura-2) — English-only, so non-English narration skips it
+  // and lands on Fish Audio / MIMO instead.
+  const tryLogfare = async (chunkPath, text) => {
+    if (language !== 'en') { logLine('logfare TTS: Aura-2 is English-only — falling through'); return false; }
+    logLine('chunk TTS: Logfare Deepgram Aura-2 (aura-2-en)...');
+    return logfareTtsChunk(chunkPath, text, voice);
+  };
+
+  // Engine chain: the engine picked in the dropdown first, then every other engine
+  // as an automatic fallback, so narration never breaks.
+  const narrationEngineFns = { fish: tryFish, mimo: tryMIMO, logfare: tryLogfare };
+  const NARRATION_ENGINE_LABELS = { fish: 'Fish Audio', mimo: 'MIMO', logfare: 'Logfare Aura-2' };
+  const selectedEngine = narrationEngineFns[engine] ? engine : DEFAULT_NARRATION_ENGINE;
+  const narrationChain = [selectedEngine, ...Object.keys(narrationEngineFns)].filter((e, i, a) => a.indexOf(e) === i);
+
   const chunkFiles = [];
   for (let i = 0; i < chunks.length; i++) {
     if (job.cancelRequested) { logLine('narration cancelled by user'); break; }
     const chunkPath = path.join(VIDEO_DIR, `narr_chunk_${String(i + 1).padStart(2, '0')}.mp3`);
     if (fs.existsSync(chunkPath)) { chunkFiles.push(chunkPath); logLine(`chunk ${i+1}: exists, skip`); continue; }
 
-    const primary = engine === 'mimo' ? 'MIMO' : 'Fish Audio';
-    const backup = engine === 'mimo' ? 'Fish Audio' : 'MIMO';
-    const useMimoFirst = engine === 'mimo';
-    logLine(`chunk ${i+1}/${chunks.length}: generating ${primary} TTS...`);
-    let chunkSaved = useMimoFirst ? await tryMIMO(chunkPath, chunks[i]) : await tryFish(chunkPath, chunks[i]);
-    if (chunkSaved) {
-      chunkFiles.push(chunkPath);
-      logLine(`chunk ${i+1}: DONE (${primary})`);
-    } else {
-      logLine(`chunk ${i+1}: ${primary} failed — falling back to ${backup}`);
-      chunkSaved = useMimoFirst ? await tryFish(chunkPath, chunks[i]) : await tryMIMO(chunkPath, chunks[i]);
-      if (chunkSaved) {
-        chunkFiles.push(chunkPath);
-        logLine(`chunk ${i+1}: DONE (${backup} fallback)`);
-      } else {
-        logLine(`chunk ${i+1}: FAILED (${primary} + ${backup})`);
-      }
+    let chunkSaved = false;
+    for (let k = 0; k < narrationChain.length && !chunkSaved; k++) {
+      const which = narrationChain[k];
+      logLine(`chunk ${i+1}/${chunks.length}: ${NARRATION_ENGINE_LABELS[which]} TTS${k === 0 ? '' : ' (fallback ' + k + ')'}...`);
+      chunkSaved = await narrationEngineFns[which](chunkPath, chunks[i]);
+      if (chunkSaved) logLine(`chunk ${i+1}: DONE (${NARRATION_ENGINE_LABELS[which]})`);
     }
+    if (chunkSaved) chunkFiles.push(chunkPath);
+    else logLine(`chunk ${i+1}: FAILED (all narration engines)`);
 
     // Longer delay between chunks to avoid rate limiting
     if (i < chunks.length - 1) await new Promise(r => setTimeout(r, 3000));
@@ -4270,7 +4452,7 @@ const requestHandler = async (req, res) => {
       } catch (e) { return sendJson(res, 200, { hasAudio: false, matchesCurrent: false, withSpeech: 0, error: e.message }); }
     }
     if (p === '/api/health' || p === '/api/ping') return sendJson(res, 200, { ok: true, vercel: IS_VERCEL, path: p, url: rawUrl, hasKey: !!API_KEY, commit: (process.env.VERCEL_GIT_COMMIT_SHA || '').slice(0, 7) || 'local', deployedAt: process.env.VERCEL_DEPLOYMENT_ID ? 'vercel' : 'local', logfare: { key: !!LOGFARE_API_KEY, lastOkAt: logfareStatus.lastOkAt, lastModel: logfareStatus.lastModel, lastError: logfareStatus.lastError } });
-    if (p === '/api/models') return sendJson(res, 200, { chat: MODELS, image: IMAGE_MODELS, video: VIDEO_MODELS, voices: VOICES, languages: LANGUAGES, narrationModes: NARRATION_MODES, narrationEngines: NARRATION_ENGINES, styles: STYLE_KEYS.map(k => ({ key: k, label: STYLES[k].label })) });
+    if (p === '/api/models') return sendJson(res, 200, { chat: MODELS, image: IMAGE_MODELS.concat(LOGFARE_IMAGE_MODELS), video: VIDEO_MODELS, voices: VOICES, languages: LANGUAGES, narrationModes: NARRATION_MODES, narrationEngines: NARRATION_ENGINES, styles: STYLE_KEYS.map(k => ({ key: k, label: STYLES[k].label })) });
 
     // --- CREDITS ---
     if (p === '/api/credits' && req.method === 'GET') {
@@ -5435,7 +5617,7 @@ Return ONLY a JSON object:
     if (p === '/api/flashloop/generate-prompt' && req.method === 'POST') {
       try {
         const body = await readBody(req);
-const { slug = '', name = '', tagline = '', idea = '', duration = 15, sceneLength = 8, ratio = '9:16', model = 'gpt-5.5', references = [], trendThumbnail = '', source = '' } = body || {};
+const { slug = '', name = '', tagline = '', idea = '', duration, sceneDuration, sceneLength = 8, ratio = '9:16', model = 'gpt-5.5', references = [], trendThumbnail = '', source = '' } = body || {};
         const effectName = String(name || slug).trim();
         if (!effectName) return sendJson(res, 400, { error: 'effect name or slug required' });
         const selectedModel = isFlashloopPromptModel(model) ? model : 'logfare:auto';
@@ -5446,10 +5628,12 @@ const { slug = '', name = '', tagline = '', idea = '', duration = 15, sceneLengt
         logLine(`flashloop generate-prompt: "${effectName}" source=${source || 'n/a'} → mode=${trendMode}`);
         // Credit gate: writing a full multi-scene script is a real multi-LLM call.
         if (!(await requireCredits(req, res, CREDIT_COSTS.flashloopScript, 'generate script'))) return;
-      // duration selects the TOTAL length mode (short ~1min, long ~2min) and
-      // sceneLength is the PER-SCENE seconds (5/8/10/15); the scene count adapts.
-        const mode = Number(duration) || 15;
-const perScene = [5, 8, 10, 15, 30].includes(Number(sceneLength)) ? Number(sceneLength) : 8;
+      // The UI posts the TOTAL Video Length dropdown as `sceneDuration`; older
+      // callers use `duration`. Reading only `duration` meant the dropdown was
+      // ignored and every run fell back to the ~64s default. Accept either.
+      // sceneLength is the PER-SCENE seconds (5/8/10/15/30); the scene count adapts.
+        const mode = Number(sceneDuration ?? duration) || 15;
+const perScene = flashloopScenePlan(mode, sceneLength).perScene;
         // Ground the script in this trend's own example material (cached a week).
         let trendTpl = null;
         try {
@@ -5501,7 +5685,36 @@ RULES:
       } catch (e) { logLine('flashloop edit-prompt: ' + e.message); return sendJson(res, 500, { error: e.message }); }
     }
 
-    // Generate i2i image anchored to a trend reference image
+    // Upload a character reference photo for the Flashloop/SJinn reference list.
+    // The image is stored under frames/ (served at /frames/*, rewritten to the API
+    // route on Vercel) AND re-hosted to catbox/uguu, because the image models need
+    // a URL they can fetch — the local path is the offline / cold-instance fallback.
+    if (p === '/api/flashloop/upload-ref' && req.method === 'POST') {
+      try {
+        const body = await readBody(req);
+        const dataUrl = String((body && (body.dataUrl || body.image)) || '');
+        const m = /^data:image\/(png|jpe?g|webp);base64,(.+)$/i.exec(dataUrl);
+        if (!m) return sendJson(res, 400, { error: 'image dataUrl required (png / jpg / webp base64)' });
+        const buf = Buffer.from(m[2], 'base64');
+        if (!buf.length) return sendJson(res, 400, { error: 'empty image' });
+        if (buf.length > 8 * 1024 * 1024) return sendJson(res, 400, { error: 'image too large (max 8MB)' });
+        const fmt = m[1].toLowerCase();
+        const ext = fmt === 'png' ? 'png' : (fmt === 'webp' ? 'webp' : 'jpg');
+        const name = `ref_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}.${ext}`;
+        const file = path.join(FRAMES_DIR, name);
+        await fsp.writeFile(file, buf);
+        const local = '/frames/' + name;
+        let url = local;
+        try {
+          const hosted = await uploadToImageHost(file, logLine);
+          if (hosted) url = hosted;
+        } catch (e) { logLine(`ref upload: re-host failed (${e.message}) - serving ${local}`); }
+        logLine(`flashloop ref upload: ${name} (${(buf.length / 1024).toFixed(0)}KB) → ${url.slice(0, 80)}`);
+        return sendJson(res, 200, { ok: true, url, local });
+      } catch (e) { logLine('flashloop ref upload: ' + e.message); return sendJson(res, 500, { error: e.message }); }
+    }
+
+    // Generate i2i image anchored to a trend / character reference image
     if (p === '/api/flashloop/generate-i2i' && req.method === 'POST') {
       try {
         const body = await readBody(req);
@@ -5511,19 +5724,43 @@ RULES:
         // Credit gate: one first-frame image render.
         if (!(await requireCredits(req, res, CREDIT_COSTS.flashloopI2I, 'generate image'))) return;
 
-        // Respect the selected image model: PaxSenix ids or "aqua:<id>".
-        let selectedModel = (model && (IMAGE_MODELS.includes(model) || isAquaImageModel(model))) ? model : 'seedream-5';
+        // Respect the selected image model: PaxSenix ids, "aqua:<id>" or a Logfare
+        // image model (flux-2-klein-9b / lucid-origin / phoenix-1.0).
+        let selectedModel = (model && (IMAGE_MODELS.includes(model) || isAquaImageModel(model) || isLogfareImageModel(model))) ? model : 'seedream-5';
+
+        // ---- Logfare provider (flux-2-klein-9b / lucid-origin / phoenix-1.0) ----
+        // Rendered here and re-hosted, so the browser <img> and the video stage
+        // both get a public URL they can use directly.
+        if (isLogfareImageModel(selectedModel)) {
+          try {
+            // The anchor can be an uploaded character photo (/frames/ref_*.png), a
+            // local Logfare render or the trend thumbnail URL.
+            const refBuf = refImageUrl ? await refImageBuffer(refImageUrl) : null;
+            if (refImageUrl && !refBuf) logLine('logfare image: ref unavailable - using prompt only');
+            const p = sanitizePrompt(trendPromptPrefix(source, slug, trendName, tagline) + String(prompt));
+            logLine('logfare image: ' + selectedModel + ' ' + (refBuf ? 'i2i' : 't2i') + ' @ ' + ratio);
+            const local = await generateLogfareImage(selectedModel, p, String(ratio), refBuf);
+            const imageUrl = await uploadToImageHost(local, logLine);
+            try { fs.unlinkSync(local); } catch {}
+            return sendJson(res, 200, { ok: true, imageUrl, model: selectedModel, mode: refBuf ? 'i2i' : 't2i', provider: 'logfare' });
+          } catch (e) {
+            logLine('logfare image failed: ' + e.message + ' — falling back to PaxSenix');
+            aquaFailureNote = e.message;
+            selectedModel = 'nano-banana-2';
+          }
+        }
 
         // ---- AquaDevs provider (PaxSenix image models are unreliable/down) ----
         // Direct models answer with the image URL, so the client skips polling.
         if (isAquaImageModel(selectedModel)) {
           try {
+            // AquaDevs can only fetch a public URL, so an uploaded character photo
+            // (served as /frames/ref_*.png) is re-hosted before use.
             let ref = '';
             if (refImageUrl) {
               try {
-                const ir = await fetch(refImageUrl, { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(30000) });
-                if (ir.ok) {
-                  const buf = Buffer.from(await ir.arrayBuffer());
+                const buf = await refImageBuffer(refImageUrl);
+                if (buf && buf.length) {
                   let ext = 'jpg', mime = 'image/jpeg';
                   if (buf[0] === 0x89 && buf[1] === 0x50) { ext = 'png'; mime = 'image/png'; }
                   else if (buf[0] === 0x52 && buf[1] === 0x49) { ext = 'webp'; mime = 'image/webp'; }
@@ -5535,14 +5772,7 @@ RULES:
                 }
               } catch (e) { logLine('aqua image: ref re-host failed (' + e.message + ') - using prompt only'); }
             }
-            let stylePrefix = '';
-            if (trendName) {
-              const tm = resolveTrendMode(source, slug, trendName, tagline);
-              stylePrefix = tm === 'style'
-                ? 'MATCH THE REFERENCE IMAGE STYLE EXACTLY. The reference is from the "' + trendName + '" style' + (tagline ? ' - ' + tagline : '') + '. Replicate its colour palette, lighting, texture and rendering technique with the subject described below. '
-                : 'FAITHFULLY RECREATE THE "' + trendName + '" TREND. The reference shows this trend' + (tagline ? ' - ' + tagline : '') + '. Keep the same concept, subject type and look so the result is instantly recognisable as "' + trendName + '", while following the scene description below. ';
-            }
-            const p = sanitizePrompt(stylePrefix + String(prompt));
+            const p = sanitizePrompt(trendPromptPrefix(source, slug, trendName, tagline) + String(prompt));
             logLine('aqua image: ' + selectedModel + (ref ? ' i2i' : ' t2i') + ' @ ' + aquaRatio(ratio));
             // The image-EDIT path (the `image` param) can break upstream while
             // text-to-image keeps working (AquaDevs origin 502s under load). The
@@ -5580,18 +5810,18 @@ RULES:
 
         const endpoint = img2ImgEndpoint(selectedModel);
 
-        // Re-host external reference images (e.g. SJinn thumbnails on edit.comfyonline.app)
-        // so PaxSenix can fetch them. PaxSenix rejects comfyonline URLs directly
-        // (octet-stream → "URL does not point to an image"), so we re-upload the image
-        // bytes to a public host that serves raw image bytes. Try uguu.se first, then
-        // catbox.moe as backup. Same path on local and Vercel (no self-proxy needed).
+        // Re-host the reference image (SJinn thumbnails on edit.comfyonline.app, or
+        // an uploaded character photo stored at /frames/ref_*.png) so PaxSenix can
+        // fetch it. PaxSenix rejects comfyonline URLs directly (octet-stream → "URL
+        // does not point to an image"), so we re-upload the image bytes to a public
+        // host that serves raw image bytes. Try uguu.se first, then catbox.moe as
+        // backup. Same path on local and Vercel (no self-proxy needed).
         let finalImageUrl = refImageUrl;
         try {
-          const imgRes = await fetch(refImageUrl, { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(30000) });
-          if (!imgRes.ok) {
-            logLine(`flashloop i2i: ref fetch HTTP ${imgRes.status}, using original URL`);
+          const buf = await refImageBuffer(refImageUrl);
+          if (!buf) {
+            logLine('flashloop i2i: ref image unavailable, using original URL');
           } else {
-            const buf = Buffer.from(await imgRes.arrayBuffer());
             if (buf.length > 500) {
               // Detect real image type from magic bytes (comfyonline serves octet-stream)
               let ext = 'jpg', mime = 'image/jpeg';
@@ -6559,8 +6789,14 @@ ${infl.description || '(no description - describe a beautiful confident influenc
 };
 
 module.exports = requestHandler;
-// Exposed for pipeline/test-trend-template.js (regression test for this layer).
+// Exposed for the pipeline/test-*.js regression tests.
 module.exports.__internal = {
+  flashloopScenePlan,
+  // Logfare media (image models + Deepgram Aura-2 narration).
+  LOGFARE_IMAGE_MODELS, LOGFARE_TTS_MODEL, LOGFARE_TTS_VOICES, LOGFARE_LOCAL_PREFIX,
+  isLogfareImageModel, isLogfareLocal, cropToRatio, generateLogfareImage, logfareTtsChunk,
+  refImageBuffer, submitImg2ImgTask,
+  imageModels: IMAGE_MODELS, narrationEngines: NARRATION_ENGINES,
   scrapeFlashloop, scrapeSjinn,
   fetchFlashloopTrendDetail: trendTemplates.fetchFlashloopTrendDetail,
   fetchSjinnTrendDetail: trendTemplates.fetchSjinnTrendDetail,
