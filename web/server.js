@@ -839,7 +839,7 @@ ${FLASHLOOP_EXAMPLE_VIDEO_PROMPT}
 
 Return { "title": "...", "videoPrompt": "..." }. Keep videoPrompt 180-280 words, no negative instructions. Do not output any explanation outside the JSON.`;
 
-  const raw = await chatWithLogfareFallback(model, [{ role: 'system', content: system }, { role: 'user', content: userText }], 16000, 1.0);
+  const raw = await chatWithLogfareFallback(model, [{ role: 'system', content: system }, { role: 'user', content: userText }], 6000, 1.0);
   let parsed = {};
   try { parsed = parseJsonLenient(raw); } catch (e) { parsed = {}; }
   const videoPrompt = scrubCameraFluff(capPrompt(enforceEffectRelevance(parsed.videoPrompt || raw, effectName, tagline, userIdea, duration, ratio, 'video', { mode, concept }), 420));
@@ -5613,13 +5613,52 @@ Return ONLY a JSON object:
       } catch (trendsErr) { return sendJson(res, 200, { source: 'error', category: (u.searchParams.get('category') || 'anime'), videos: [], liveTerms: [], flashloopFormats: [], error: trendsErr.message }); }
     }
 
+    // Phase 1 of chunked generation: plan the whole story in ONE cheap call so the
+    // client can then write every scene in parallel (sequential per-scene calls
+    // would take ~14 minutes for a 2-minute video).
+    if (p === '/api/flashloop/generate-outline' && req.method === 'POST') {
+      try {
+        const body = await readBody(req);
+        const { slug = '', name = '', tagline = '', idea = '', totalScenes = 8, duration = 15, sceneLength = 8, ratio = '9:16', model = 'logfare:auto', references = [], trendThumbnail = '', source = '' } = body || {};
+        const effectName = String(name || slug).trim();
+        if (!effectName) return sendJson(res, 400, { error: 'effect name or slug required' });
+        if (!(await requireCredits(req, res, CREDIT_COSTS.flashloopScript, 'generate script'))) return;
+        const selectedModel = isFlashloopPromptModel(model) ? model : 'logfare:auto';
+        const refs = Array.isArray(references) ? references.filter(r => r && String(r.name || '').trim()) : [];
+        const trendMode = resolveTrendMode(source, slug, effectName, tagline);
+        const perScene = [5, 8, 10, 15, 30].includes(Number(sceneLength)) ? Number(sceneLength) : 8;
+        const total = Math.max(1, Math.min(20, Number(totalScenes) || 8));
+        let trendTpl = null;
+        try {
+          trendTpl = await trendTemplates.buildTrendTemplate({
+            source: String(source || (trendMode === 'style' ? 'flashloop' : 'sjinn')),
+            slug: String(slug || ''), name: effectName, tagline: String(tagline || ''),
+            thumbnail: String(trendThumbnail || ''), concept: resolveTrendConcept(String(slug || ''), effectName, '')
+          });
+        } catch (e) { logLine('generate-outline: trend template unavailable - ' + e.message); }
+        const system = 'You are a top short-form video story planner. Plan an ' + total + '-scene video (' + perScene + 's per scene) for the effect "' + effectName + '" as ONE continuous story.' +
+          (refs.length ? '\n\nFEATURED CHARACTERS:\n' + refs.map(r => '- ' + r.name + (r.description ? ': ' + r.description : '')).join('\n') : '') +
+          trendTemplateBlock(trendTpl) +
+          '\n\nReturn ONLY JSON: {"title":"short film title","scenes":[{"scene":1,"title":"punchy scene title","summary":"one sentence: exactly what happens in this scene and how it follows the previous one"}]}' +
+          '\nGive every scene a distinct, escalating beat of the SAME story and keep it unmistakably on this trend. Return exactly ' + total + ' scenes, numbered 1..' + total + '.';
+        const raw = await chatWithLogfareFallback(selectedModel, [{ role: 'system', content: system }, { role: 'user', content: 'Plan the story now. Return only the JSON.' }], 6000, 0.9);
+        let parsed = {};
+        try { parsed = parseJsonLenient(raw); } catch (e) { parsed = {}; }
+        let outline = Array.isArray(parsed.scenes) ? parsed.scenes : [];
+        outline = outline.slice(0, total).map((sc, i) => ({ scene: i + 1, title: String((sc && sc.title) || ('Scene ' + (i + 1))), summary: String((sc && (sc.summary || sc.beat || sc.description)) || '').trim() }));
+        while (outline.length < total) outline.push({ scene: outline.length + 1, title: 'Scene ' + (outline.length + 1), summary: '' });
+        logLine('flashloop outline: planned ' + outline.length + ' scene(s) x ' + perScene + 's');
+        return sendJson(res, 200, { ok: true, title: String(parsed.title || effectName), outline, sceneLength: perScene, totalScenes: total });
+      } catch (e) { logLine('flashloop generate-outline: ' + e.message); return sendJson(res, 500, { error: e.message }); }
+    }
+
     // ONE scene at a time. Vercel caps a function at 300s and a full 1-2 min script
     // (8-15 long prompts) plus the trend-template build exceeds it, so the client
     // loops this endpoint and stitches the scenes - like the video renderer does.
     if (p === '/api/flashloop/generate-scene' && req.method === 'POST') {
       try {
         const body = await readBody(req);
-        const { slug = '', name = '', tagline = '', idea = '', sceneIndex = 1, totalScenes = 1, prevEnd = '', duration = 15, sceneLength = 8, ratio = '9:16', model = 'logfare:auto', references = [], trendThumbnail = '', source = '' } = body || {};
+        const { slug = '', name = '', tagline = '', idea = '', sceneIndex = 1, totalScenes = 1, prevEnd = '', sceneBeat = '', prevBeat = '', sceneTitle = '', duration = 15, sceneLength = 8, ratio = '9:16', model = 'logfare:auto', references = [], trendThumbnail = '', source = '' } = body || {};
         const effectName = String(name || slug).trim();
         if (!effectName) return sendJson(res, 400, { error: 'effect name or slug required' });
         // The whole script costs flashloopScript credits; a chunked run charges once.
@@ -5639,13 +5678,15 @@ Return ONLY a JSON object:
         const idx = Number(sceneIndex) || 1;
         const total = Number(totalScenes) || 1;
         const sceneIdea = String(idea || '')
+          + (prevBeat ? '\n\nThis story so far (outline beats): ' + String(prevBeat).slice(0, 600) : '')
           + (prevEnd ? '\n\nPrevious scene ends here: ' + String(prevEnd).slice(-600) : '')
+          + (sceneBeat ? '\n\nTHIS SCENE (follow its outline beat exactly): ' + String(sceneBeat).slice(0, 600) : '')
           + '\n\nWrite scene ' + idx + ' of ' + total + ' of this story. It must continue directly from the previous scene and follow the trend template.';
         logLine('flashloop scene ' + idx + '/' + total + ': generating (' + perScene + 's, ' + selectedModel + ')');
         const one = await generateFlashloopScene(effectName, String(tagline || ''), sceneIdea, perScene, String(ratio), selectedModel, refs, '', perScene, trendMode, String(slug || ''), trendTpl);
         return sendJson(res, 200, {
           ok: true, sceneLength: perScene, totalScenes: total,
-          scene: { scene: idx, title: one.title || ('Scene ' + idx), hook: '', imagePrompt: one.imagePrompt, videoPrompt: one.videoPrompt }
+          scene: { scene: idx, title: String(sceneTitle || one.title || ('Scene ' + idx)), hook: '', imagePrompt: one.imagePrompt, videoPrompt: one.videoPrompt }
         });
       } catch (e) { logLine('flashloop generate-scene: ' + e.message); return sendJson(res, 500, { error: e.message }); }
     }

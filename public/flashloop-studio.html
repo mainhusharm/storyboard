@@ -474,21 +474,85 @@ $('btnGenerate').onclick = async () => {
     if (planned > 1 && await isVercelHost()) {
       scenes = [];
       sceneLen = sceneLength;
+      setLoadingText('Planning ' + planned + ' scenes…');
+      // Phase 1: ONE cheap call plans the whole story, so the scenes stay coherent
+      // while phase 2 writes them all at once.
+      let outline = null, outlineTitle = name;
+      try {
+        const ro = await fetch('/api/flashloop/generate-outline', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ slug, name, tagline, idea, totalScenes: planned, duration: sceneDuration, sceneLength, ratio, model: $('model').value, references: getRefs(), trendThumbnail, source })
+        });
+        const rawO = await ro.text();
+        let jo; try { jo = JSON.parse(rawO); } catch { jo = { error: rawO ? rawO.slice(0, 180) : ('HTTP ' + ro.status) }; }
+        if (ro.ok && !jo.error && Array.isArray(jo.outline) && jo.outline.length) {
+          outline = jo.outline;
+          outlineTitle = jo.title || name;
+          if (jo.sceneLength) sceneLen = Number(jo.sceneLength);
+        }
+      } catch (e) { /* plan failed - fall through to sequential writing */ }
+
+      if (outline) {
+        // Phase 2: write EVERY scene in parallel. Sequentially this is ~14 minutes for
+        // a 2-minute video; in parallel it is as long as the slowest single scene.
+        let doneCount = 0;
+        const results = [];
+        // Waves of 5: 15 simultaneous Logfare calls can hit its rate limit.
+        const WAVE = 5;
+        for (let start = 0; start < outline.length; start += WAVE) {
+        const wave = await Promise.all(outline.slice(start, start + WAVE).map(async (beat, k) => {
+          const i = start + k;
+          const prevBeat = i > 0 ? (outline[i - 1].summary || outline[i - 1].title || '') : '';
+          try {
+            const r2 = await fetch('/api/flashloop/generate-scene', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ slug, name, tagline, idea, sceneIndex: i + 1, totalScenes: planned, sceneBeat: beat.summary || beat.title || '', prevBeat, sceneTitle: beat.title || '', duration: sceneDuration, sceneLength, ratio, model: $('model').value, references: getRefs(), trendThumbnail, source })
+            });
+            const raw2 = await r2.text();
+            let j2; try { j2 = JSON.parse(raw2); } catch { j2 = { error: raw2 ? raw2.slice(0, 180) : ('HTTP ' + r2.status) }; }
+            if (!r2.ok || j2.error) throw new Error(j2.error || ('HTTP ' + r2.status));
+            doneCount++;
+            setLoadingText('Writing scenes… ' + doneCount + '/' + outline.length + ' done');
+            return j2.scene || null;
+          } catch (sceneErr) { return null; }
+        }));
+        results.push(...wave);
+        }
+        scenes = results.filter(Boolean);
+        if (!scenes.length) throw new Error('Every scene failed to generate — please try again.');
+        const failed = outline.length - scenes.length;
+        if (failed) {
+          $('error').textContent = failed + ' of ' + outline.length + ' scenes failed — the rest are ready; press Generate again to retry.';
+          $('error').classList.add('visible');
+        }
+        scriptTitle = outlineTitle;
+      } else {
+      let chunkErr = '';
       for (let i = 1; i <= planned; i++) {
         setLoadingText('Writing scene ' + i + ' of ' + planned + '…');
         const prevEnd = scenes.length ? String(scenes[scenes.length - 1].videoPrompt || '').slice(-600) : '';
+        try {
         const r2 = await fetch('/api/flashloop/generate-scene', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ slug, name, tagline, idea, sceneIndex: i, totalScenes: planned, prevEnd, duration: sceneDuration, sceneLength, ratio, model: $('model').value, references: getRefs(), trendThumbnail, source })
         });
         const raw2 = await r2.text();
         let j2; try { j2 = JSON.parse(raw2); } catch { j2 = { error: raw2 ? raw2.slice(0, 180) : ('HTTP ' + r2.status) }; }
-        if (!r2.ok || j2.error) throw new Error('scene ' + i + ': ' + (j2.error || ('HTTP ' + r2.status)));
+        if (!r2.ok || j2.error) throw new Error(j2.error || ('HTTP ' + r2.status));
         if (j2.scene) scenes.push(j2.scene);
         if (j2.sceneLength) sceneLen = Number(j2.sceneLength);
+        } catch (sceneErr) {
+          chunkErr = 'scene ' + i + ': ' + sceneErr.message;
+          break;
+        }
       }
-      if (!scenes.length) throw new Error('The script generator returned no scenes.');
+      if (!scenes.length) throw new Error(chunkErr || 'The script generator returned no scenes.');
+      if (chunkErr) {
+        $('error').textContent = 'Stopped after scene ' + scenes.length + ' of ' + planned + ' — ' + chunkErr;
+        $('error').classList.add('visible');
+      }
       scriptTitle = name;
+      }
     } else {
       const res = await fetch('/api/flashloop/generate-prompt', {
         method: 'POST',
