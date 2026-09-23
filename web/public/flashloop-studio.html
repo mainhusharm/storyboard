@@ -442,6 +442,21 @@ function syncSceneLength() {
 $('duration').addEventListener('change', syncSceneLength);
 syncSceneLength();
 
+let _vercelHost = null;
+async function isVercelHost(){
+  if (_vercelHost !== null) return _vercelHost;
+  try { const j = await (await fetch('/api/health', { cache: 'no-store' })).json(); _vercelHost = !!j.vercel; }
+  catch { _vercelHost = false; }
+  return _vercelHost;
+}
+// Same rule the server uses, so the client knows how many scenes to ask for.
+function plannedSceneCount(durMode, perScene){
+  if (durMode <= 5 || perScene >= 30) return 1;
+  const total = durMode >= 30 ? 120 : 64;
+  return Math.max(2, Math.round(total / perScene));
+}
+function setLoadingText(t){ const el = $('loading'); if (el) el.innerHTML = '<div class="spinner"></div> ' + escapeHtml(t); }
+
 $('btnGenerate').onclick = async () => {
   const idea = $('idea').value.trim();
   const sceneDuration = Number($('duration').value);
@@ -451,19 +466,43 @@ $('btnGenerate').onclick = async () => {
   $('btnGenerate').disabled = true;
   $('loading').classList.add('visible');
   $('btnGenerateImage').style.display = 'none';
+  const sceneLength = Number($('sceneLength').value) || 8;
   try {
-    const res = await fetch('/api/flashloop/generate-prompt', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ slug, name, tagline, idea, sceneDuration, duration: sceneDuration, sceneLength: Number($('sceneLength').value) || 8, ratio, model: $('model').value, references: getRefs(), trendThumbnail, source })
-    });
-    const rawText = await res.text();
-    let j; try { j = JSON.parse(rawText); } catch { j = { error: rawText ? rawText.slice(0, 180) : ('HTTP ' + res.status) }; }
-    if (!res.ok || j.error) throw new Error(j.error || ('Failed to generate prompt (HTTP ' + res.status + ')'));
-    scenes = Array.isArray(j.scenes) ? j.scenes : [];
-    if (!scenes.length) throw new Error('The script generator returned no scenes.');
-    sceneLen = Number(j.sceneLength) || Number(j.sceneDuration) || 8;
-    scriptTitle = j.title || name;
+    // Vercel ends a request at 300s, so a multi-scene script is written ONE SCENE PER
+    // REQUEST there and stitched here; locally one call still writes the whole script.
+    const planned = plannedSceneCount(sceneDuration, sceneLength);
+    if (planned > 1 && await isVercelHost()) {
+      scenes = [];
+      sceneLen = sceneLength;
+      for (let i = 1; i <= planned; i++) {
+        setLoadingText('Writing scene ' + i + ' of ' + planned + '…');
+        const prevEnd = scenes.length ? String(scenes[scenes.length - 1].videoPrompt || '').slice(-600) : '';
+        const r2 = await fetch('/api/flashloop/generate-scene', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ slug, name, tagline, idea, sceneIndex: i, totalScenes: planned, prevEnd, duration: sceneDuration, sceneLength, ratio, model: $('model').value, references: getRefs(), trendThumbnail, source })
+        });
+        const raw2 = await r2.text();
+        let j2; try { j2 = JSON.parse(raw2); } catch { j2 = { error: raw2 ? raw2.slice(0, 180) : ('HTTP ' + r2.status) }; }
+        if (!r2.ok || j2.error) throw new Error('scene ' + i + ': ' + (j2.error || ('HTTP ' + r2.status)));
+        if (j2.scene) scenes.push(j2.scene);
+        if (j2.sceneLength) sceneLen = Number(j2.sceneLength);
+      }
+      if (!scenes.length) throw new Error('The script generator returned no scenes.');
+      scriptTitle = name;
+    } else {
+      const res = await fetch('/api/flashloop/generate-prompt', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slug, name, tagline, idea, sceneDuration, duration: sceneDuration, sceneLength, ratio, model: $('model').value, references: getRefs(), trendThumbnail, source })
+      });
+      const rawText = await res.text();
+      let j; try { j = JSON.parse(rawText); } catch { j = { error: rawText ? rawText.slice(0, 180) : ('HTTP ' + res.status) }; }
+      if (!res.ok || j.error) throw new Error(j.error || ('Failed to generate prompt (HTTP ' + res.status + ')'));
+      scenes = Array.isArray(j.scenes) ? j.scenes : [];
+      if (!scenes.length) throw new Error('The script generator returned no scenes.');
+      sceneLen = Number(j.sceneLength) || Number(j.sceneDuration) || 8;
+      scriptTitle = j.title || name;
+    }
     $('effectTitle').textContent = scriptTitle;
     renderScript();
     $('outputPanel').classList.add('visible');

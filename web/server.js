@@ -5613,6 +5613,43 @@ Return ONLY a JSON object:
       } catch (trendsErr) { return sendJson(res, 200, { source: 'error', category: (u.searchParams.get('category') || 'anime'), videos: [], liveTerms: [], flashloopFormats: [], error: trendsErr.message }); }
     }
 
+    // ONE scene at a time. Vercel caps a function at 300s and a full 1-2 min script
+    // (8-15 long prompts) plus the trend-template build exceeds it, so the client
+    // loops this endpoint and stitches the scenes - like the video renderer does.
+    if (p === '/api/flashloop/generate-scene' && req.method === 'POST') {
+      try {
+        const body = await readBody(req);
+        const { slug = '', name = '', tagline = '', idea = '', sceneIndex = 1, totalScenes = 1, prevEnd = '', duration = 15, sceneLength = 8, ratio = '9:16', model = 'logfare:auto', references = [], trendThumbnail = '', source = '' } = body || {};
+        const effectName = String(name || slug).trim();
+        if (!effectName) return sendJson(res, 400, { error: 'effect name or slug required' });
+        // The whole script costs flashloopScript credits; a chunked run charges once.
+        if (Number(sceneIndex) <= 1 && !(await requireCredits(req, res, CREDIT_COSTS.flashloopScript, 'generate script'))) return;
+        const selectedModel = isFlashloopPromptModel(model) ? model : 'logfare:auto';
+        const refs = Array.isArray(references) ? references.filter(r => r && String(r.name || '').trim()) : [];
+        const trendMode = resolveTrendMode(source, slug, effectName, tagline);
+        const perScene = [5, 8, 10, 15, 30].includes(Number(sceneLength)) ? Number(sceneLength) : 8;
+        let trendTpl = null;
+        try {
+          trendTpl = await trendTemplates.buildTrendTemplate({
+            source: String(source || (trendMode === 'style' ? 'flashloop' : 'sjinn')),
+            slug: String(slug || ''), name: effectName, tagline: String(tagline || ''),
+            thumbnail: String(trendThumbnail || ''), concept: resolveTrendConcept(String(slug || ''), effectName, '')
+          });
+        } catch (e) { logLine('generate-scene: trend template unavailable - ' + e.message); }
+        const idx = Number(sceneIndex) || 1;
+        const total = Number(totalScenes) || 1;
+        const sceneIdea = String(idea || '')
+          + (prevEnd ? '\n\nPrevious scene ends here: ' + String(prevEnd).slice(-600) : '')
+          + '\n\nWrite scene ' + idx + ' of ' + total + ' of this story. It must continue directly from the previous scene and follow the trend template.';
+        logLine('flashloop scene ' + idx + '/' + total + ': generating (' + perScene + 's, ' + selectedModel + ')');
+        const one = await generateFlashloopScene(effectName, String(tagline || ''), sceneIdea, perScene, String(ratio), selectedModel, refs, '', perScene, trendMode, String(slug || ''), trendTpl);
+        return sendJson(res, 200, {
+          ok: true, sceneLength: perScene, totalScenes: total,
+          scene: { scene: idx, title: one.title || ('Scene ' + idx), hook: '', imagePrompt: one.imagePrompt, videoPrompt: one.videoPrompt }
+        });
+      } catch (e) { logLine('flashloop generate-scene: ' + e.message); return sendJson(res, 500, { error: e.message }); }
+    }
+
     // Generate detailed image + video prompts for a selected Flashloop viral AI format.
     if (p === '/api/flashloop/generate-prompt' && req.method === 'POST') {
       try {
