@@ -1964,6 +1964,28 @@ const LOGFARE_IMAGE_MODELS = ['flux-1-schnell', 'flux-2-dev', 'flux-2-klein-9b',
 const LOGFARE_TTS_MODEL = 'aura-2-en';
 // Deepgram Aura-2 speakers: luna (female) / orion (male) — both verified live.
 const LOGFARE_TTS_VOICES = { female: 'luna', male: 'orion' };
+// Deepgram Aura-2 speakers (aura-2-en) that answer on Logfare — verified live.
+const LOGFARE_VOICES = [
+  { id: 'luna', label: 'Luna — female (Aura-2)' },
+  { id: 'aurora', label: 'Aurora — female (Aura-2)' },
+  { id: 'thalia', label: 'Thalia — female (Aura-2)' },
+  { id: 'selene', label: 'Selene — female (Aura-2)' },
+  { id: 'helena', label: 'Helena — female (Aura-2)' },
+  { id: 'andromeda', label: 'Andromeda — female (Aura-2)' },
+  { id: 'minerva', label: 'Minerva — female (Aura-2)' },
+  { id: 'orion', label: 'Orion — male (Aura-2)' },
+  { id: 'apollo', label: 'Apollo — male (Aura-2)' },
+  { id: 'arcas', label: 'Arcas — male (Aura-2)' },
+  { id: 'atlas', label: 'Atlas — male (Aura-2)' },
+  { id: 'hermes', label: 'Hermes — male (Aura-2)' },
+  { id: 'jupiter', label: 'Jupiter — male (Aura-2)' },
+  { id: 'perseus', label: 'Perseus — male (Aura-2)' }
+];
+function resolveLogfareVoice(voice) {
+  const v = String(voice || '');
+  if (LOGFARE_TTS_VOICES[v]) return LOGFARE_TTS_VOICES[v];
+  return LOGFARE_VOICES.some(x => x.id === v) ? v : LOGFARE_TTS_VOICES.female;
+}
 function isLogfareImageModel(m) { return LOGFARE_IMAGE_MODELS.includes(String(m || '')); }
 // The Flashloop/SJinn picker sends Logfare image models as "lfimg:<id>" because
 // nano-banana-2 / gpt-image-2 exist on PaxSenix too.
@@ -2057,7 +2079,7 @@ async function logfareTtsChunk(chunkPath, text, voice) {
       body: JSON.stringify({
         model: LOGFARE_TTS_MODEL,
         input: String(text),
-        voice: LOGFARE_TTS_VOICES[voice] || LOGFARE_TTS_VOICES.female,
+        voice: resolveLogfareVoice(voice),
         response_format: 'mp3'
       }),
       signal: AbortSignal.timeout(180000)
@@ -4467,7 +4489,7 @@ const requestHandler = async (req, res) => {
       } catch (e) { return sendJson(res, 200, { hasAudio: false, matchesCurrent: false, withSpeech: 0, error: e.message }); }
     }
     if (p === '/api/health' || p === '/api/ping') return sendJson(res, 200, { ok: true, vercel: IS_VERCEL, path: p, url: rawUrl, hasKey: !!API_KEY, commit: (process.env.VERCEL_GIT_COMMIT_SHA || '').slice(0, 7) || 'local', deployedAt: process.env.VERCEL_DEPLOYMENT_ID ? 'vercel' : 'local', logfare: { key: !!LOGFARE_API_KEY, lastOkAt: logfareStatus.lastOkAt, lastModel: logfareStatus.lastModel, lastError: logfareStatus.lastError } });
-    if (p === '/api/models') return sendJson(res, 200, { chat: MODELS, image: IMAGE_MODELS.concat(LOGFARE_IMAGE_MODELS), video: VIDEO_MODELS, voices: VOICES, languages: LANGUAGES, narrationModes: NARRATION_MODES, narrationEngines: NARRATION_ENGINES, styles: STYLE_KEYS.map(k => ({ key: k, label: STYLES[k].label })) });
+    if (p === '/api/models') return sendJson(res, 200, { chat: MODELS, image: IMAGE_MODELS.concat(LOGFARE_IMAGE_MODELS), video: VIDEO_MODELS, voices: VOICES, languages: LANGUAGES, narrationModes: NARRATION_MODES, narrationEngines: NARRATION_ENGINES, narrationVoices: { fish: VOICES, mimo: VOICES, logfare: LOGFARE_VOICES }, styles: STYLE_KEYS.map(k => ({ key: k, label: STYLES[k].label })) });
 
     // --- CREDITS ---
     if (p === '/api/credits' && req.method === 'GET') {

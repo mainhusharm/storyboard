@@ -422,10 +422,12 @@ async function init(){
   $('chatModel').innerHTML=m.chat.map(x=>`<option>${x}</option>`).join('');
   $('imageModel').innerHTML=m.image.map(x=>`<option>${x}</option>`).join('');
   $('videoModel').innerHTML=(m.video||[{id:'grok-video',label:'Grok Video — 6s'},{id:'omni-flash',label:'Omni Flash — 8s'},{id:'veo-3.1',label:'Veo 3.1 — 8s'}]).map(v=>`<option value="${v.id}">${v.label}</option>`).join('');
-  $('voice').innerHTML=(m.voices||[{id:'female',label:'Female narrator'},{id:'male',label:'Male narrator'}]).map(v=>`<option value="${v.id}">${v.label}</option>`).join('');
+  const fillVoices=()=>{const per=(m.narrationVoices||{})[$('narrationEngine').value];const list=(per&&per.length)?per:(m.voices||[{id:'female',label:'Female narrator'},{id:'male',label:'Male narrator'}]);$('voice').innerHTML=list.map(v=>`<option value="${v.id}">${v.label}</option>`).join('');};
   $('language').innerHTML=(m.languages||[{id:'en',label:'English'},{id:'hi',label:'Hindi'}]).map(l=>`<option value="${l.id}">${l.label}</option>`).join('');
   $('narrationMode').innerHTML=(m.narrationModes||[{id:'tts',label:'TTS Voice'},{id:'prompt',label:'Prompt Vocalized'}]).map(n=>`<option value="${n.id}">${n.label}</option>`).join('');
   $('narrationEngine').innerHTML=(m.narrationEngines||[{id:'fish',label:'Fish Audio — s2.1-pro-free (default)'},{id:'mimo',label:'MIMO — high quality voices (fallback option)'}]).map(e=>`<option value="${e.id}">${e.label}</option>`).join('');
+  $('narrationEngine').onchange=()=>{fillVoices();};
+  fillVoices(); // engine-specific voices: Fish/MIMO narrators, Logfare Aura-2 speakers
   $('style').innerHTML=(m.styles||[{key:'cinematic',label:'Cinematic'}]).map(s=>`<option value="${s.key}">${s.label}</option>`).join('');
   $('modelname').textContent=$('chatModel').value;
   $('chatModel').onchange=()=>$('modelname').textContent=$('chatModel').value;
