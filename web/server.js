@@ -1960,11 +1960,18 @@ async function chatWithLogfareFallback(model, messages, maxTokens = 16000, tempe
 //   POST /audio/speech        { model:'aura-2-en', input }    → raw mp3 bytes
 // Images ALWAYS come back 1024x1024 — size / ratio / aspect_ratio are ignored —
 // so every render is centre-cropped to the requested ratio here with ffmpeg.
-const LOGFARE_IMAGE_MODELS = ['flux-2-klein-9b', 'lucid-origin', 'phoenix-1.0'];
+const LOGFARE_IMAGE_MODELS = ['flux-1-schnell', 'flux-2-dev', 'flux-2-klein-9b', 'sdxl-lightning', 'lucid-origin', 'phoenix-1.0', 'gpt-image-2', 'nano-banana-2'];
 const LOGFARE_TTS_MODEL = 'aura-2-en';
 // Deepgram Aura-2 speakers: luna (female) / orion (male) — both verified live.
 const LOGFARE_TTS_VOICES = { female: 'luna', male: 'orion' };
 function isLogfareImageModel(m) { return LOGFARE_IMAGE_MODELS.includes(String(m || '')); }
+// The Flashloop/SJinn picker sends Logfare image models as "lfimg:<id>" because
+// nano-banana-2 / gpt-image-2 exist on PaxSenix too.
+const LOGFARE_IMG_PREFIX = 'lfimg:';
+function isFlashloopLogfareImage(m) {
+  const v = String(m || '');
+  return v.startsWith(LOGFARE_IMG_PREFIX) && isLogfareImageModel(v.slice(LOGFARE_IMG_PREFIX.length));
+}
 // A Logfare render is ONE blocking POST that returns the finished bytes, so there
 // is no task to poll. It is handed back to the (submit → wait → download) pipeline
 // as an already-finished local file behind this prefix.
@@ -2007,12 +2014,20 @@ async function generateLogfareImage(model, prompt, ratio = '1:1', refBuf = null)
         res = await fetch(`${LOGFARE_API}/images/generations`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + LOGFARE_API_KEY },
-          body: JSON.stringify({ model, prompt: String(prompt || ''), n: 1 }),
+          body: JSON.stringify({ model, prompt: String(prompt || '') }),
           signal: AbortSignal.timeout(240000)
         });
       }
       const j = await res.json().catch(() => ({}));
       b64 = String((j && j.data && j.data[0] && j.data[0].b64_json) || '');
+      // Some models (nano-banana-2) return a hosted URL instead of base64.
+      const hostedUrl = String((j && j.data && j.data[0] && (j.data[0].url || j.data[0].image_url)) || '');
+      if (!b64 && hostedUrl) {
+        try {
+          const ir = await fetch(hostedUrl, { signal: AbortSignal.timeout(120000) });
+          if (ir.ok) b64 = Buffer.from(await ir.arrayBuffer()).toString('base64');
+        } catch (e) { logLine('logfare image ' + model + ': url download failed ' + e.message); }
+      }
       if (!res.ok || !b64) {
         const msg = (j && j.error && (j.error.message || JSON.stringify(j.error))) || `HTTP ${res.status}`;
         logLine(`logfare image ${model} attempt ${attempt}: ${msg}`);
@@ -5804,7 +5819,8 @@ RULES:
 
         // Respect the selected image model: PaxSenix ids, "aqua:<id>" or a Logfare
         // image model (flux-2-klein-9b / lucid-origin / phoenix-1.0).
-        let selectedModel = (model && (IMAGE_MODELS.includes(model) || isAquaImageModel(model) || isLogfareImageModel(model))) ? model : 'seedream-5';
+        let selectedModel = (model && (IMAGE_MODELS.includes(model) || isAquaImageModel(model) || isLogfareImageModel(model) || isFlashloopLogfareImage(model))) ? model : 'seedream-5';
+        if (isFlashloopLogfareImage(selectedModel)) selectedModel = selectedModel.slice(LOGFARE_IMG_PREFIX.length);
 
         // ---- Logfare provider (flux-2-klein-9b / lucid-origin / phoenix-1.0) ----
         // Rendered here and re-hosted, so the browser <img> and the video stage
@@ -5822,8 +5838,19 @@ RULES:
             try { fs.unlinkSync(local); } catch {}
             return sendJson(res, 200, { ok: true, imageUrl, model: selectedModel, mode: refBuf ? 'i2i' : 't2i', provider: 'logfare' });
           } catch (e) {
-            logLine('logfare image failed: ' + e.message + ' — falling back to PaxSenix');
+            logLine('logfare image failed: ' + e.message + ' — trying another Logfare model');
             aquaFailureNote = e.message;
+            const alt = ['flux-2-dev', 'sdxl-lightning', 'gpt-image-2'].find(m2 => m2 !== selectedModel && isLogfareImageModel(m2));
+            if (alt) {
+              try {
+                const refBuf2 = refImageUrl ? await refImageBuffer(refImageUrl) : null;
+                const p2 = sanitizePrompt(trendPromptPrefix(source, slug, trendName, tagline) + String(prompt));
+                const local2 = await generateLogfareImage(alt, p2, String(ratio), refBuf2);
+                const url2 = await uploadToImageHost(local2, logLine);
+                try { fs.unlinkSync(local2); } catch {}
+                return sendJson(res, 200, { ok: true, imageUrl: url2, model: alt, mode: refBuf2 ? 'i2i' : 't2i', provider: 'logfare' });
+              } catch (e2) { logLine('logfare alternative ' + alt + ' failed: ' + e2.message); aquaFailureNote = e2.message; }
+            }
             selectedModel = 'nano-banana-2';
           }
         }
@@ -5882,6 +5909,16 @@ RULES:
           const q = `${imageEndpoint(selectedModel)}?prompt=${encodeURIComponent(sanitized)}&model=${encodeURIComponent(selectedModel)}&ratio=${encodeURIComponent(String(ratio))}`;
           logLine(`flashloop image: text-to-image ${selectedModel} (no trend reference)`);
           const taskUrl = await submitTask(q);
+          // A Logfare render comes back as an already-finished local file; the
+          // browser needs a real URL, so host it instead of returning the marker.
+          if (taskUrl && isLogfareLocal(taskUrl)) {
+            try {
+              const localPath = taskUrl.slice(LOGFARE_LOCAL_PREFIX.length);
+              const hosted = await uploadToImageHost(localPath, logLine);
+              try { fs.unlinkSync(localPath); } catch {}
+              return sendJson(res, 200, { ok: true, imageUrl: hosted, model: selectedModel, mode: 't2i', provider: 'logfare' });
+            } catch (e) { logLine('logfare-local host failed: ' + e.message); }
+          }
           if (!taskUrl) return sendJson(res, 500, { error: (aquaFailureNote ? `Aqua image failed (${aquaFailureNote}) and PaxSenix fallback failed too. ` : '') + `Failed to submit image task with ${selectedModel} after retries` });
           return sendJson(res, 200, { ok: true, taskUrl, model: selectedModel, mode: 't2i' });
         }
