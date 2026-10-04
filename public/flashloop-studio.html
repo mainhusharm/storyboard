@@ -213,6 +213,11 @@
         <div class="hint">Pick which scene's first-frame image prompt to render.</div>
       </div>
       <div class="field" style="margin-bottom:14px">
+        <label for="i2iPrompt">First-frame image prompt — this is what renders the image</label>
+        <textarea id="i2iPrompt" class="prompt-output" style="min-height:130px" placeholder="No image prompt stored for this scene — type one."></textarea>
+        <div class="hint">Prefilled from the selected scene. Edit it here to fix the image; the video-only script window is not affected.</div>
+      </div>
+      <div class="field" style="margin-bottom:14px">
         <label for="i2iModel">i2i Model</label>
         <select id="i2iModel">
           <option value="lfimg:flux-1-schnell" selected>Flux 1 Schnell — Logfare (fastest)</option>
@@ -227,9 +232,6 @@
           <option value="aqua:nanobanana-pro">NanoBanana Pro — AquaDevs</option>
           <option value="aqua:nanobanana-2">NanoBanana 2 — AquaDevs</option>
           <option value="aqua:gptimage-2">GPT Image 2 — AquaDevs</option>
-          <option value="flux-2-klein-9b">FLUX.2 Klein 9B — Logfare</option>
-          <option value="lucid-origin">Leonardo Lucid Origin — Logfare</option>
-          <option value="phoenix-1.0">Leonardo Phoenix — Logfare</option>
           <option value="seedream-5">Seedream 5 (PaxSenix)</option>
           <option value="seedream-4">Seedream 4</option>
           <option value="seedream-4.5">Seedream 4.5</option>
@@ -673,6 +675,14 @@ function renderScript(){
     const prev = picker.value;
     picker.innerHTML = scenes.map((s, i) => '<option value="' + i + '">Scene ' + (i + 1) + (s.title ? ' — ' + escapeHtml(s.title) : '') + '</option>').join('');
     picker.value = (prev !== '' && Number(prev) < scenes.length) ? prev : '0';
+    const imgBox = $('i2iPrompt');
+    const fillImgPrompt = () => {
+      if (!imgBox) return;
+      const sc = scenes[Number(picker.value) || 0] || {};
+      imgBox.value = sc.imagePrompt || '';
+    };
+    picker.onchange = fillImgPrompt;
+    fillImgPrompt();
   }
 }
 
@@ -706,7 +716,7 @@ $('btnGenerateImage').onclick = async () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        prompt: sceneImageText(Number(($('i2iScene') && $('i2iScene').value) || 0)),
+        prompt: (($('i2iPrompt') && $('i2iPrompt').value.trim()) || sceneImageText(Number(($('i2iScene') && $('i2iScene').value) || 0))),
         refImageUrl: refAnchorUrl() || trendThumbnail,
         ratio: $('ratio').value,
         model: $('i2iModel').value,
