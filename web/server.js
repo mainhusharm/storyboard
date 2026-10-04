@@ -5777,15 +5777,10 @@ const perScene = flashloopScenePlan(mode, sceneLength).perScene;
 
 OUTPUT FORMAT — return the FULL edited script as plain text, nothing else. Preserve the exact structure:
 SCENE <n> — <title> (<start>–<end>)
-HOOK: <hook>
-[IMAGE PROMPT]
-<image prompt text>
-
-[VIDEO PROMPT]
-<video prompt text>
+<video prompt timeline text>
 
 RULES:
-- Keep every SCENE header, HOOK, [IMAGE PROMPT] and [VIDEO PROMPT] marker exactly as given.
+- Keep every SCENE header exactly as given and keep ONLY the video prompt text beneath it. Do NOT add HOOK lines, [IMAGE PROMPT] sections or any other markers.
 - Apply the edit instruction precisely (e.g. "change the cat to a puppy", "make scene 2 faster", "replace all neon colors with warm amber").
 - Keep prompts concrete and vivid. Never add commentary, explanations, or markdown — ONLY the edited script text.`;
         const raw = await chatWithLogfareFallback(selectedModel, [

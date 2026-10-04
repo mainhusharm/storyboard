@@ -591,19 +591,21 @@ function parseScriptBox(t){
   const out = [];
   let cur = null, mode = null;
   for (const ln of String(t || '').split('\n')) {
-    if (/^SCENE\s+\d+/.test(ln.trim())) { if (cur) out.push(cur); cur = { image: '', video: '' }; mode = null; continue; }
+    if (/^SCENE\s+\d+/.test(ln.trim())) { if (cur) out.push(cur); cur = { image: '', video: '', raw: '' }; mode = null; continue; }
     if (!cur) continue;
     const s = ln.trim();
     if (/^\[IMAGE PROMPT\]/i.test(s)) { mode = 'image'; continue; }
     if (/^\[VIDEO PROMPT\]/i.test(s)) { mode = 'video'; continue; }
+    if (/^HOOK:/i.test(s)) { mode = null; continue; }
     if (mode === 'image') cur.image += (cur.image ? '\n' : '') + ln;
     else if (mode === 'video') cur.video += (cur.video ? '\n' : '') + ln;
+    else cur.raw += (cur.raw ? '\n' : '') + ln; // video-only window format
   }
   if (cur) out.push(cur);
   return out;
 }
 function sceneImageText(i){ const box = document.getElementById('fullScriptBox'); if (box) { const p = parseScriptBox(box.value); if (p[i] && p[i].image.trim()) return p[i].image.trim(); } return (scenes[i] && scenes[i].imagePrompt) || ''; }
-function sceneVideoText(i){ const box = document.getElementById('fullScriptBox'); if (box) { const p = parseScriptBox(box.value); if (p[i] && p[i].video.trim()) return p[i].video.trim(); } return (scenes[i] && scenes[i].videoPrompt) || ''; }
+function sceneVideoText(i){ const box = document.getElementById('fullScriptBox'); if (box) { const p = parseScriptBox(box.value); if (p[i] && p[i].video.trim()) return p[i].video.trim(); if (p[i] && p[i].raw && p[i].raw.trim()) return p[i].raw.trim(); } return (scenes[i] && scenes[i].videoPrompt) || ''; }
 function fmtTime(s){ return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); }
 
 function buildFullScript(){
@@ -612,10 +614,12 @@ function buildFullScript(){
   const box = document.getElementById('fullScriptBox');
   if (box && box.value.trim()) return box.value;
   const per = sceneLen || 8;
+  // VIDEO PROMPTS ONLY: the user copies these straight into the video model, so
+  // hooks and image prompts are deliberately left out of the window (the image
+  // prompts are still kept in memory for the Generate Image button).
   const blocks = scenes.map((s, i) =>
-    'SCENE ' + (i + 1) + ' — ' + (s.title || ('Scene ' + (i + 1))) + ' (' + fmtTime(i * per) + '–' + fmtTime((i + 1) * per) + ')' + (s.hook ? '\nHOOK: ' + s.hook : '') +
-    '\n[IMAGE PROMPT]\n' + (s.imagePrompt || '') +
-    '\n\n[VIDEO PROMPT]\n' + (s.videoPrompt || '')
+    'SCENE ' + (i + 1) + ' — ' + (s.title || ('Scene ' + (i + 1))) + ' (' + fmtTime(i * per) + '–' + fmtTime((i + 1) * per) + ')' +
+    '\n' + (s.videoPrompt || '')
   );
   return blocks.join('\n\n');
 }
@@ -625,10 +629,12 @@ function renderScript(){
   const c = $('scriptContainer');
   if (!scenes.length) { c.innerHTML = ''; return; }
   // ONE single window: every scene stacked in one editable textarea.
+  // VIDEO PROMPTS ONLY: these are copied straight into the video model, so hooks
+  // and image prompts stay out of the window (image prompts remain in memory for
+  // the Generate Image button).
   const blocks = scenes.map((s, i) =>
-    'SCENE ' + (i + 1) + ' — ' + (s.title || ('Scene ' + (i + 1))) + ' (' + fmtTime(i * per) + '–' + fmtTime((i + 1) * per) + ')' + (s.hook ? '\nHOOK: ' + s.hook : '') +
-    '\n[IMAGE PROMPT]\n' + (s.imagePrompt || '') +
-    '\n\n[VIDEO PROMPT]\n' + (s.videoPrompt || '')
+    'SCENE ' + (i + 1) + ' — ' + (s.title || ('Scene ' + (i + 1))) + ' (' + fmtTime(i * per) + '–' + fmtTime((i + 1) * per) + ')' +
+    '\n' + (s.videoPrompt || '')
   );
   c.innerHTML = `
     <textarea id="fullScriptBox" class="prompt-output" style="min-height:600px;width:100%">${escapeHtml(blocks.join('\n\n'))}</textarea>
