@@ -749,8 +749,16 @@ async function generateFlashloopImagePrompt(effectName, tagline, userIdea, ratio
 CRITICAL RULES:
 ${subjectRule}
 - You MUST generate a SPECIFIC scene: name the subject, the action, and the setting. Never write "a scene matching this effect".
-- Keep the prompt CONCISE: 80-150 words max. This is a single frozen frame anchor.
-- Cover: (1) WHO/WHAT is in frame and what they're doing, (2) framing/distance, (3) lighting and colour palette, (4) key materials/textures, (5) style keywords.
+- Write a PROFESSIONAL, well-defined shot brief: 90-150 words, ONE flowing paragraph, no labels, no bullet points, no markdown.
+- Follow this information order exactly:
+  (1) SHOT + OPTICS — framing (extreme close-up / close-up / medium / wide), lens character (e.g. 100mm macro, 35mm, anamorphic), depth of field, camera height and angle;
+  (2) SUBJECT — name it, its material/wardrobe/surface, and its exact colours;
+  (3) POSE + EXPRESSION — what it is doing and its expression, caught mid-motion;
+  (4) ENVIRONMENT — the setting and the depth/traffic of the background;
+  (5) LIGHT — key light direction and quality, fill and rim, colour temperature, contrast ratio;
+  (6) PALETTE + FINISH — dominant colours, film grading, grain/render style (photoreal 3D, anime cel, macro photography).
+- It is a SINGLE FROZEN FRAME: no camera-movement verbs, no time-stamped beats, no on-screen text or logos.
+- Prefer concrete physical nouns and measurable specifics (materials, textures, scale, distances) over vague adjectives.
 - If a user idea is provided, incorporate it naturally without losing the concept above.
 - The example below is a FORMAT template with no subject — match its conciseness and structure, never its wording.${conceptBlock}${styleBlock}${refBlock}
 
@@ -997,7 +1005,7 @@ RULES:
 - EXACTLY ${sceneCount} scenes. Every scene is exactly ${perScene} seconds — the video engine renders ~${perScene}s clips, so the timeline MUST fit inside ${perScene}s.
 ${modeRules}
 - TO THE POINT, zero filler. NO "CAMERA:" sections, NO camera-angle/movement instructions, NO lighting/mood/setting bullet lists, NO audio or style paragraphs inside the prompts, NO negative instructions.
-- Each scene's "imagePrompt": 80-140 words — the first-frame reference image for that scene. Concrete subject, exact action, setting, colors, materials. End with: ${ratio}.
+- Each scene's "imagePrompt": 90-150 words — a professional shot brief for that scene's FIRST FRAME (rendered as a still, then animated). ONE flowing paragraph, no labels or bullet points, in this exact order: (1) shot and optics — framing, lens character (e.g. 100mm macro, 35mm), depth of field, camera height and angle; (2) the subject — what it is, its material/wardrobe and exact colours; (3) its pose, action and expression, caught mid-motion; (4) the environment and background depth; (5) lighting — key direction and quality, fill/rim, colour temperature, contrast; (6) palette and finish — dominant colours, grading, texture/render style. Use concrete physical detail (materials, textures, scale, distances); no camera-movement or time words (it is one frozen frame), no on-screen text or logos. End with: ${ratio}.
 - Each scene's "videoPrompt": ${vidWords} words — a TIMELINE of ${beatCount} time-stamped beats that covers the full ${perScene} seconds. Format: ${beatExample} — consecutive segments with no gaps, ending exactly at ${perScene}s. The FIRST segment must deliver the hook. Each segment is one concrete action beat with vivid specifics (textures, scale, lighting, expressions, sounds).
 - Hit the word targets above exactly — count your words as you write. Be vivid and specific so a video model can animate it precisely, but never pad with filler.
 - STORY: Scene 1 opens with the strongest hook (cold open). Scenes flow seamlessly — each scene starts exactly where the previous one ended (same characters, same place, same light, continuous motion). The last scene ends on a satisfying payoff.${tagline ? '\n- Trend tagline: ' + tagline : ''}${userIdea ? '\n- User idea (honor it without losing the concept above): ' + userIdea : ''}${styleBlock}${refBlock}
