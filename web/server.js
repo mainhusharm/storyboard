@@ -1883,6 +1883,9 @@ async function chatWithLogfare(model, messages, maxTokens = 16000, temperature =
       });
       if (res.status !== 429 && res.status < 500) break;
       lastAttemptErr = new Error(`HTTP ${res.status}`);
+      // Upstream 5xx (503 = that model is overloaded/down): do not retry the same
+      // model - fall over to the next one in the chain right away.
+      if (res.status >= 500) { logLine(`logfare ${model}: upstream ${res.status} - failing over`); break; }
     } catch (e) { lastAttemptErr = e; }
     if (attempt < 3) {
       logLine(`logfare ${model}: ${lastAttemptErr.message} - retry in ${attempt * 3}s`);
