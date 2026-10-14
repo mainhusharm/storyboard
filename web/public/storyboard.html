@@ -438,7 +438,12 @@ async function refreshNarrStatus(){
 async function init(){
   try{const h=await api('/health');IS_VERCEL_CLIENT=!!h.vercel}catch(e){}
   const m=await api('/models');
-  $('chatModel').innerHTML=m.chat.map(x=>`<option>${x}</option>`).join('');
+  $('chatModel').innerHTML=m.chat.map(x=>{
+    // Logfare models are listed as "logfare:<id>" — show a readable label but
+    // keep the raw id as the option value (that is what the API routes on).
+    const lbl=x.startsWith('logfare:')?'DeepSeek V4.1 Flash — Logfare':x;
+    return `<option value="${x}">${lbl}</option>`;
+  }).join('');
   $('imageModel').innerHTML=m.image.map(x=>`<option>${x}</option>`).join('');
   $('videoModel').innerHTML=(m.video||[{id:'grok-video',label:'Grok Video — 6s'},{id:'omni-flash',label:'Omni Flash — 8s'},{id:'veo-3.1',label:'Veo 3.1 — 8s'}]).map(v=>`<option value="${v.id}">${v.label}</option>`).join('');
   const fillVoices=()=>{const per=(m.narrationVoices||{})[$('narrationEngine').value];const list=(per&&per.length)?per:(m.voices||[{id:'female',label:'Female narrator'},{id:'male',label:'Male narrator'}]);$('voice').innerHTML=list.map(v=>`<option value="${v.id}">${v.label}</option>`).join('');};

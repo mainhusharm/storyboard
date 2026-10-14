@@ -176,6 +176,14 @@ PaxSenix ones in every dropdown; the selected model still runs ALONE — no hidd
 
 ## Logfare media (image models + narration TTS)
 
+Logfare is also a **chat/prompt backend** available from the Storyboard, not just SJinn/Flashloop:
+`chatCompletion()` routes any `logfare:<model>` id through `chatWithLogfareFallback()` (pinned
+model → `logfare/auto` → `gemma-4-26b` → PaxSenix as last resort), so the Storyboard's chat-model
+dropdown offers `logfare:deepseek-v4.1-flash` — displayed as "DeepSeek V4.1 Flash — Logfare" with
+the raw id as the option value — and behaves exactly like the SJinn/Flashloop picker. Without that
+branch the raw id would be POSTed to PaxSenix and 400. Note the gateway logs request content, so
+nothing reaches it unless a Logfare model is explicitly selected.
+
 Logfare's OpenAI-compatible gateway also serves the image models and Deepgram
 Aura-2 TTS that the **image model** dropdowns offer — Logfare is no longer a
 prompt-writing-only backend. Shapes verified live against `logfare.ai/v1`:

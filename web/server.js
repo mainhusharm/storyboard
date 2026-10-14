@@ -1181,7 +1181,11 @@ for (const d of [FRAMES_DIR, VIDEO_DIR, STORYBOARD_DIR]) fs.mkdirSync(d, { recur
 // renders from this list; chatCompletion falls over to gemini-2.5-pro →
 // deepseek-v3.2 when a model 502s/empty-responds, so a "broken" model never kills
 // a storyboard.
-const MODELS = ['gemini-2.5-pro', 'gemini-3.1-pro', 'gemini-3.1-flash-lite', 'gpt-5.5', 'gpt-5', 'gpt-5.2', 'gpt-4.1', 'claude-opus-4-8', 'claude-sonnet-4-5', 'kimi-k3', 'kimi-k2.6', 'glm-5.2', 'glm-5.3', 'deepseek-v3.2', 'deepseek-v4-flash', 'mimo-v2.5', 'qwen3.8-max', 'qwen3.7-plus', 'grok-4.6', 'minimax-m3'];
+const MODELS = ['gemini-2.5-pro', 'gemini-3.1-pro', 'gemini-3.1-flash-lite', 'gpt-5.5', 'gpt-5', 'gpt-5.2', 'gpt-4.1', 'claude-opus-4-8', 'claude-sonnet-4-5', 'kimi-k3', 'kimi-k2.6', 'glm-5.2', 'glm-5.3', 'deepseek-v3.2', 'deepseek-v4-flash', 'mimo-v2.5', 'qwen3.8-max', 'qwen3.7-plus', 'grok-4.6', 'minimax-m3',
+  // Logfare prompt models — same "logfare:<model>" ids the SJinn / Flashloop
+  // studio uses, so picking one routes through chatCompletion()'s Logfare path
+  // (pinned model first, PaxSenix fallback) exactly as it does there.
+  'logfare:deepseek-v4.1-flash'];
 // Logfare chat models (https://logfare.ai/v1) — flashloop/sjinn prompt generation ONLY.
 // Selected from the UI with a "logfare:" prefix so they never collide with same-named
 // PaxSenix models. gemma-4-26b + logfare/auto work without opt-in; the rest require
@@ -2039,6 +2043,12 @@ async function download(fileUrl, outPath) {
 
 // ---------------- streaming chat ----------------
 async function chatCompletion(model, messages, maxTokens = 16384, temperature = 0.7) {
+  // A "logfare:<model>" pick routes through the Logfare gateway chain (pinned
+  // model → logfare/auto → gemma-4-26b → PaxSenix), the SAME path the SJinn /
+  // Flashloop studio uses. Sending the raw id to PaxSenix would just 400.
+  if (String(model || '').startsWith('logfare:')) {
+    return chatWithLogfareFallback(model, messages, maxTokens, temperature);
+  }
   // Use non-streaming mode — streaming was causing ECONNRESET on local
   // On Vercel (fluid compute allows maxDuration up to 300s) give LLM calls real
   // headroom: allow up to 12k output tokens and wait up to 250s. The old 22s/2500
@@ -7334,11 +7344,13 @@ module.exports = requestHandler;
 // Exposed for the pipeline/test-*.js regression tests.
 module.exports.__internal = {
   flashloopScenePlan,
-  // Novita async-job models (wan3.0 video + qwen/wanx image).
+  // Logfare async-job models (wan3.0 video + qwen/wanx image).
   NOVITA_VIDEO_MODELS, NOVITA_IMAGE_MODELS, NOVITA_TASK_PREFIX,
   isNovitaVideoModel, isNovitaI2VModel, isNovitaImageModel, novitaAcceptsImage,
   novitaDurationFor, novitaImageSize, novitaSubmit, novitaWait, novitaResultUrl,
   uploadVideoClip,
+  // LLM routing (chatCompletion honours "logfare:<model>" ids).
+  chatCompletion, chatWithLogfareFallback, logfareStatus,
   // Logfare media (image models + Deepgram Aura-2 narration).
   LOGFARE_IMAGE_MODELS, LOGFARE_TTS_MODEL, LOGFARE_TTS_VOICES, LOGFARE_LOCAL_PREFIX,
   isLogfareImageModel, isLogfareLocal, cropToRatio, generateLogfareImage, logfareTtsChunk,
