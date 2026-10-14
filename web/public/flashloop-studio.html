@@ -127,13 +127,26 @@
           <option value="30">~2 min (15 scenes at 8s each)</option>
           <option value="5">30s — 1 prompt (single clip)</option>
         </select>
-        <div class="hint">Total video length — this sets the SCENE COUNT. The per-scene duration and aspect ratio are the ③ Duration and ② Aspect Ratio columns under Make Video.</div>
+        <div class="hint">Total video length — this sets the SCENE COUNT (total ÷ per-scene length).</div>
+      </div>
+      <div class="field">
+        <label for="sceneLength">Scene Length (duration)</label>
+        <select id="sceneLength">
+          <option value="8" selected>8s per scene (omni-flash)</option>
+          <option value="1">1s per scene</option>
+          <option value="2">2s per scene</option>
+          <option value="3">3s per scene</option>
+          <option value="4">4s per scene</option>
+          <option value="5">5s per scene</option>
+          <option value="10">10s per scene</option>
+          <option value="15">15s per scene (max for Wan 2.x)</option>
+          <option value="20">20s per scene (Wan 3.0)</option>
+          <option value="25">25s per scene (Wan 3.0)</option>
+          <option value="30">30s per scene (Wan 3.0)</option>
+        </select>
+        <div class="hint">Per-scene clip duration — drives the scene count above. Wan 3.0 accepts 1, 2, 3, 4, 5, 10, 15, 20, 25 or 30s; Wan 2.x caps at 15s; Omni Flash is fixed 8s. Stays in step with ③ Duration under Make Video.</div>
       </div>
     </div>
-    <!-- The scene planner reads #sceneLength; it mirrors the ③ Duration column. -->
-    <select id="sceneLength" style="display:none" aria-hidden="true">
-      <option value="8" selected>8</option>
-    </select>
     <div class="field">
         <label for="model">Model</label>
         <select id="model">
@@ -491,7 +504,7 @@ function syncSceneLength() {
   }
   wasSingle = single;
   sl.disabled = single;
-  // keep the visible ③ Duration column in step with the mirror
+  // keep the visible ③ Duration column in step with this one
   const md = $('mvDuration');
   if (md && md.value !== sl.value) { md.value = sl.value; }
   const s = $('mvSummary'); if (s) s.textContent = mvSummaryText();
@@ -503,6 +516,11 @@ function syncSceneLength() {
   }
 }
 $('duration').addEventListener('change', syncSceneLength);
+$('sceneLength').addEventListener('change', () => {
+  const md = $('mvDuration');
+  if (md && md.value !== $('sceneLength').value) md.value = $('sceneLength').value;
+  const s = $('mvSummary'); if (s) s.textContent = mvSummaryText();
+});
 syncSceneLength();
 
 // Same rule the server uses, so the client knows how many scenes to ask for.
