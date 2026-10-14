@@ -315,8 +315,8 @@
       </div>
       <div id="mvSummary" style="font-size:12px;color:var(--teal);margin:0 0 12px;padding:8px 10px;background:var(--panel2);border:1px solid var(--line2);border-radius:8px"></div>
       <div style="display:flex;align-items:center;gap:8px;margin:0 0 12px;font-size:12px;color:var(--dim);cursor:pointer">
-        <input type="checkbox" id="mvChained" style="accent-color:var(--amber)">
-        <label for="mvChained" style="cursor:pointer">Seamless chaining — render scenes in order, each starting from the previous scene's last frame (slower, true continuity). Unchecked: render all scenes in PARALLEL, show every scene clip, then combine.</label>
+        <input type="checkbox" id="mvChained" checked style="accent-color:var(--amber)">
+        <label for="mvChained" style="cursor:pointer"><b>Seamless chaining (recommended)</b> — scene 1 renders, its LAST FRAME becomes the start image of scene 2, and so on, so the story flows continuously like the Storyboard tool. Renders in order (slower). Uncheck to render all scenes in PARALLEL from their own images instead.</label>
       </div>
       <button id="btnMakeVideo" class="generate-btn" style="background:linear-gradient(135deg,rgba(251,146,60,.25),rgba(236,72,153,.25));border-color:#fb923c">🎬 Make Video (Omni Flash)</button>
       <div id="mvClips" style="display:none;margin-top:16px"></div>
@@ -924,8 +924,8 @@ $('btnMakeVideo').onclick = async () => {
   const chainNote = !doChain
     ? 'All scenes render in PARALLEL from their own first frames, then combine'
     : (engineCanChain
-      ? 'Each scene starts where the previous ended (seamless chaining, sequential)'
-      : 'Text-to-video scenes continue via prompt (no image chaining)');
+      ? 'SEAMLESS CHAINING: scene 1 renders, its LAST FRAME becomes the start image of scene 2, and so on — one continuous story (sequential, slower)'
+      : 'Text-to-video scenes continue via prompt (this engine takes no start frame)');
   if (!confirm(`Make a video from all ${n} scene(s) with ${engineName}?\n\nEach scene renders ~${perScene}s — ${chainNote}. ${n} scenes ≈ ${Math.round(n * perScene / 60 * 10) / 10} min of video. Renders can take 4-30 minutes per scene. Start?`)) return;
   $('btnMakeVideo').disabled = true;
   $('mvStatus').innerHTML = '';
@@ -976,15 +976,26 @@ $('btnMakeVideo').onclick = async () => {
     };
 
     if (doChain) {
-      // SEQUENTIAL — each scene needs the previous scene's last frame.
+      // SEQUENTIAL — scene N starts from the LAST FRAME of scene N-1, exactly like
+      // the storyboard pipeline. The scene's own first-frame image is only needed
+      // for scene 1 (or to restart the chain after a failure), so it is generated
+      // lazily instead of for every scene.
       let prevChain = '';
       for (let i = 0; i < n; i++) {
-        if (!(await ensureImage(i))) continue;
-        mvLog(`scene ${i + 1}/${n}: rendering video (${engineName}${prevChain ? ', chained' : ''})… 4-30 min`);
+        if (!prevChain && !(await ensureImage(i))) continue;
+        mvLog(`scene ${i + 1}/${n}: rendering video (${engineName}${prevChain ? ', starting from previous last frame' : ''})… 4-30 min`);
         const { res, v } = await renderScene(i, prevChain);
-        if (!res.ok || v.error) { mvLog(`scene ${i + 1}: FAILED — ${v.error || 'HTTP ' + res.status} (continuing without chain anchor)`, true); prevChain = ''; continue; }
+        if (!res.ok || v.error) {
+          mvLog(`scene ${i + 1}: FAILED — ${v.error || 'HTTP ' + res.status} (chain broken — the next scene starts from its own image)`, true);
+          prevChain = ''; continue;
+        }
         results[i] = v;
-        if (v.chain_image_url) prevChain = v.chain_image_url;
+        if (v.chain_image_url) {
+          prevChain = v.chain_image_url;
+          if (i < n - 1) mvLog(`scene ${i + 1}: last frame captured → scene ${i + 2} starts exactly here`);
+        } else if (i < n - 1) {
+          mvLog(`scene ${i + 1}: no chain frame returned — scene ${i + 2} will start from its own image`, true);
+        }
         mvLog(`scene ${i + 1}/${n}: video done ✓`);
       }
     } else {
