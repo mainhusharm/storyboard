@@ -46,6 +46,14 @@ if (!IS_VERCEL) { try { FISH_API_KEY = FISH_API_KEY || fs.readFileSync(path.join
 // ever sent there unless the user selected a Logfare model or engine.
 let LOGFARE_API_KEY = process.env.LOGFARE_API_KEY || '';
 if (!IS_VERCEL) { try { LOGFARE_API_KEY = LOGFARE_API_KEY || fs.readFileSync(path.join(ROOT, 'pipeline', 'logfare_apikey.txt'), 'utf8').trim(); } catch {} }
+// Novita sandbox (async wan video + qwen image models) — env NOVITA_API_KEY first,
+// then pipeline/novita_apikey.txt (gitignored). The sandbox base URL is ephemeral:
+// override it with env NOVITA_BASE_URL or pipeline/novita_base.txt when it rotates
+// (the default below is the URL the integration was verified against).
+let NOVITA_API_KEY = process.env.NOVITA_API_KEY || '';
+if (!IS_VERCEL) { try { NOVITA_API_KEY = NOVITA_API_KEY || fs.readFileSync(path.join(ROOT, 'pipeline', 'novita_apikey.txt'), 'utf8').trim(); } catch {} }
+let NOVITA_BASE = (process.env.NOVITA_BASE_URL || (() => { try { return fs.readFileSync(path.join(ROOT, 'pipeline', 'novita_base.txt'), 'utf8').trim(); } catch { return ''; } })() || 'https://3000-i1ztyh2mdku7f8p0bn81s-c81df28e.sandbox.novita.ai').replace(/\/+$/, '');
+if (NOVITA_API_KEY) console.log('[Novita] API key loaded — wan3.0 video + qwen/wanx image models enabled');
 const FISH_API = 'https://api.fish.audio';
 const API = 'https://api.paxsenix.org';
 const AQUA_API = 'https://api.aquadevs.com';
@@ -1227,6 +1235,35 @@ const VIDEO_MODELS = [
   { id: 'omni-flash', label: 'Omni Flash — 8s clips, fast' },
   { id: 'veo-3.1', label: 'Veo 3.1 — 8s clips, high quality' }
 ];
+// ---- Novita sandbox async-job models (docs 2026-10) ------------------------
+// POST {base}/v1/submit (1 credit/job) → {ok, taskId, status:PENDING};
+// GET  {base}/v1/status/{taskId} (free) → {taskId, status:PENDING|RUNNING|
+// SUCCEEDED|FAILED, elapsed, output:{task_status, video_url|image_url, ...}}.
+// Video: duration in seconds (WAN 3.0: 1,2,3,4,5,10,15,20,25,30; others 1-15),
+// resolution "720P", ratio 1:1|16:9|9:16|4:3|3:4 (parameters.ratio — NOT
+// aspect_ratio). Image-to-video: a dedicated I2V model + the start-frame URL in
+// a TOP-LEVEL imageUrls array (t2v models ignore images entirely).
+const NOVITA_VIDEO_MODELS = [
+  { id: 'wan3.0-video-prime', label: 'Wan 3.0 Prime — up to 30s (Novita)', maxDuration: 30, wan3: true },
+  { id: 'wan3.0-video-standard', label: 'Wan 3.0 Standard — up to 30s (Novita)', maxDuration: 30, wan3: true },
+  { id: 'wan3.0-video', label: 'Wan 3.0 — up to 30s (Novita)', maxDuration: 30, wan3: true },
+  { id: 'wan2.7-t2v', label: 'Wan 2.7 T2V — 1-15s (Novita)', maxDuration: 15 },
+  { id: 'wan2.1-t2v-turbo', label: 'Wan 2.1 T2V Turbo — 1-15s, fast (Novita)', maxDuration: 15 },
+  { id: 'wan2.1-t2v-plus', label: 'Wan 2.1 T2V Plus — 1-15s (Novita)', maxDuration: 15 },
+  { id: 'wan2.7-i2v', label: 'Wan 2.7 I2V — image-to-video, 1-15s (Novita)', maxDuration: 15, i2v: true },
+  { id: 'wan2.1-i2v-turbo', label: 'Wan 2.1 I2V Turbo — image-to-video (Novita)', maxDuration: 15, i2v: true },
+  { id: 'wan2.1-i2v-plus', label: 'Wan 2.1 I2V Plus — image-to-video (Novita)', maxDuration: 15, i2v: true }
+];
+// Image models — exposed as "novita:<id>" so they never collide with PaxSenix
+// ids (same convention as aqua:<id>). Sizes: 1024*1024 / 1280*720 / 720*1280 /
+// 1024*768 / 768*1024; image-to-image passes reference URLs in top-level imageUrls.
+const NOVITA_IMAGE_MODELS = [
+  { id: 'novita:qwen-image-3.0-pro', label: 'Qwen Image 3.0 Pro — Novita' },
+  { id: 'novita:wan2.7-image-pro', label: 'Wan 2.7 Image Pro — Novita' },
+  { id: 'novita:wanx2.1-t2i-turbo', label: 'WanX 2.1 T2I Turbo — Novita' },
+  { id: 'novita:wanx2.1-t2i-plus', label: 'WanX 2.1 T2I Plus — Novita' }
+];
+VIDEO_MODELS.push(...NOVITA_VIDEO_MODELS);
 const DEFAULT_VIDEO_MODEL = 'grok-video';
 // Video model selection is STANDALONE: the chosen model runs alone with no hidden
 // fallback chain. Selecting "Omni Flash" renders only with omni-flash; selecting
@@ -1237,15 +1274,44 @@ function videoModelChain(videoModel) {
 // Veo 3.1 and Omni Flash take the singular `imageUrl` param; Grok takes plural
 // `imageUrls` (per PaxSenix swagger).
 function videoImgKey(model) { return (model === 'veo-3.1' || model === 'omni-flash') ? 'imageUrl' : 'imageUrls'; }
+// ---- Novita model helpers ----
+const NOVITA_TASK_PREFIX = 'novita:task:';
+function isNovitaVideoModel(m) { return NOVITA_VIDEO_MODELS.some(v => v.id === m); }
+function novitaVideoMeta(m) { return NOVITA_VIDEO_MODELS.find(v => v.id === m) || null; }
+function isNovitaI2VModel(m) { const meta = novitaVideoMeta(m); return !!(meta && meta.i2v); }
+function isNovitaImageModel(m) { return /^novita:/.test(String(m || '')); }
+// WAN 3.0 accepts EXACTLY 1,2,3,4,5,10,15,20,25,30 — any other value is snapped
+// to the nearest allowed one; other Novita models take any int 1-15 (per docs).
+function novitaDurationFor(model, secs) {
+  const meta = novitaVideoMeta(model);
+  const max = meta ? meta.maxDuration : 15;
+  let d = Math.round(Number(secs) || 5);
+  if (meta && meta.wan3) {
+    const allowed = [1, 2, 3, 4, 5, 10, 15, 20, 25, 30];
+    d = allowed.reduce((best, a) => Math.abs(a - d) < Math.abs(best - d) ? a : best, allowed[0]);
+  }
+  return Math.max(1, Math.min(max, d));
+}
+// ratio → documented image size (Novita image models take W*H, not a ratio).
+function novitaImageSize(ratio) {
+  const r = String(ratio || '16:9');
+  if (r === '9:16') return '720*1280';
+  if (r === '1:1') return '1024*1024';
+  if (r === '4:3') return '1024*768';
+  if (r === '3:4') return '768*1024';
+  return '1280*720';
+}
 // Per-model supported aspect ratios (verified against PaxSenix): Grok accepts
 // 16:9 / 9:16 / 1:1; Omni Flash and Veo 3.1 accept ONLY 16:9 / 9:16. No video
 // model accepts 4:3. Unsupported ratios are snapped to the closest supported
 // one so a frame never dies at submit time (and the Veo fallback can work).
+// Novita wan models accept ALL five ratios from the docs.
 const VIDEO_RATIOS = {
   'grok-video': ['16:9', '9:16', '1:1'],
   'omni-flash': ['16:9', '9:16'],
   'veo-3.1': ['16:9', '9:16']
 };
+for (const m of NOVITA_VIDEO_MODELS) VIDEO_RATIOS[m.id] = ['1:1', '16:9', '9:16', '4:3', '3:4'];
 function normalizeVideoRatio(ratio, model, logFn = logLine) {
   const r = String(ratio || '16:9');
   const supported = VIDEO_RATIOS[model] || VIDEO_RATIOS['veo-3.1'];
@@ -1645,6 +1711,94 @@ async function generateAquaImage(model, prompt, ratio = '9:16', imageUrl = '') {
   throw lastErr || new Error('aqua image failed');
 }
 
+// ================================ Novita async jobs ================================
+// One submit helper for BOTH video and image jobs (same /v1/submit + /v1/status
+// API per the docs). Submit returns a `novita:task:<id>` marker that waitTask()
+// hands to novitaWait() — mirrors the logfare-local: marker pattern, so every
+// existing submit→wait→download call site works unchanged.
+async function novitaFetch(apiPath, opts = {}, timeoutMs = 120000) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    return await fetch(NOVITA_BASE + apiPath, {
+      ...opts,
+      signal: ctrl.signal,
+      headers: { Authorization: 'Bearer ' + NOVITA_API_KEY, 'Content-Type': 'application/json', ...(opts.headers || {}) }
+    });
+  } finally { clearTimeout(t); }
+}
+
+// Submit one async job (costs 1 credit). Validation errors (400 "Model not
+// exist" etc.) fail FAST with no retry; transient proxy drops get one retry.
+async function novitaSubmit(body, logFn = logLine) {
+  if (!NOVITA_API_KEY) { logFn('novita: no API key (env NOVITA_API_KEY or pipeline/novita_apikey.txt)'); return null; }
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    if (storyboardCancelRequested(logFn)) { logFn('novita submit cancelled by user'); return null; }
+    try {
+      const res = await novitaFetch('/v1/submit', { method: 'POST', body: JSON.stringify(body) }, 60000);
+      const j = await res.json().catch(() => ({}));
+      if (res.ok && j.ok && j.taskId) return NOVITA_TASK_PREFIX + j.taskId;
+      logFn(`novita submit: HTTP ${res.status} ${JSON.stringify(j).slice(0, 200)}`);
+      if (res.status >= 400 && res.status < 500) return null; // permanent (bad model / validation)
+    } catch (e) { logFn(`novita submit attempt ${attempt}: ${e.message}`); }
+    if (attempt < 2) await new Promise(r => setTimeout(r, 3000));
+  }
+  return null;
+}
+
+// Extract the finished asset URL from a SUCCEEDED status payload. Shape verified
+// live for video: output.video_url; images are expected at output.image_url /
+// output.images — both plus a generic media-URL fallback are handled.
+function novitaResultUrl(j) {
+  const out = (j && j.output) || {};
+  const direct = out.video_url || out.videoUrl || out.image_url || out.imageUrl || out.url;
+  if (direct) return String(direct);
+  if (Array.isArray(out.images) && out.images.length) {
+    const first = typeof out.images[0] === 'string' ? out.images[0] : (out.images[0] && (out.images[0].url || out.images[0].image_url));
+    if (first) return String(first);
+  }
+  if (Array.isArray(out.data) && out.data.length && typeof out.data[0] === 'string') return out.data[0];
+  const m = JSON.stringify(out).match(/https?:\/\/[^\s"'\\]+?\.(?:mp4|png|jpe?g|webp)[^\s"'\\]*/i);
+  return m ? m[0] : null;
+}
+
+// Poll a submitted job (free). Resolves with the finished asset URL or null.
+async function novitaWait(marker, maxMin = 25, logFn = logLine, outInfo = null) {
+  const taskId = String(marker).slice(NOVITA_TASK_PREFIX.length);
+  const deadline = Date.now() + maxMin * 60000;
+  let networkErrors = 0, lastStatus = 'PENDING';
+  while (Date.now() < deadline) {
+    if (storyboardCancelRequested(logFn)) { logFn('novita task cancelled by user'); if (outInfo) outInfo.cancelled = true; return null; }
+    try {
+      const res = await novitaFetch('/v1/status/' + encodeURIComponent(taskId), {}, 60000);
+      const j = await res.json().catch(() => ({}));
+      networkErrors = 0;
+      const status = String(j.status || lastStatus).toUpperCase();
+      if (status === 'SUCCEEDED' || status === 'SUCCESS' || status === 'DONE') {
+        const url = novitaResultUrl(j);
+        if (url) return url;
+        logFn(`novita task succeeded but no media URL in output: ${JSON.stringify(j.output || {}).slice(0, 300)}`);
+        if (outInfo) outInfo.failed = true;
+        return null;
+      }
+      if (/FAIL|ERROR|CANCEL/.test(status)) {
+        logFn(`novita task failed: ${JSON.stringify(j).slice(0, 300)}`);
+        if (outInfo) { outInfo.failed = true; outInfo.payload = j; }
+        return null;
+      }
+      lastStatus = status;
+    } catch (e) {
+      networkErrors++;
+      logFn(`novita poll network error ${networkErrors}/6 (${lastStatus}: ${e.message})`);
+      if (networkErrors >= 6) { if (outInfo) outInfo.failed = true; return null; }
+    }
+    await new Promise(r => setTimeout(r, 10000));
+  }
+  logFn(`novita task still ${lastStatus} after ${maxMin} min`);
+  if (outInfo) outInfo.failed = true;
+  return null;
+}
+
 async function submitTask(pathAndQuery, logFn = logLine) {
   // Dead model guard: PaxSenix removed the base `nano-banana` model (400s every
   // time). Rewrite any `model=nano-banana` param to the live `nano-banana-pro`
@@ -1659,6 +1813,16 @@ async function submitTask(pathAndQuery, logFn = logLine) {
       return LOGFARE_LOCAL_PREFIX + await generateLogfareImage(
         decodeURIComponent(lfModel[1]), qv('prompt', ''), qv('ratio', '1:1'), null);
     } catch (e) { logFn(`logfare image failed: ${e.message}`); return null; }
+  }
+  // Novita text-to-image ("novita:<id>" model in the query) — not a PaxSenix
+  // endpoint; submit through the Novita /v1/submit job API instead.
+  if (lfModel && isNovitaImageModel(decodeURIComponent(lfModel[1]))) {
+    const qv = (k, dflt) => { const m = new RegExp(`[?&]${k}=([^&]*)`).exec(pq); return m ? decodeURIComponent(m[1]) : dflt; };
+    return novitaSubmit({
+      model: decodeURIComponent(lfModel[1]).slice('novita:'.length),
+      input: { prompt: qv('prompt', '') },
+      parameters: { size: novitaImageSize(qv('ratio', '16:9')) }
+    }, logFn);
   }
   for (let attempt = 1; attempt <= 4; attempt++) {
     if (storyboardCancelRequested(logFn)) { logFn('submit cancelled by user'); return null; }
@@ -1722,6 +1886,26 @@ async function submitImg2ImgTask(prompt, refUrls, imageModel = 'seedream-5', rat
       return LOGFARE_LOCAL_PREFIX + await generateLogfareImage(imageModel, prompt, ratio, refBuf);
     } catch (e) { logLine(`logfare img2img ${imageModel}: ${e.message}`); return null; }
   }
+  // Novita img2img: reference URLs go in the TOP-LEVEL imageUrls array (docs).
+  // References must be public http(s) URLs the generation service can fetch, so
+  // local renders (/frames/..., logfare-local:) are re-hosted first.
+  if (isNovitaImageModel(imageModel)) {
+    try {
+      const usable = [];
+      for (const u of (refUrls || [])) {
+        if (!u) continue;
+        if (isLogfareLocal(u)) { usable.push(await uploadToImageHost(u.slice(LOGFARE_LOCAL_PREFIX.length), logLine)); continue; }
+        const localRel = /^\/frames\/([^/?#]+)$/i.exec(String(u));
+        if (localRel) { usable.push(await uploadToImageHost(path.join(FRAMES_DIR, decodeURIComponent(localRel[1])), logLine)); continue; }
+        usable.push(u);
+      }
+      return await novitaSubmit(Object.assign({
+        model: imageModel.slice('novita:'.length),
+        input: { prompt },
+        parameters: { size: novitaImageSize(ratio) }
+      }, usable.length ? { imageUrls: usable } : {}), logLine);
+    } catch (e) { logLine(`novita img2img ${imageModel}: ${e.message}`); return null; }
+  }
   const model = (imageModel && img2ImgEndpoint(imageModel)) ? safeImageModel(imageModel) : 'seedream-5';
   const endpoint = img2ImgEndpoint(model);
   // PaxSenix can only fetch public http(s) URLs — re-host any local Logfare render
@@ -1758,6 +1942,9 @@ async function waitTask(taskUrl, maxMin = 25, logFn = logLine, outInfo = null) {
   // A Logfare render is already finished when submitTask returns it — nothing to
   // poll, hand the local file straight back (download() copies it into place).
   if (isLogfareLocal(taskUrl)) return taskUrl;
+  // Novita tasks poll THEIR status endpoint (documented async-job shape), not
+  // PaxSenix's — the marker carries the task id.
+  if (String(taskUrl).startsWith(NOVITA_TASK_PREFIX)) return novitaWait(taskUrl, maxMin, logFn, outInfo);
   const deadline = Date.now() + maxMin * 60000;
   let networkErrors = 0;
   let lastStatus = 'pending';
@@ -3071,15 +3258,34 @@ async function generateVideos(frames, ratio, videoModel = DEFAULT_VIDEO_MODEL, c
     // unanchored scenes verify + refresh the frame's stored image URL first so a
     // dead/expired link never kills the video task's asset download. omni-flash
     // additionally gets PNG→JPG (its i2v asset pipeline rejects PNG).
-    const img = anchorImg || await resolveVideoImage(f, model0);
+    // Novita T2V models are prompt-only (no image input at all) — skip the image
+    // resolve/upload entirely and note that seamless chaining can't anchor.
+    const novitaT2V = isNovitaVideoModel(model0) && !isNovitaI2VModel(model0);
+    if (novitaT2V && (anchorImg || fs.existsSync(frameFile(f.frame)))) {
+      logLine(`frame ${f.frame}: ${model0} is text-to-video — image anchor/chaining not applicable, continuing via prompt`);
+    }
+    const img = novitaT2V ? null : (anchorImg || await resolveVideoImage(f, model0));
 
     // One render attempt. Returns 'ok' | 'fail' | 'cancel'.
     const attempt = async (label, p, useImg) => {
       const mode = useImg ? 'image-to-video' : 'text-to-video';
       const imgParam = useImg && img ? `&${videoImgKey(model0)}=${encodeURIComponent(img)}` : '';
       const mRatio = normalizeVideoRatio(ratio, model0);
-      const q = `/ai-video/${model0}?prompt=${encodeURIComponent(p)}&ratio=${encodeURIComponent(mRatio)}&type=${mode}${imgParam}`;
-      const task = await submitTask(q);
+      let task;
+      if (isNovitaVideoModel(model0)) {
+        // Novita async job: JSON body to /v1/submit. I2V models carry the start
+        // frame in a top-level imageUrls array; T2V models are prompt-only.
+        const useNovitaImg = isNovitaI2VModel(model0) && useImg && !!img;
+        task = await novitaSubmit({
+          model: model0,
+          input: { prompt: p },
+          parameters: { duration: novitaDurationFor(model0, f.duration_sec), resolution: '720P', ratio: mRatio },
+          ...(useNovitaImg ? { imageUrls: [img] } : {})
+        }, logLine);
+      } else {
+        const q = `/ai-video/${model0}?prompt=${encodeURIComponent(p)}&ratio=${encodeURIComponent(mRatio)}&type=${mode}${imgParam}`;
+        task = await submitTask(q);
+      }
       if (!task) { logLine(`frame ${f.frame}: ${model0} SUBMIT FAILED (${label})`); return 'fail'; }
       logLine(`frame ${f.frame}: ${model0} submitted (${mode}${anchorImg ? ', anchored to previous scene' : ''}${label ? ' — ' + label : ''})`);
       const info = {};
@@ -4500,7 +4706,7 @@ const requestHandler = async (req, res) => {
       } catch (e) { return sendJson(res, 200, { hasAudio: false, matchesCurrent: false, withSpeech: 0, error: e.message }); }
     }
     if (p === '/api/health' || p === '/api/ping') return sendJson(res, 200, { ok: true, vercel: IS_VERCEL, path: p, url: rawUrl, hasKey: !!API_KEY, commit: (process.env.VERCEL_GIT_COMMIT_SHA || '').slice(0, 7) || 'local', deployedAt: process.env.VERCEL_DEPLOYMENT_ID ? 'vercel' : 'local', logfare: { key: !!LOGFARE_API_KEY, lastOkAt: logfareStatus.lastOkAt, lastModel: logfareStatus.lastModel, lastError: logfareStatus.lastError } });
-    if (p === '/api/models') return sendJson(res, 200, { chat: MODELS, image: IMAGE_MODELS.concat(LOGFARE_IMAGE_MODELS), video: VIDEO_MODELS, voices: VOICES, languages: LANGUAGES, narrationModes: NARRATION_MODES, narrationEngines: NARRATION_ENGINES, narrationVoices: { fish: VOICES, mimo: VOICES, logfare: LOGFARE_VOICES }, styles: STYLE_KEYS.map(k => ({ key: k, label: STYLES[k].label })) });
+    if (p === '/api/models') return sendJson(res, 200, { chat: MODELS, image: IMAGE_MODELS.concat(LOGFARE_IMAGE_MODELS, NOVITA_IMAGE_MODELS.map(m => m.id)), video: VIDEO_MODELS, voices: VOICES, languages: LANGUAGES, narrationModes: NARRATION_MODES, narrationEngines: NARRATION_ENGINES, narrationVoices: { fish: VOICES, mimo: VOICES, logfare: LOGFARE_VOICES }, styles: STYLE_KEYS.map(k => ({ key: k, label: STYLES[k].label })) });
 
     // --- CREDITS ---
     if (p === '/api/credits' && req.method === 'GET') {
@@ -5845,10 +6051,52 @@ RULES:
         // Credit gate: one first-frame image render.
         if (!(await requireCredits(req, res, CREDIT_COSTS.flashloopI2I, 'generate image'))) return;
 
-        // Respect the selected image model: PaxSenix ids, "aqua:<id>" or a Logfare
-        // image model (flux-2-klein-9b / lucid-origin / phoenix-1.0).
-        let selectedModel = (model && (IMAGE_MODELS.includes(model) || isAquaImageModel(model) || isLogfareImageModel(model) || isFlashloopLogfareImage(model))) ? model : 'seedream-5';
+        // Respect the selected image model: PaxSenix ids, "aqua:<id>", a Logfare
+        // image model (flux-2-klein-9b / lucid-origin / phoenix-1.0) or "novita:<id>".
+        let selectedModel = (model && (IMAGE_MODELS.includes(model) || isAquaImageModel(model) || isLogfareImageModel(model) || isFlashloopLogfareImage(model) || isNovitaImageModel(model))) ? model : 'seedream-5';
         if (isFlashloopLogfareImage(selectedModel)) selectedModel = selectedModel.slice(LOGFARE_IMG_PREFIX.length);
+
+        // ---- Novita provider (qwen-image-3.0-pro / wan2.7-image-pro / wanx2.1) ----
+        // Async job: submit → poll /v1/status → direct image URL back to the client
+        // (the server awaits it synchronously like the Aqua/logfare branches do).
+        // The trend/character reference goes in the TOP-LEVEL imageUrls array.
+        if (isNovitaImageModel(selectedModel)) {
+          try {
+            let refs = [];
+            if (refImageUrl) {
+              // The generation service must fetch the ref itself — re-host local /
+              // expired references to uguu (same treatment PaxSenix gets below).
+              try {
+                const buf = await refImageBuffer(refImageUrl);
+                if (buf && buf.length) {
+                  let ext = 'jpg', mime = 'image/jpeg';
+                  if (buf[0] === 0x89 && buf[1] === 0x50) { ext = 'png'; mime = 'image/png'; }
+                  else if (buf[0] === 0x52 && buf[1] === 0x49) { ext = 'webp'; mime = 'image/webp'; }
+                  const fd2 = new FormData();
+                  fd2.append('files[]', new Blob([buf], { type: mime }), 'ref.' + ext);
+                  const up = await fetch('https://uguu.se/upload.php', { method: 'POST', body: fd2, signal: AbortSignal.timeout(30000) });
+                  const uj = await up.json().catch(() => ({}));
+                  if (uj && uj.success && uj.files && uj.files[0] && uj.files[0].url) refs = [uj.files[0].url];
+                }
+              } catch (e) { logLine('novita image: ref re-host failed (' + e.message + ') - using prompt only'); }
+            }
+            const p = sanitizePrompt(trendPromptPrefix(source, slug, trendName, tagline) + String(prompt));
+            logLine(`novita image: ${selectedModel} ${refs.length ? 'i2i' : 't2i'} @ ${ratio}`);
+            const task = await novitaSubmit(Object.assign({
+              model: selectedModel.slice('novita:'.length),
+              input: { prompt: p },
+              parameters: { size: novitaImageSize(ratio) }
+            }, refs.length ? { imageUrls: refs } : {}), logLine);
+            if (!task) throw new Error('submit failed');
+            const imageUrl = await novitaWait(task, IS_VERCEL ? 4 : 8, logLine);
+            if (!imageUrl) throw new Error('render failed or timed out');
+            return sendJson(res, 200, { ok: true, imageUrl, model: selectedModel, mode: refs.length ? 'i2i' : 't2i', provider: 'novita' });
+          } catch (e) {
+            logLine('novita image failed: ' + e.message + ' — falling back to PaxSenix');
+            aquaFailureNote = e.message;
+            selectedModel = 'nano-banana-2';
+          }
+        }
 
         // ---- Logfare provider (flux-2-klein-9b / lucid-origin / phoenix-1.0) ----
         // Rendered here and re-hosted, so the browser <img> and the video stage
@@ -6033,24 +6281,28 @@ RULES:
       } catch (e) { logLine('flashloop i2i: ' + e.message); return sendJson(res, 500, { error: e.message }); }
     }
 
-    // ---- Flashloop / SJinn "Make Video" — one scene per request, OMNI-FLASH ONLY,
-    // with seamless chaining: each scene's video is anchored to the LAST FRAME of the
-    // previous scene's video (the client passes it back as chainAnchor), exactly like
-    // the storyboard pipeline. Synchronous so each invocation fits Vercel's 300s budget.
+    // ---- Flashloop / SJinn "Make Video" — one scene per request, seamlessly
+    // chained: each scene's video is anchored to the LAST FRAME of the previous
+    // scene's video (the client passes it back as chainAnchor), exactly like
+    // the storyboard pipeline. Engine: omni-flash (default) or a Novita wan model
+    // (client passes `model` + per-scene `duration`). Synchronous so each
+    // invocation fits Vercel's 300s budget.
     if (p === '/api/flashloop/generate-video' && req.method === 'POST') {
       const body = await readBody(req).catch(() => ({}));
-      const { prompt = '', imageUrl = '', ratio = '9:16', chainAnchor = '' } = body || {};
+      const { prompt = '', imageUrl = '', ratio = '9:16', chainAnchor = '', model: bodyModel = '', duration: bodyDuration = 0 } = body || {};
       const sceneN = Math.max(1, Number(body.scene) || 1);
       if (!prompt) return sendJson(res, 400, { error: 'prompt required' });
       if (!(await requireCredits(req, res, CREDIT_COSTS.flashloopVideo, 'flashloop video'))) return;
       return (async () => {
-        const MODEL = 'omni-flash';
+        const MODEL = isNovitaVideoModel(bodyModel) ? bodyModel : 'omni-flash';
+        const isNov = isNovitaVideoModel(MODEL);
+        const novDur = isNov ? novitaDurationFor(MODEL, Number(bodyDuration) || 8) : 0;
         const out = path.join(VIDEO_DIR, `flash_scene_${String(sceneN).padStart(2, '0')}.mp4`);
         const anchorPng = path.join(FRAMES_DIR, `flash_chain_${String(sceneN).padStart(2, '0')}.png`);
         try {
           fs.mkdirSync(VIDEO_DIR, { recursive: true });
           fs.mkdirSync(FRAMES_DIR, { recursive: true });
-          logLine(`flashloop video scene ${sceneN}: rendering with ${MODEL} (${chainAnchor ? 'chained to previous scene' : imageUrl ? 'from scene image' : 'text-to-video'})`);
+          logLine(`flashloop video scene ${sceneN}: rendering with ${MODEL}${isNov ? ` (${novDur}s)` : ''} (${chainAnchor ? 'chained to previous scene' : imageUrl ? 'from scene image' : 'text-to-video'})`);
           // Anchor: chainAnchor (seamless chain) > imageUrl (scene's first frame).
           // Always re-host through ffmpeg → JPG because omni-flash's i2v asset
           // pipeline REJECTS PNG, and old PaxSenix/tmpfiles URLs expire.
@@ -6068,8 +6320,22 @@ RULES:
             } catch (e) { logLine(`flashloop video scene ${sceneN}: anchor re-host failed (${e.message}) — trying as-is`); }
           }
           const mRatio = normalizeVideoRatio(ratio, MODEL);
-          const softened = softenOmniPrompt(prompt);
+          // omni-flash's text filter needs softened wording; Novita wan models
+          // take the prompt raw (they accept the same language veo/grok do).
+          const softened = MODEL === 'omni-flash' ? softenOmniPrompt(prompt) : prompt;
           const attempt = async (useImg) => {
+            if (isNov) {
+              const useAnchor = isNovitaI2VModel(MODEL) && useImg && anchor;
+              const task = await novitaSubmit({
+                model: MODEL,
+                input: { prompt: softened },
+                parameters: { duration: novDur, resolution: '720P', ratio: mRatio },
+                ...(useAnchor ? { imageUrls: [anchor] } : {})
+              }, logLine);
+              if (!task) return false;
+              const url = await novitaWait(task, IS_VERCEL ? 4 : 25, logLine);
+              return !!(url && await download(url, out));
+            }
             const mode = useImg && anchor ? 'image-to-video' : 'text-to-video';
             const imgParam = useImg && anchor ? `&${videoImgKey(MODEL)}=${encodeURIComponent(anchor)}` : '';
             const q = `/ai-video/${MODEL}?prompt=${encodeURIComponent(softened)}&ratio=${mRatio}&type=${mode}${imgParam}`;
@@ -6081,7 +6347,7 @@ RULES:
           // Retry ladder: i2v (chained) → text-to-video. Never leaves a scene blank.
           let ok = await attempt(true);
           if (!ok) { logLine(`flashloop video scene ${sceneN}: i2v failed — retrying as text-to-video`); ok = await attempt(false); }
-          if (!ok) return sendJson(res, 500, { error: `omni-flash failed for scene ${sceneN}` });
+          if (!ok) return sendJson(res, 500, { error: `${MODEL} failed for scene ${sceneN}` });
           // Extract the final frame → host it as the chain anchor for the NEXT scene.
           let chainUrl = '';
           try {
@@ -6935,6 +7201,10 @@ module.exports = requestHandler;
 // Exposed for the pipeline/test-*.js regression tests.
 module.exports.__internal = {
   flashloopScenePlan,
+  // Novita async-job models (wan3.0 video + qwen/wanx image).
+  NOVITA_VIDEO_MODELS, NOVITA_IMAGE_MODELS, NOVITA_TASK_PREFIX,
+  isNovitaVideoModel, isNovitaI2VModel, isNovitaImageModel,
+  novitaDurationFor, novitaImageSize, novitaSubmit, novitaWait,
   // Logfare media (image models + Deepgram Aura-2 narration).
   LOGFARE_IMAGE_MODELS, LOGFARE_TTS_MODEL, LOGFARE_TTS_VOICES, LOGFARE_LOCAL_PREFIX,
   isLogfareImageModel, isLogfareLocal, cropToRatio, generateLogfareImage, logfareTtsChunk,

@@ -9,6 +9,8 @@ pipeline/trendsmcp-key.txt
 pipeline/tavily-key.txt
 pipeline/youtube-api-key.txt
 pipeline/modelscope_token.txt
+# Novita sandbox base URL rotates with sandbox restarts — keep it local
+pipeline/novita_base.txt
 *.key.txt
 *apikey*
 

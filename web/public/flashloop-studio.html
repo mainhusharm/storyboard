@@ -229,6 +229,10 @@
           <option value="lfimg:lucid-origin">Lucid Origin — Logfare</option>
           <option value="lfimg:phoenix-1.0">Phoenix 1.0 — Logfare</option>
           <option value="lfimg:nano-banana-2">Nano Banana 2 — Logfare</option>
+          <option value="novita:qwen-image-3.0-pro">Qwen Image 3.0 Pro — Novita</option>
+          <option value="novita:wan2.7-image-pro">Wan 2.7 Image Pro — Novita</option>
+          <option value="novita:wanx2.1-t2i-turbo">WanX 2.1 T2I Turbo — Novita</option>
+          <option value="novita:wanx2.1-t2i-plus">WanX 2.1 T2I Plus — Novita</option>
           <option value="aqua:agnes-image">Agnes Image — AquaDevs (fast)</option>
           <option value="aqua:nanobanana-pro">NanoBanana Pro — AquaDevs</option>
           <option value="aqua:nanobanana-2">NanoBanana 2 — AquaDevs</option>
@@ -256,8 +260,24 @@
     </div>
 
     <div id="makeVideoSection" style="display:none;margin-top:24px;border-top:1px solid var(--line2);padding-top:20px">
-      <div class="prompt-label">🎬 Make Video — all scenes · Omni Flash</div>
-      <div class="hint" style="margin:8px 0 14px">Renders EVERY scene (~8s each) with omni-flash and seamless chaining: each scene starts exactly where the previous scene ended. An 8-scene script ≈ a 1-minute video. Scene images are generated automatically first. Each scene takes 2-5 minutes.</div>
+      <div class="prompt-label">🎬 Make Video — all scenes</div>
+      <div class="hint" style="margin:8px 0 14px">Renders EVERY scene and combines them into one film. Omni Flash chains each scene from the previous scene's last frame; Novita wan models render the Scene Length selected below (wan3.0 supports 1-30s). Scene images are generated automatically first. Each scene takes 2-5 minutes (wan3.0 30s clips can take longer).</div>
+      <div class="field" style="max-width:360px;margin-bottom:12px">
+        <label for="mvModel">Render engine</label>
+        <select id="mvModel">
+          <option value="omni-flash" selected>Omni Flash — 8s clips (default)</option>
+          <option value="wan3.0-video-prime">Wan 3.0 Prime — up to 30s (Novita)</option>
+          <option value="wan3.0-video-standard">Wan 3.0 Standard — up to 30s (Novita)</option>
+          <option value="wan3.0-video">Wan 3.0 — up to 30s (Novita)</option>
+          <option value="wan2.7-t2v">Wan 2.7 T2V — 1-15s (Novita)</option>
+          <option value="wan2.1-t2v-turbo">Wan 2.1 T2V Turbo — 1-15s (Novita)</option>
+          <option value="wan2.1-t2v-plus">Wan 2.1 T2V Plus — 1-15s (Novita)</option>
+          <option value="wan2.7-i2v">Wan 2.7 I2V — image-to-video (Novita)</option>
+          <option value="wan2.1-i2v-turbo">Wan 2.1 I2V Turbo — image-to-video (Novita)</option>
+          <option value="wan2.1-i2v-plus">Wan 2.1 I2V Plus — image-to-video (Novita)</option>
+        </select>
+        <div class="hint">I2V models keep seamless chaining (start frame from the previous scene). T2V models continue via prompt only.</div>
+      </div>
       <button id="btnMakeVideo" class="generate-btn" style="background:linear-gradient(135deg,rgba(251,146,60,.25),rgba(236,72,153,.25));border-color:#fb923c">🎬 Make Video (Omni Flash)</button>
       <div id="mvStatus" style="display:none;background:var(--panel2);border:1px solid var(--line2);border-radius:10px;padding:12px;font-size:12px;line-height:1.7;max-height:240px;overflow-y:auto;margin-top:14px;white-space:pre-wrap"></div>
       <video id="mvVideo" controls playsinline style="display:none;max-width:420px;width:100%;border-radius:12px;border:1px solid var(--line2);margin-top:14px"></video>
@@ -581,6 +601,7 @@ $('btnGenerate').onclick = async () => {
     $('i2iSection').style.display = 'block';
     $('makeVideoSection').style.display = 'block';
     sceneImages = {}; // new script — drop cached scene images
+    syncMvEngine();
   } catch (e) {
     $('error').textContent = 'Error: ' + e.message;
     $('error').classList.add('visible');
@@ -765,11 +786,18 @@ async function pollTask(taskUrl) {
   throw new Error('Image generation timed out (5 min)');
 }
 
-// ---- Make Video: all scenes → omni-flash clips, seamlessly chained ----
+// ---- Make Video: all scenes → selected engine clips, seamlessly chained ----
 // Mirrors the storyboard pipeline: scene image first, then ONE video request per
 // scene (fits Vercel's 300s budget), each anchored to the previous scene's final
 // frame via chainAnchor. Finally combines all clips into one film.
 let sceneImages = {}; // scene index -> public first-frame image URL (session cache)
+// Keep the Make Video button label in sync with the chosen render engine.
+function syncMvEngine(){
+  const sel=$('mvModel');
+  if(!sel||!sel.options.length)return;
+  $('btnMakeVideo').textContent='🎬 Make Video ('+((sel.options[sel.selectedIndex].text||'').split('—')[0].trim()||sel.value)+')';
+}
+document.getElementById('mvModel').addEventListener('change',syncMvEngine);
 function mvLog(msg, isErr){
   const el = $('mvStatus');
   el.style.display = 'block';
@@ -782,7 +810,14 @@ function mvLog(msg, isErr){
 $('btnMakeVideo').onclick = async () => {
   if (!scenes.length) return;
   const n = scenes.length;
-  if (!confirm(`Make a video from all ${n} scene(s) with Omni Flash?\n\nEach scene renders ~8s with seamless chaining (every scene starts where the previous ended) — ${n} scenes ≈ ${Math.round(n * 8 / 60 * 10) / 10} min of video. This takes several minutes per scene. Start?`)) return;
+  const engine = $('mvModel').value;
+  const engineName = ($('mvModel').options[$('mvModel').selectedIndex].text || engine).split('—')[0].trim();
+  const perScene = Number($('sceneLength').value) || 8;
+  const chained = engine === 'omni-flash' || engine.indexOf('i2v') !== -1;
+  const chainNote = chained
+    ? 'Each scene starts where the previous ended (seamless chaining)'
+    : 'Text-to-video scenes continue via prompt (no image chaining)';
+  if (!confirm(`Make a video from all ${n} scene(s) with ${engineName}?\n\nEach scene renders ~${perScene}s — ${chainNote}. ${n} scenes ≈ ${Math.round(n * perScene / 60 * 10) / 10} min of video. This takes several minutes per scene. Start?`)) return;
   $('btnMakeVideo').disabled = true;
   $('mvStatus').innerHTML = '';
   $('mvVideo').style.display = 'none';
@@ -806,11 +841,11 @@ $('btnMakeVideo').onclick = async () => {
         if (!sceneImages[i]) throw new Error(`scene ${i + 1} image generation failed`);
         mvLog(`scene ${i + 1}/${n}: image done`);
       }
-      // 2) scene video — omni-flash only, chained to the previous scene's last frame
-      mvLog(`scene ${i + 1}/${n}: rendering video (omni-flash${prevChain ? ', chained' : ''})… this takes 2-5 min`);
+      // 2) scene video — selected engine, chained to the previous scene's last frame
+      mvLog(`scene ${i + 1}/${n}: rendering video (${engineName}${prevChain ? ', chained' : ''})… this takes a few minutes`);
       const res = await fetch('/api/flashloop/generate-video', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ scene: i + 1, prompt: sceneVideoText(i), imageUrl: sceneImages[i], ratio, chainAnchor: prevChain })
+        body: JSON.stringify({ scene: i + 1, prompt: sceneVideoText(i), imageUrl: sceneImages[i], ratio, chainAnchor: prevChain, model: engine, duration: perScene })
       });
       const v = await res.json().catch(() => ({}));
       if (!res.ok || v.error) {

@@ -108,6 +108,42 @@ Verified endpoints:
 - **Seamless chaining**: `POST /api/videos` (and `/api/run-all`) accept `chainContinuity: true` —
   videos then render sequentially, each anchored to the previous scene's last frame.
 
+## Novita sandbox (wan3.0 video + qwen/wanx image models)
+
+Async-job API used as an ADDITIONAL video/image provider (models appear alongside the
+PaxSenix ones in every dropdown; the selected model still runs ALONE — no hidden fallback).
+
+- **Key/base**: env `NOVITA_API_KEY` or `pipeline/novita_apikey.txt` (gitignored). The base is an
+  ephemeral sandbox host (`https://3000-….sandbox.novita.ai`) — override with env `NOVITA_BASE_URL`
+  (Vercel) or `pipeline/novita_base.txt` (local, gitignored) when it rotates.
+- **API shape** (docs 2026-10): `POST {base}/v1/submit` (1 credit) → `{ok, taskId, status:"PENDING"}`;
+  `GET {base}/v1/status/{taskId}` (free) → `{taskId, status: PENDING|RUNNING|SUCCEEDED|FAILED, elapsed,
+  output:{…, video_url|image_url}}`. Submit failures ≥400 are permanent (fail fast, no retry — the
+  sandbox's flaky TLS gets exactly one retry). Submitted jobs are returned as a `novita:task:<id>`
+  marker that `waitTask` routes to `novitaWait` (mirrors the `logfare-local:` pattern), so all
+  existing submit→wait→download call sites work unchanged.
+- **Video models** (`VIDEO_MODELS`): `wan3.0-video-prime`, `wan3.0-video-standard`, `wan3.0-video`
+  (durations 1,2,3,4,5,10,15,20,25,30 — any other value snaps to the nearest allowed), `wan2.7-t2v`,
+  `wan2.1-t2v-turbo`, `wan2.1-t2v-plus` (1-15s), plus I2V models `wan2.7-i2v`, `wan2.1-i2v-turbo`,
+  `wan2.1-i2v-plus`. Body: `{model, input:{prompt}, parameters:{duration, resolution:"720P", ratio}}` —
+  the ratio param is `parameters.ratio` (NOT `aspect_ratio`); ratios 1:1, 16:9, 9:16, 4:3, 3:4 all
+  accepted (the storyboard UI gained 4:3/3:4 options; PaxSenix models still snap them to 16:9).
+- **I2V**: the start frame goes in a TOP-LEVEL `imageUrls` array and ONLY with an I2V model —
+  t2v wan models have NO image input, so selecting one disables the image anchor and seamless
+  chaining degrades to prompt-only (logged). Flashloop/SJinn Make Video passes the scene length
+  as `duration` and honours the chain anchor with i2v engines.
+- **Image models** (`novita:` prefix, e.g. `novita:qwen-image-3.0-pro`): `qwen-image-3.0-pro`,
+  `wan2.7-image-pro`, `wanx2.1-t2i-turbo`, `wanx2.1-t2i-plus`. Sizes are W*H strings mapped from
+  the app ratio (16:9→`1280*720`, 9:16→`720*1280`, 1:1→`1024*1024`, 4:3→`1024*768`, 3:4→`768*1024`);
+  image-to-image references go in top-level `imageUrls` (local `/frames/` + logfare-local refs are
+  re-hosted first). Storyboard images (t2i + consistency img2img) and the Flashloop i2i route both
+  support them; the Flashloop route awaits the task server-side and answers `{imageUrl}` directly.
+- **Verified live**: t2v render (1280x720 h264, 5s ≈ 99s render), 30s duration accepted, i2v submit
+  accepted, qwen image render (1280*720 PNG). Note: a wan3.0 30s clip can outgrow Vercel's 300s
+  function budget — long wan renders are a local-pipeline feature.
+- Regression test: `node pipeline/test-novita-video.js` (offline: model lists, duration clamping,
+  ratio→size mapping, `/api/models` payload; `--live` submits one 5s wan3.0-video-prime render).
+
 ## Logfare media (image models + narration TTS)
 
 Logfare's OpenAI-compatible gateway also serves the image models and Deepgram
