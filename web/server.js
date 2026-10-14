@@ -1482,6 +1482,24 @@ function setPhase(phase, total = 0) {
   job.phase = phase; job.total = total; job.done = 0; job.ok = 0; job.failed = [];
   job.startedAt = Date.now(); job.log = []; job.cancelRequested = false;
 }
+// A job is considered stuck when it has been non-idle for longer than the client
+// is willing to poll. On Vercel a detached background promise can be frozen or
+// killed when its invocation ends, so the lines that reset job.phase back to
+// 'idle' never run and the warm instance stays "busy" forever — every later
+// /api/run-all then 409s and /api/cancel cannot clear it (cancel only sets the
+// flag, which a dead job never reads). Reap such a job on the next status check
+// so a fresh run is never blocked by the corpse of an earlier one.
+const JOB_STALE_MS = 12 * 60 * 1000;
+function reapStaleJob() {
+  if (job.phase === 'idle') return false;
+  if (!job.startedAt) { job.phase = 'idle'; return true; }
+  if (Date.now() - job.startedAt < JOB_STALE_MS) return false;
+  logLine(`reaping stuck "${job.phase}" job (no progress for ${Math.round((Date.now() - job.startedAt) / 60000)}m) — marking idle`);
+  job.phase = 'idle';
+  job.sbJobId = null;
+  job.sbResult = null;
+  return true;
+}
 // Cancel coordination: POST /api/cancel sets job.cancelRequested; pipeline loops and
 // task polls check it and abort. Only the storyboard job is cancellable this way
 // (call sites that log via logLine), never the independent influencer job (inflLogLine).
@@ -4928,7 +4946,7 @@ const requestHandler = async (req, res) => {
   if (p.length > 1 && p.endsWith('/')) p = p.slice(0, -1);
   try {
     // --- API ---
-    if (p === '/api/status') return sendJson(res, 200, job);
+    if (p === '/api/status') { reapStaleJob(); return sendJson(res, 200, job); }
     // Narration status for the UI badge: does a voice track exist, and does it
     // match the current storyboard's narration text (sig hash)?
     if (p === '/api/narration-status' && req.method === 'GET') {
@@ -5029,10 +5047,19 @@ const requestHandler = async (req, res) => {
     }
 
     if (p === '/api/cancel' && req.method === 'POST') {
+      reapStaleJob();
       if (job.phase !== 'idle') {
         job.cancelRequested = true;
+        const was = job.phase;
         logLine('cancel requested — stopping current task...');
-        return sendJson(res, 200, { ok: true, cancelled: job.phase });
+        // Release the busy flag immediately. Cooperative cancellation alone is not
+        // enough: the loops below only check the flag while they are still running,
+        // and on Vercel the async storyboard job usually is not. Without this the
+        // phase can never return to idle and every later run is blocked by a 409.
+        job.phase = 'idle';
+        job.sbJobId = null;
+        job.sbResult = null;
+        return sendJson(res, 200, { ok: true, cancelled: was, forced: true });
       }
       return sendJson(res, 200, { ok: true, cancelled: null });
     }
@@ -5052,6 +5079,7 @@ const requestHandler = async (req, res) => {
     }
 
     if (p === '/api/storyboard' && req.method === 'POST') {
+      reapStaleJob();
       if (job.phase !== 'idle') return sendJson(res, 409, { error: 'busy' });
       const { script, model, duration, look, language, clipDuration, style } = await readBody(req);
       if (!script || script.trim().length < 10) return sendJson(res, 400, { error: 'script too short' });
@@ -5086,6 +5114,7 @@ const requestHandler = async (req, res) => {
     }
 
     if (p === '/api/run-all' && req.method === 'POST') {
+      reapStaleJob();
       if (job.phase !== 'idle') return sendJson(res, 409, { error: 'busy' });
       const body = await readBody(req);
       const script = (body.script || '').trim();
@@ -5240,6 +5269,7 @@ const requestHandler = async (req, res) => {
     }
 
     if (p === '/api/char-refs' && req.method === 'POST') {
+      reapStaleJob();
       if (job.phase !== 'idle') return sendJson(res, 409, { error: 'busy' });
       const body = await readBody(req).catch(() => ({}));
       let { chars } = await storyDataFrom(body);
@@ -5260,6 +5290,7 @@ const requestHandler = async (req, res) => {
     }
 
     if (p === '/api/images' && req.method === 'POST') {
+      reapStaleJob();
       if (job.phase !== 'idle') return sendJson(res, 409, { error: 'busy' });
       const body = await readBody(req).catch(() => ({}));
       let { frames } = await storyDataFrom(body);
@@ -5287,6 +5318,7 @@ const requestHandler = async (req, res) => {
     }
 
     if (p === '/api/videos' && req.method === 'POST') {
+      reapStaleJob();
       if (job.phase !== 'idle') return sendJson(res, 409, { error: 'busy' });
       const body = await readBody(req).catch(() => ({}));
       let { frames } = await storyDataFrom(body);
@@ -5334,6 +5366,7 @@ const requestHandler = async (req, res) => {
     }
 
     if (p === '/api/combine' && req.method === 'POST') {
+      reapStaleJob();
       if (job.phase !== 'idle') return sendJson(res, 409, { error: 'busy' });
       const body = await readBody(req).catch(() => ({}));
       let { frames } = await storyDataFrom(body);
@@ -5348,6 +5381,7 @@ const requestHandler = async (req, res) => {
     }
 
     if (p === '/api/narration' && req.method === 'POST') {
+      reapStaleJob();
       if (job.phase !== 'idle') return sendJson(res, 409, { error: 'busy' });
       const body = await readBody(req).catch(() => ({}));
       let { frames } = await storyDataFrom(body);
