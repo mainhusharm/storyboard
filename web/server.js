@@ -1177,6 +1177,19 @@ function parseIsoDuration(dur) {
 // Back-compat wrapper used by older call sites
 for (const d of [FRAMES_DIR, VIDEO_DIR, STORYBOARD_DIR]) fs.mkdirSync(d, { recursive: true });
 
+// AquaDevs chat models (POST https://api.aquadevs.com/v1/chat/completions).
+// Selected from the UI as "aqua:<id>" so they never collide with same-named
+// PaxSenix/Logfare models. The Aqua key/base are already wired up for the Aqua
+// IMAGE models and the MIMO TTS engine, so these share AQUA_API_KEY + AQUA_API.
+// NOTE: like every other third-party gateway here, AquaDevs sees request content
+// — nothing is sent there unless the user explicitly picks an "aqua:" model.
+const AQUA_CHAT_MODELS = ['deepseek-v4.1-flash', 'deepseek-v4-pro', 'mimo-v2.6', 'gpt-6.1-sol'];
+// Tried in order after the pinned pick fails, so an overloaded / not-yet-enabled
+// Aqua model degrades instead of failing the whole render.
+const AQUA_CHAT_FALLBACKS = ['gpt-6.1-sol', 'deepseek-v4.1-flash'];
+const isAquaChatModel = (m) => /^aqua:/.test(String(m || ''));
+const aquaStatus = { key: !!AQUA_API_KEY, lastOkAt: 0, lastModel: '', lastError: '' };
+
 // PaxSenix chat models — verified against GET /v1/models (2026-09). The dropdown
 // renders from this list; chatCompletion falls over to gemini-2.5-pro →
 // deepseek-v3.2 when a model 502s/empty-responds, so a "broken" model never kills
@@ -1185,7 +1198,11 @@ const MODELS = ['gemini-2.5-pro', 'gemini-3.1-pro', 'gemini-3.1-flash-lite', 'gp
   // Logfare prompt models — same "logfare:<model>" ids the SJinn / Flashloop
   // studio uses, so picking one routes through chatCompletion()'s Logfare path
   // (pinned model first, PaxSenix fallback) exactly as it does there.
-  'logfare:deepseek-v4.1-flash'];
+  'logfare:deepseek-v4.1-flash',
+  // AquaDevs chat models — same "aqua:<id>" prefix convention the Aqua IMAGE
+  // models already use. Routed through chatCompletion()'s Aqua path
+  // (pinned model → gemini-2.5-pro → deepseek-v3.2 on PaxSenix).
+  ...AQUA_CHAT_MODELS.map(m => 'aqua:' + m)];
 // Logfare chat models (https://logfare.ai/v1) — flashloop/sjinn prompt generation ONLY.
 // Selected from the UI with a "logfare:" prefix so they never collide with same-named
 // PaxSenix models. gemma-4-26b + logfare/auto work without opt-in; the rest require
@@ -1197,6 +1214,7 @@ function isFlashloopPromptModel(m) {
   const s = String(m || '');
   if (!s) return false;
   if (MODELS.includes(s)) return true;
+  if (s.startsWith('aqua:')) return AQUA_CHAT_MODELS.includes(s.slice('aqua:'.length));
   const bare = s.startsWith('logfare:') ? s.slice('logfare:'.length) : s;
   return bare === 'auto' || LOGFARE_MODELS.includes(bare);
 }
@@ -2049,6 +2067,11 @@ async function chatCompletion(model, messages, maxTokens = 16384, temperature = 
   if (String(model || '').startsWith('logfare:')) {
     return chatWithLogfareFallback(model, messages, maxTokens, temperature);
   }
+  // An "aqua:<model>" pick routes to AquaDevs (the same gateway the Aqua image
+  // models and MIMO TTS already use). Sending the raw id to PaxSenix would 400.
+  if (isAquaChatModel(model)) {
+    return chatWithAquaFallback(model, messages, maxTokens, temperature);
+  }
   // Use non-streaming mode — streaming was causing ECONNRESET on local
   // On Vercel (fluid compute allows maxDuration up to 300s) give LLM calls real
   // headroom: allow up to 12k output tokens and wait up to 250s. The old 22s/2500
@@ -2058,10 +2081,11 @@ async function chatCompletion(model, messages, maxTokens = 16384, temperature = 
   const cappedTokens = IS_VERCEL ? Math.min(maxTokens, 12000) : maxTokens;
   const body = { model, messages, temperature, max_tokens: cappedTokens, stream: false };
   const ac = new AbortController();
-  // Vercel: cap each LLM call at 100s. A model silent for 100s is effectively
-  // dead — waiting 250s meant a single slow model burned the whole 300s function
-  // budget and the request timed out mid-storyboard ("phase 1/6 stuck").
-  const timer = setTimeout(() => ac.abort(), IS_VERCEL ? 100000 : 120000);
+  // Vercel: cap each LLM call at 75s (was 100s). A model silent for 75s is
+  // effectively dead — shorter timeout means faster failover when a model is down,
+  // so the 270s storyboard budget can fit 3+ model attempts instead of timing out
+  // on the first 503.
+  const timer = setTimeout(() => ac.abort(), IS_VERCEL ? 75000 : 120000);
   let raw = '';
   try {
     const res = await fetch(`${API}/v1/chat/completions`, {
@@ -2199,6 +2223,94 @@ async function chatWithLogfareFallback(model, messages, maxTokens = 16000, tempe
   } catch (e) {
     logfareStatus.lastError = lastErr ? lastErr.message : e.message;
     throw new Error(`Logfare+fallback LLMs unavailable — ${lastErr ? lastErr.message : ''}${e && e.message ? ' | PaxSenix: ' + e.message : ''}`);
+  }
+}
+
+// ─── AquaDevs chat (https://api.aquadevs.com/v1/chat/completions) ───────────
+// OpenAI-compatible, same base + key as the Aqua IMAGE models and the MIMO TTS
+// engine, so an "aqua:<id>" pick costs no new configuration. Only invoked when the
+// user explicitly selects an Aqua model (it is a third-party gateway).
+async function chatWithAqua(model, messages, maxTokens = 16000, temperature = 0.7) {
+  if (!AQUA_API_KEY) {
+    aquaStatus.lastError = 'no AquaDevs key (env AQUA_API_KEY on Vercel, or pipeline/aqua_apikey.txt locally)';
+    throw new Error(aquaStatus.lastError);
+  }
+  const id = String(model).replace(/^aqua:/, '');
+  let res = null, lastErr = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      res = await fetch(`${AQUA_API}/v1/chat/completions`, {
+        method: 'POST',
+        headers: aquaHeaders(),
+        body: JSON.stringify({ model: id, messages, max_tokens: maxTokens, temperature }),
+        signal: AbortSignal.timeout(250000)
+      });
+      // 429 / 5xx are worth a retry; a 4xx (bad model, no key) is terminal.
+      if (res.status !== 429 && res.status < 500) break;
+      lastErr = new Error(`HTTP ${res.status}`);
+      if (res.status >= 500) { logLine(`aqua ${id}: upstream ${res.status} - failing over`); break; }
+    } catch (e) { lastErr = e; }
+    if (attempt < 3) {
+      logLine(`aqua ${id}: ${lastErr && lastErr.message} - retry in ${attempt * 3}s`);
+      await new Promise(r => setTimeout(r, attempt * 3000));
+    }
+  }
+  if (!res) {
+    aquaStatus.lastError = `${id}: ${lastErr ? lastErr.message : 'request failed'}`;
+    throw new Error(`aqua ${id}: ${lastErr ? lastErr.message : 'request failed'}`);
+  }
+  const raw = await res.text();
+  let j = null; try { j = JSON.parse(raw); } catch {}
+  if (!res.ok || (j && j.error)) {
+    const msg = (j && j.error && (j.error.message || JSON.stringify(j.error))) || ('HTTP ' + res.status);
+    aquaStatus.lastError = `${id}: ${msg}`;
+    throw new Error(`aqua ${id}: ${msg}`);
+  }
+  const ch = (j && j.choices && j.choices[0]) || {};
+  const m = ch.message || {};
+  let text = Array.isArray(m.content)
+    ? m.content.map(p => (typeof p === 'string' ? p : (p && p.text) || '')).join('')
+    : String(m.content || '');
+  // Reasoning models can spend the whole budget thinking; salvage a trailing
+  // JSON object from the reasoning trace the same way the Logfare path does.
+  if (!text.trim()) {
+    const trace = String(m.reasoning_content || m.reasoning || '');
+    const at = trace.lastIndexOf('{');
+    if (at >= 0) text = trace.slice(at);
+  }
+  if (!text.trim()) {
+    const why = ch.finish_reason === 'length' ? 'token budget exhausted before any answer (raise max_tokens)' : 'empty response';
+    aquaStatus.lastError = `${id}: ${why}`;
+    throw new Error(`aqua ${id}: ${why}`);
+  }
+  aquaStatus.lastOkAt = Date.now(); aquaStatus.lastModel = id; aquaStatus.lastError = '';
+  return text;
+}
+
+// Pinned Aqua model first, then the usual PaxSenix chain as last resort — same
+// shape as chatWithLogfareFallback so a flaky Aqua model never kills a render.
+async function chatWithAquaFallback(model, messages, maxTokens = 16000, temperature = 0.7) {
+  const pinned = String(model || '').replace(/^aqua:/, '');
+  let lastErr = null;
+  for (const m of [pinned, ...AQUA_CHAT_FALLBACKS].filter((x, i, a) => x && a.indexOf(x) === i)) {
+    try { return await chatWithAqua('aqua:' + m, messages, maxTokens, temperature); }
+    catch (e) {
+      lastErr = e;
+      if (/token budget exhausted/i.test(e.message) && maxTokens < 32000) {
+        const bigger = Math.min(32000, maxTokens * 3);
+        logLine(`chatWithAquaFallback: ${m} ran out of tokens at ${maxTokens} - retrying with ${bigger}`);
+        try { return await chatWithAqua('aqua:' + m, messages, bigger, temperature); }
+        catch (e2) { lastErr = e2; }
+      } else {
+        logLine(`chatWithAquaFallback: ${m} failed (${e.message})`);
+      }
+    }
+  }
+  try {
+    return await chatWithFallback('gemini-2.5-pro', messages, maxTokens, temperature);
+  } catch (e) {
+    aquaStatus.lastError = lastErr ? lastErr.message : e.message;
+    throw new Error(`Aqua+fallback LLMs unavailable — ${lastErr ? lastErr.message : ''}${e && e.message ? ' | PaxSenix: ' + e.message : ''}`);
   }
 }
 
@@ -4821,7 +4933,7 @@ const requestHandler = async (req, res) => {
         return sendJson(res, 200, status);
       } catch (e) { return sendJson(res, 200, { hasAudio: false, matchesCurrent: false, withSpeech: 0, error: e.message }); }
     }
-    if (p === '/api/health' || p === '/api/ping') return sendJson(res, 200, { ok: true, vercel: IS_VERCEL, path: p, url: rawUrl, hasKey: !!API_KEY, commit: (process.env.VERCEL_GIT_COMMIT_SHA || '').slice(0, 7) || 'local', deployedAt: process.env.VERCEL_DEPLOYMENT_ID ? 'vercel' : 'local', logfare: { key: !!LOGFARE_API_KEY, lastOkAt: logfareStatus.lastOkAt, lastModel: logfareStatus.lastModel, lastError: logfareStatus.lastError } });
+    if (p === '/api/health' || p === '/api/ping') return sendJson(res, 200, { ok: true, vercel: IS_VERCEL, path: p, url: rawUrl, hasKey: !!API_KEY, commit: (process.env.VERCEL_GIT_COMMIT_SHA || '').slice(0, 7) || 'local', deployedAt: process.env.VERCEL_DEPLOYMENT_ID ? 'vercel' : 'local', logfare: { key: !!LOGFARE_API_KEY, lastOkAt: logfareStatus.lastOkAt, lastModel: logfareStatus.lastModel, lastError: logfareStatus.lastError }, aqua: { key: !!AQUA_API_KEY, lastOkAt: aquaStatus.lastOkAt, lastModel: aquaStatus.lastModel, lastError: aquaStatus.lastError } });
     if (p === '/api/models') return sendJson(res, 200, { chat: MODELS, image: IMAGE_MODELS.concat(LOGFARE_IMAGE_MODELS, NOVITA_IMAGE_MODELS.map(m => m.id)), video: VIDEO_MODELS, voices: VOICES, languages: LANGUAGES, narrationModes: NARRATION_MODES, narrationEngines: NARRATION_ENGINES, narrationVoices: { fish: VOICES, mimo: VOICES, logfare: LOGFARE_VOICES }, styles: STYLE_KEYS.map(k => ({ key: k, label: STYLES[k].label })) });
 
     // --- CREDITS ---
@@ -4982,8 +5094,12 @@ const requestHandler = async (req, res) => {
           // Check persistent storage (survives refresh + cross-instance)
           const saved = await loadStoryboardJob(req.user.id);
           if (saved) {
-            // Job completed earlier, return it and clear
+            // Job completed or failed earlier
             await clearStoryboardJob(req.user.id);
+            if (saved.ok === false) {
+              // Failed job: return error and clear busy state
+              return sendJson(res, 500, { error: saved.error || 'Storyboard generation failed' });
+            }
             return sendJson(res, 200, saved);
           }
           // Check ephemeral state (same-instance only)
