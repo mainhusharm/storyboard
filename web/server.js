@@ -6486,21 +6486,36 @@ RULES:
               } catch (e) { logLine(`flashloop combine: scene ${n} remote clip download failed (${e.message})`); }
             }
             if (!fs.existsSync(source)) { logLine(`flashloop combine: scene ${n} mp4 missing — skipping`); continue; }
-            idx++;
+idx++;
             const clip = path.join(clipsDir, `clip_${String(idx).padStart(2, '0')}.mp4`);
-            await new Promise((resolve) => {
-              // Normalize (scale/pad/fps + silent AAC) so every clip is concat-safe.
-              execFile(ffmpegBin(), [
-                '-y', '-i', source,
-                '-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100',
+            // Does the source clip carry a REAL audio stream? Generated clips often
+            // have none, and concat needs every clip to expose the same streams.
+            // Uses the shared probeHasAudio() helper (ffmpeg-static, not ffprobe —
+            // ffprobe is not on PATH in Vercel's runtime).
+            const hasAudio = await probeHasAudio(source);
+await new Promise((resolve) => {
+              // Normalize (scale/pad/fps) so every clip is concat-safe. KEEP the
+              // source audio when it exists; only add a silent track for clips
+              // that have none, so no audio is ever thrown away.
+              const args = ['-y', '-i', source];
+              if (!hasAudio) args.push('-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100');
+              args.push(
                 '-vf', `scale=${w}:${h}:force_original_aspect_ratio=decrease,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2,fps=24`,
                 '-c:v', 'libx264', '-crf', '20', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p',
-                '-c:a', 'aac', '-b:a', '128k',
-                '-map', '0:v:0', '-map', '1:a:0', '-shortest',
-                clip
-              ], { timeout: 120000 }, () => resolve());
+                '-c:a', 'aac', '-b:a', '128k', '-ar', '44100', '-ac', '2',
+                // video is always mapped explicitly — once any -map is present,
+                // ffmpeg keeps ONLY the mapped streams.
+                '-map', '0:v:0',
+                // hasAudio: the clip's own track (optional map); else the silent one.
+                '-map', hasAudio ? '0:a:0?' : '1:a:0'
+              );
+              // -shortest is only safe for the silent track, which we bound to the
+              // clip ourselves; with real audio it would truncate the video early.
+              if (!hasAudio) args.push('-shortest');
+              args.push(clip);
+              execFile(ffmpegBin(), args, { timeout: 120000 }, () => resolve());
             });
-            if (fs.existsSync(clip)) { normClips.push(clip); logLine(`flashloop combine: scene ${n} normalized`); }
+            if (fs.existsSync(clip)) { normClips.push(clip); logLine(`flashloop combine: scene ${n} normalized (${hasAudio ? 'audio kept' : 'silent'})`); }
           }
           if (!normClips.length) {
             logLine(`flashloop combine: no clips resolved — asked for scenes [${sceneList.join(', ')}], received ${clipUrls.filter(Boolean).length} clip URL(s), local files present: ${sceneList.filter(n => fs.existsSync(path.join(VIDEO_DIR, `flash_scene_${String(n).padStart(2, '0')}.mp4`))).join(', ') || 'none'}`);
@@ -6545,7 +6560,7 @@ RULES:
       const reelUrl = body.url;
       if (!reelUrl || !reelUrl.includes('instagram.com')) return sendJson(res, 400, { error: 'Instagram reel URL required' });
       try {
-        const { execFile } = require('child_process');
+const { execFile, execFileSync } = require('child_process');
         const script = `import json\nfrom parth_dl.core import InstagramDownloader\ndl = InstagramDownloader()\ninfo = dl.get_info(${JSON.stringify(reelUrl)})\nprint(json.dumps({\"ok\": True, \"data\": str(info)[:2000]}) if info else json.dumps({\"ok\": False}))`;
         const result = await new Promise((resolve) => {
           execFile('python3', ['-c', script], { timeout: 25000 }, (err, stdout, stderr) => {
