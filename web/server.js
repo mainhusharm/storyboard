@@ -1565,6 +1565,30 @@ async function uploadToImageHost(filePath, logFn = inflLogLine) {
 
   throw new Error('image upload failed: catbox and uguu both failed');
 }
+// Upload a rendered VIDEO clip (mp4) to a public host. Separate from
+// uploadToImageHost because that one names the file image.png with an image/*
+// mime — a clip must keep its .mp4 extension/mime so the combine step can
+// fetch it and the browser can play it (serverless instances don't share /tmp,
+// so the clip has to survive outside the instance that rendered it).
+async function uploadVideoClip(filePath, logFn = logLine) {
+  const buf = await fsp.readFile(filePath);
+  try {
+    const form = new FormData();
+    form.append('reqtype', 'fileupload');
+    form.append('fileToUpload', new Blob([buf], { type: 'video/mp4' }), 'clip.mp4');
+    const res = await fetch('https://catbox.moe/user/api.php', { method: 'POST', body: form, signal: AbortSignal.timeout(180000) });
+    const text = await res.text();
+    if (res.ok && text && text.startsWith('https://')) { logFn(`clip uploaded to catbox: ${text}`); return text.trim(); }
+  } catch (e) { logFn(`catbox clip upload failed: ${e.message}`); }
+  try {
+    const form = new FormData();
+    form.append('files[]', new Blob([buf], { type: 'video/mp4' }), 'clip.mp4');
+    const res = await fetch('https://uguu.se/upload', { method: 'POST', body: form, signal: AbortSignal.timeout(180000) });
+    const j = await res.json().catch(() => ({}));
+    if (j.files && j.files[0] && j.files[0].url) { logFn(`clip uploaded to uguu: ${j.files[0].url}`); return j.files[0].url; }
+  } catch (e) { logFn(`uguu clip upload failed: ${e.message}`); }
+  throw new Error('video clip upload failed: catbox and uguu both failed');
+}
 // Keep old name as alias for backwards compat
 const uploadToCatbox = uploadToImageHost;
 
@@ -6358,8 +6382,14 @@ RULES:
             await extractLastFrame(out, anchorPng);
             chainUrl = await uploadVideoImage(anchorPng, MODEL) || '';
           } catch (e) { logLine(`flashloop video scene ${sceneN}: chain anchor extraction failed: ${e.message}`); }
+          // Vercel invocations do not share /tmp. Upload the finished clip so the
+          // later combine request can fetch it even when it lands on another
+          // serverless instance.
+          let clipUrl = '';
+          try { clipUrl = await uploadVideoClip(out, logLine); }
+          catch (e) { logLine(`flashloop video scene ${sceneN}: clip upload failed (${e.message}) — local combine fallback only`); }
           logLine(`flashloop video scene ${sceneN}: DONE`);
-          return sendJson(res, 200, { ok: true, scene: sceneN, video_path: '/video/' + path.basename(out), chain_image_url: chainUrl });
+          return sendJson(res, 200, { ok: true, scene: sceneN, video_path: '/video/' + path.basename(out), clip_url: clipUrl, chain_image_url: chainUrl });
         } catch (e) {
           logLine(`flashloop video scene ${sceneN}: FAILED — ${e.message}`);
           return sendJson(res, 500, { error: String(e.message || e) });
@@ -6372,6 +6402,7 @@ RULES:
     if (p === '/api/flashloop/combine' && req.method === 'POST') {
       const body = await readBody(req).catch(() => ({}));
       const sceneList = (Array.isArray(body.scenes) ? body.scenes : []).map(Number).filter(Boolean);
+      const clipUrls = Array.isArray(body.clipUrls) ? body.clipUrls.map(String).filter(Boolean) : [];
       if (!sceneList.length) return sendJson(res, 400, { error: 'scenes list required' });
       if (!(await requireCredits(req, res, 1, 'combine video'))) return;
       return (async () => {
@@ -6382,15 +6413,27 @@ RULES:
           fs.mkdirSync(clipsDir, { recursive: true });
           const normClips = [];
           let idx = 0;
-          for (const n of sceneList) {
+          for (let sceneIndex = 0; sceneIndex < sceneList.length; sceneIndex++) {
+            const n = sceneList[sceneIndex];
             const src = path.join(VIDEO_DIR, `flash_scene_${String(n).padStart(2, '0')}.mp4`);
-            if (!fs.existsSync(src)) { logLine(`flashloop combine: scene ${n} mp4 missing — skipping`); continue; }
+            let source = src;
+            if (!fs.existsSync(source) && clipUrls[sceneIndex]) {
+              try {
+                const remote = clipUrls[sceneIndex];
+                const fetched = await fetch(remote, { signal: AbortSignal.timeout(180000) });
+                if (!fetched.ok) throw new Error(`HTTP ${fetched.status}`);
+                source = path.join(VIDEO_DIR, `flash_remote_${String(n).padStart(2, '0')}.mp4`);
+                await fsp.writeFile(source, Buffer.from(await fetched.arrayBuffer()));
+                logLine(`flashloop combine: downloaded scene ${n} from public clip URL`);
+              } catch (e) { logLine(`flashloop combine: scene ${n} remote clip download failed (${e.message})`); }
+            }
+            if (!fs.existsSync(source)) { logLine(`flashloop combine: scene ${n} mp4 missing — skipping`); continue; }
             idx++;
             const clip = path.join(clipsDir, `clip_${String(idx).padStart(2, '0')}.mp4`);
             await new Promise((resolve) => {
               // Normalize (scale/pad/fps + silent AAC) so every clip is concat-safe.
               execFile(ffmpegBin(), [
-                '-y', '-i', src,
+                '-y', '-i', source,
                 '-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100',
                 '-vf', `scale=${w}:${h}:force_original_aspect_ratio=decrease,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2,fps=24`,
                 '-c:v', 'libx264', '-crf', '20', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p',
@@ -6401,7 +6444,13 @@ RULES:
             });
             if (fs.existsSync(clip)) { normClips.push(clip); logLine(`flashloop combine: scene ${n} normalized`); }
           }
-          if (!normClips.length) return sendJson(res, 500, { error: 'no scene clips found on this instance' });
+          if (!normClips.length) {
+            logLine(`flashloop combine: no clips resolved — asked for scenes [${sceneList.join(', ')}], received ${clipUrls.filter(Boolean).length} clip URL(s), local files present: ${sceneList.filter(n => fs.existsSync(path.join(VIDEO_DIR, `flash_scene_${String(n).padStart(2, '0')}.mp4`))).join(', ') || 'none'}`);
+            return sendJson(res, 500, {
+              error: 'no scene clips found on this instance',
+              detail: `scenes [${sceneList.join(', ')}] — this serverless instance has no local copies and no usable clip URL was supplied. Re-render the video clips (each scene request returns a hosted clip_url that combine re-downloads).`
+            });
+          }
           const listFile = path.join(VIDEO_DIR, 'flash_concat.txt');
           // Entries relative to VIDEO_DIR (concat -safe 0 resolves them against the list's dir)
           fs.writeFileSync(listFile, normClips.map(c => `file '${path.relative(VIDEO_DIR, c).replace(/\\/g, '/')}'`).join('\n'));
@@ -7209,6 +7258,7 @@ module.exports.__internal = {
   NOVITA_VIDEO_MODELS, NOVITA_IMAGE_MODELS, NOVITA_TASK_PREFIX,
   isNovitaVideoModel, isNovitaI2VModel, isNovitaImageModel, novitaAcceptsImage,
   novitaDurationFor, novitaImageSize, novitaSubmit, novitaWait,
+  uploadVideoClip,
   // Logfare media (image models + Deepgram Aura-2 narration).
   LOGFARE_IMAGE_MODELS, LOGFARE_TTS_MODEL, LOGFARE_TTS_VOICES, LOGFARE_LOCAL_PREFIX,
   isLogfareImageModel, isLogfareLocal, cropToRatio, generateLogfareImage, logfareTtsChunk,

@@ -824,6 +824,7 @@ $('btnMakeVideo').onclick = async () => {
   try {
     const ratio = $('ratio').value;
     const rendered = [];
+    const clipUrls = [];
     let prevChain = '';
     for (let i = 0; i < n; i++) {
       // 1) scene first-frame image (cached for the session)
@@ -856,6 +857,7 @@ $('btnMakeVideo').onclick = async () => {
         continue;
       }
       rendered.push(i + 1);
+      clipUrls.push(v.clip_url || '');
       if (v.chain_image_url) prevChain = v.chain_image_url;
       mvLog(`scene ${i + 1}/${n}: video done ✓`);
     }
@@ -864,7 +866,7 @@ $('btnMakeVideo').onclick = async () => {
     mvLog(`combining ${rendered.length} clip(s) into the final video…`);
     const cr = await fetch('/api/flashloop/combine', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ scenes: rendered, ratio })
+        body: JSON.stringify({ scenes: rendered, clipUrls, ratio })
     });
     const cj = await cr.json().catch(() => ({}));
     if (!cr.ok || cj.error) throw new Error('combine: ' + (cj.error || 'HTTP ' + cr.status));

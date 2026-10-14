@@ -132,6 +132,11 @@ PaxSenix ones in every dropdown; the selected model still runs ALONE — no hidd
   t2v wan models have NO image input, so selecting one disables the image anchor and seamless
   chaining degrades to prompt-only (logged). Flashloop/SJinn Make Video passes the scene length
   as `duration` and honours the chain anchor with i2v engines.
+- **Make Video clip persistence (serverless-safe)**: `/api/flashloop/generate-video` now uploads the
+  finished clip and returns a hosted `clip_url`; the client passes `clipUrls` to
+  `/api/flashloop/combine`, which re-downloads any clip missing from its own instance. Without
+  this, combine hit `no scene clips found on this instance` whenever the two requests landed on
+  different Vercel instances (each writes `video/flash_scene_NN.mp4` to its own `/tmp`).
 - **Image models** (`novita:` prefix, e.g. `novita:qwen-image-3.0-pro`): `qwen-image-3.0-pro`,
   `wan2.7-image-pro`, `wanx2.1-t2i-turbo`, `wanx2.1-t2i-plus`. Sizes are W*H strings mapped from
   the app ratio (16:9→`1280*720`, 9:16→`720*1280`, 1:1→`1024*1024`, 4:3→`1024*768`, 3:4→`768*1024`);
