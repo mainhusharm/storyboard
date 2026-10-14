@@ -2238,6 +2238,7 @@ async function chatWithAqua(model, messages, maxTokens = 16000, temperature = 0.
   const id = String(model).replace(/^aqua:/, '');
   let res = null, lastErr = null;
   for (let attempt = 1; attempt <= 3; attempt++) {
+    let challenge = false;
     try {
       res = await fetch(`${AQUA_API}/v1/chat/completions`, {
         method: 'POST',
@@ -2245,14 +2246,23 @@ async function chatWithAqua(model, messages, maxTokens = 16000, temperature = 0.
         body: JSON.stringify({ model: id, messages, max_tokens: maxTokens, temperature }),
         signal: AbortSignal.timeout(250000)
       });
-      // 429 / 5xx are worth a retry; a 4xx (bad model, no key) is terminal.
-      if (res.status !== 429 && res.status < 500) break;
-      lastErr = new Error(`HTTP ${res.status}`);
-      if (res.status >= 500) { logLine(`aqua ${id}: upstream ${res.status} - failing over`); break; }
+      // Cloudflare's managed challenge answers a datacenter IP with a 403 and an
+      // HTML "Just a moment..." page instead of JSON. It is a TRANSIENT block, not
+      // a bad key — so it earns the same retry treatment as a 429, with a longer
+      // pause (Vercel's egress is consistently challenged; a bare fetch 403s).
+      if (res.status === 403) {
+        const peek = await res.clone().text().catch(() => '');
+        challenge = /just a moment|cf-|cloudflare|<html/i.test(peek);
+        if (challenge) logLine(`aqua ${id}: Cloudflare challenge (attempt ${attempt}) - backing off`);
+      }
+      // 429 / 5xx / challenge are worth a retry; other 4xx (bad model, no key) are terminal.
+      if (!challenge && res.status !== 429 && res.status < 500) break;
+      lastErr = new Error(`HTTP ${res.status}${challenge ? ' (Cloudflare challenge)' : ''}`);
+      if (!challenge && res.status >= 500) { logLine(`aqua ${id}: upstream ${res.status} - failing over`); break; }
     } catch (e) { lastErr = e; }
     if (attempt < 3) {
-      logLine(`aqua ${id}: ${lastErr && lastErr.message} - retry in ${attempt * 3}s`);
-      await new Promise(r => setTimeout(r, attempt * 3000));
+      logLine(`aqua ${id}: ${lastErr && lastErr.message} - retry in ${attempt * 8}s`);
+      await new Promise(r => setTimeout(r, attempt * 8000));
     }
   }
   if (!res) {
@@ -2262,7 +2272,10 @@ async function chatWithAqua(model, messages, maxTokens = 16000, temperature = 0.
   const raw = await res.text();
   let j = null; try { j = JSON.parse(raw); } catch {}
   if (!res.ok || (j && j.error)) {
-    const msg = (j && j.error && (j.error.message || JSON.stringify(j.error))) || ('HTTP ' + res.status);
+    // Keep a body snippet even when it is not JSON: an HTML Cloudflare page here
+    // is the whole diagnosis, and a bare "HTTP 403" hides it.
+    const msg = (j && j.error && (j.error.message || JSON.stringify(j.error)))
+      || stripHtml(raw).slice(0, 200) || ('HTTP ' + res.status);
     aquaStatus.lastError = `${id}: ${msg}`;
     throw new Error(`aqua ${id}: ${msg}`);
   }
