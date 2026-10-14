@@ -2659,8 +2659,11 @@ async function generateStoryboard(script, model, targetDuration = 120, look = ''
   // attempt is only STARTED when a full call still fits before the deadline —
   // otherwise the function gets killed mid-call at 300s with no response (the
   // "stuck at phase 1" hang).
-  const sbDeadline = IS_VERCEL ? Date.now() + 230000 : Infinity;
-  const CALL_RESERVE_MS = 105000; // per-call cap (100s) + response margin
+  // EXTENDED: 270s total budget (was 230s) + 80s per-call reserve (was 105s) —
+  // aggressive failover on 503/timeout means a model that's down costs <20s instead
+  // of burning 100s, so we can afford more total time and fit 3+ model attempts.
+  const sbDeadline = IS_VERCEL ? Date.now() + 270000 : Infinity;
+  const CALL_RESERVE_MS = 80000; // per-call cap (75s) + response margin
   const outOfTime = () => Date.now() > sbDeadline;
   const timeForOneMoreCall = () => Date.now() + CALL_RESERVE_MS < sbDeadline;
   const lookBlock = look && look.trim()
@@ -5030,6 +5033,11 @@ const requestHandler = async (req, res) => {
             await saveStoryboardJob(userId, result);
           } catch (e) {
             logLine(`auto pipeline: storyboard failed — ${e.message} — job ${jobId}`);
+            // Save failure to storage so polling can retrieve the error
+            await saveStoryboardJob(userId, {
+              ok: false, error: e.message, jobId,
+              phase: 'storyboard-failed'
+            });
             await refundCredits(userId, chargedAmount);
             job.sbJobId = null;
             job.sbResult = null;
