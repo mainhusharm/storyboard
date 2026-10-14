@@ -117,11 +117,13 @@ PaxSenix ones in every dropdown; the selected model still runs ALONE — no hidd
   ephemeral sandbox host (`https://3000-….sandbox.novita.ai`) — override with env `NOVITA_BASE_URL`
   (Vercel) or `pipeline/novita_base.txt` (local, gitignored) when it rotates.
 - **API shape** (docs 2026-10): `POST {base}/v1/submit` (1 credit) → `{ok, taskId, status:"PENDING"}`;
-  `GET {base}/v1/status/{taskId}` (free) → `{taskId, status: PENDING|RUNNING|SUCCEEDED|FAILED, elapsed,
-  output:{…, video_url|image_url}}`. Submit failures ≥400 are permanent (fail fast, no retry — the
-  sandbox's flaky TLS gets exactly one retry). Submitted jobs are returned as a `novita:task:<id>`
-  marker that `waitTask` routes to `novitaWait` (mirrors the `logfare-local:` pattern), so all
-  existing submit→wait→download call sites work unchanged.
+  `GET {base}/v1/status/{taskId}` (free) → `{taskId, status: PENDING|RUNNING|SUCCEEDED|FAILED,
+  elapsed, output:{…}}`. The documented result location is **`output.results[0].url`**, but models
+  differ (`output.video_url`, `output.url`, `output.image_url`, `output.images[]`), so
+  `novitaResultUrl()` checks all of them and falls back to a media-URL regex. Submit failures ≥400
+  are permanent (fail fast, no retry — the sandbox's flaky TLS gets exactly one retry). Submitted
+  jobs are returned as a `novita:task:<id>` marker that `waitTask` routes to `novitaWait` (mirrors
+  the `logfare-local:` pattern), so all existing submit→wait→download call sites work unchanged.
 - **Video models** (`VIDEO_MODELS`): `wan3.0-video-prime`, `wan3.0-video-standard`, `wan3.0-video`
   (durations 1,2,3,4,5,10,15,20,25,30 — any other value snaps to the nearest allowed), `wan2.7-t2v`,
   `wan2.1-t2v-turbo`, `wan2.1-t2v-plus` (1-15s), plus I2V models `wan2.7-i2v`, `wan2.1-i2v-turbo`,

@@ -58,7 +58,22 @@ check('4:3 → 1024*768', novitaImageSize('4:3') === '1024*768');
 check('3:4 → 768*1024', novitaImageSize('3:4') === '768*1024');
 check('unknown → 1280*720', novitaImageSize('21:9') === '1280*720');
 
-// ---- 2. /api/models payload over a self-hosted handler ----
+// ---- 2. result-URL extraction across every documented output shape ----
+console.log('\n[1b] result URL extraction');
+const novitaResultUrl = __internal.novitaResultUrl;
+const U = 'https://cdn.example.com/a.mp4';
+check('documented output.results[0].url', novitaResultUrl({ output: { results: [{ url: U }] } }) === U);
+check('output.video_url', novitaResultUrl({ output: { video_url: U } }) === U);
+check('output.url', novitaResultUrl({ output: { url: U } }) === U);
+check('output.image_url', novitaResultUrl({ output: { image_url: U } }) === U);
+check('output.images[0] string', novitaResultUrl({ output: { images: [U] } }) === U);
+check('output.images[0].url', novitaResultUrl({ output: { images: [{ url: U }] } }) === U);
+check('output.data[0]', novitaResultUrl({ output: { data: [U] } }) === U);
+check('unknown shape -> regex fallback', novitaResultUrl({ output: { weirdslot: U } }) === U);
+check('results[0] wins over video_url', novitaResultUrl({ output: { video_url: 'https://x/old.mp4', results: [{ url: U }] } }) === U);
+check('no media at all -> null', novitaResultUrl({ output: { task_status: 'SUCCEEDED' } }) === null);
+
+// ---- 3. /api/models payload over a self-hosted handler ----
 console.log('\n[4] /api/models payload');
 const handler = serverModule; // module.exports = requestHandler
 const httpServer = http.createServer(handler);

@@ -1775,17 +1775,31 @@ async function novitaSubmit(body, logFn = logLine) {
 }
 
 // Extract the finished asset URL from a SUCCEEDED status payload. Shape verified
-// live for video: output.video_url; images are expected at output.image_url /
-// output.images — both plus a generic media-URL fallback are handled.
+// live for video: output.video_url; the documented primary shape is
+// output.results[0].url and some models return plain output.url. Every known
+// variant is checked, then a generic media-URL fallback catches anything else.
 function novitaResultUrl(j) {
   const out = (j && j.output) || {};
-  const direct = out.video_url || out.videoUrl || out.image_url || out.imageUrl || out.url;
+  const firstUrl = (v) => {
+    if (!v) return '';
+    if (typeof v === 'string') return v;
+    return v.url || v.video_url || v.image_url || v.videoUrl || v.imageUrl || '';
+  };
+  // Documented shape: output.results[0].url (checked first — it is canonical).
+  if (Array.isArray(out.results) && out.results.length) {
+    const r = firstUrl(out.results[0]);
+    if (r) return String(r);
+  }
+  const direct = firstUrl(out) || out.video_url || out.videoUrl || out.image_url || out.imageUrl || out.url;
   if (direct) return String(direct);
   if (Array.isArray(out.images) && out.images.length) {
-    const first = typeof out.images[0] === 'string' ? out.images[0] : (out.images[0] && (out.images[0].url || out.images[0].image_url));
-    if (first) return String(first);
+    const f = firstUrl(out.images[0]);
+    if (f) return String(f);
   }
-  if (Array.isArray(out.data) && out.data.length && typeof out.data[0] === 'string') return out.data[0];
+  if (Array.isArray(out.data) && out.data.length) {
+    const f = firstUrl(out.data[0]);
+    if (f) return String(f);
+  }
   const m = JSON.stringify(out).match(/https?:\/\/[^\s"'\\]+?\.(?:mp4|png|jpe?g|webp)[^\s"'\\]*/i);
   return m ? m[0] : null;
 }
@@ -7308,7 +7322,7 @@ module.exports.__internal = {
   // Novita async-job models (wan3.0 video + qwen/wanx image).
   NOVITA_VIDEO_MODELS, NOVITA_IMAGE_MODELS, NOVITA_TASK_PREFIX,
   isNovitaVideoModel, isNovitaI2VModel, isNovitaImageModel, novitaAcceptsImage,
-  novitaDurationFor, novitaImageSize, novitaSubmit, novitaWait,
+  novitaDurationFor, novitaImageSize, novitaSubmit, novitaWait, novitaResultUrl,
   uploadVideoClip,
   // Logfare media (image models + Deepgram Aura-2 narration).
   LOGFARE_IMAGE_MODELS, LOGFARE_TTS_MODEL, LOGFARE_TTS_VOICES, LOGFARE_LOCAL_PREFIX,
