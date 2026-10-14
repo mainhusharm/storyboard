@@ -277,7 +277,12 @@
         </select>
         <div class="hint">I2V models keep seamless chaining (start frame from the previous scene). T2V models continue via prompt only.</div>
       </div>
+      <div style="display:flex;align-items:center;gap:8px;margin:0 0 12px;font-size:12px;color:var(--dim);cursor:pointer">
+        <input type="checkbox" id="mvChained" style="accent-color:var(--amber)">
+        <label for="mvChained" style="cursor:pointer">Seamless chaining — render scenes in order, each starting from the previous scene's last frame (slower, true continuity). Unchecked: render all scenes in PARALLEL, show every scene clip, then combine.</label>
+      </div>
       <button id="btnMakeVideo" class="generate-btn" style="background:linear-gradient(135deg,rgba(251,146,60,.25),rgba(236,72,153,.25));border-color:#fb923c">🎬 Make Video (Omni Flash)</button>
+      <div id="mvClips" style="display:none;margin-top:16px"></div>
       <div id="mvStatus" style="display:none;background:var(--panel2);border:1px solid var(--line2);border-radius:10px;padding:12px;font-size:12px;line-height:1.7;max-height:240px;overflow-y:auto;margin-top:14px;white-space:pre-wrap"></div>
       <video id="mvVideo" controls playsinline style="display:none;max-width:420px;width:100%;border-radius:12px;border:1px solid var(--line2);margin-top:14px"></video>
       <div style="margin-top:12px"><a id="mvDownload" download="flashloop_video.mp4" style="display:none" class="back-btn">⬇ Download Video</a></div>
@@ -810,63 +815,123 @@ $('btnMakeVideo').onclick = async () => {
   if (!scenes.length) return;
   const n = scenes.length;
   const engine = $('mvModel').value;
-  const engineName = ($('mvModel').options[$('mvModel').selectedIndex].text || engine).split('—')[0].trim();
+const engineName = ($('mvModel').options[$('mvModel').selectedIndex].text || '').split('—')[0].trim() || engine;
   const perScene = Number($('sceneLength').value) || 8;
-  const chained = engine === 'omni-flash' || engine.indexOf('i2v') !== -1 || engine.indexOf('wan3.0') === 0;
-  const chainNote = chained
-    ? 'Each scene starts where the previous ended (seamless chaining)'
-    : 'Text-to-video scenes continue via prompt (no image chaining)';
-  if (!confirm(`Make a video from all ${n} scene(s) with ${engineName}?\n\nEach scene renders ~${perScene}s — ${chainNote}. ${n} scenes ≈ ${Math.round(n * perScene / 60 * 10) / 10} min of video. This takes several minutes per scene. Start?`)) return;
+  // Seamless chaining renders in story order (each scene needs the previous
+  // scene's last frame). Unchecked: every scene renders in PARALLEL from its own
+  // first-frame image — much faster, and all clips are shown before combining.
+  const doChain = $('mvChained').checked;
+  const engineCanChain = engine === 'omni-flash' || engine.indexOf('i2v') !== -1 || engine.indexOf('wan3.0') === 0;
+  const chainNote = !doChain
+    ? 'All scenes render in PARALLEL from their own first frames, then combine'
+    : (engineCanChain
+      ? 'Each scene starts where the previous ended (seamless chaining, sequential)'
+      : 'Text-to-video scenes continue via prompt (no image chaining)');
+  if (!confirm(`Make a video from all ${n} scene(s) with ${engineName}?\n\nEach scene renders ~${perScene}s — ${chainNote}. ${n} scenes ≈ ${Math.round(n * perScene / 60 * 10) / 10} min of video. Renders can take 4-30 minutes per scene. Start?`)) return;
   $('btnMakeVideo').disabled = true;
   $('mvStatus').innerHTML = '';
   $('mvVideo').style.display = 'none';
   $('mvDownload').style.display = 'none';
+  $('mvClips').style.display = 'none';
+  $('mvClips').innerHTML = '';
   try {
     const ratio = $('ratio').value;
-    const rendered = [];
-    const clipUrls = [];
-    let prevChain = '';
-    for (let i = 0; i < n; i++) {
-      // 1) scene first-frame image (cached for the session)
-      if (!sceneImages[i]) {
-        mvLog(`scene ${i + 1}/${n}: generating first-frame image…`);
-        const r = await fetch('/api/flashloop/generate-i2i', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ prompt: sceneImageText(i), refImageUrl: refAnchorUrl() || trendThumbnail, ratio, model: $('i2iModel').value, trendName: name, tagline })
-        });
-        const j = await r.json().catch(() => ({}));
-        if (!r.ok || j.error) throw new Error(`scene ${i + 1} image: ${j.error || 'HTTP ' + r.status}`);
-        // Direct-URL providers (AquaDevs, Logfare, Novita) answer with the finished
-        // image; task-based providers (PaxSenix) answer with a taskUrl to poll.
-        if (j.imageUrl) { sceneImages[i] = j.imageUrl; }
-        else if (j.taskUrl) { sceneImages[i] = await pollTask(j.taskUrl); }
-        else throw new Error(`scene ${i + 1} image: no image URL returned`);
-        if (!sceneImages[i]) throw new Error(`scene ${i + 1} image generation failed`);
-        mvLog(`scene ${i + 1}/${n}: image done`);
+    const results = new Array(n).fill(null);   // scene index -> {clip_url, chain_image_url}
+    const postScene = payload => fetch('/api/flashloop/generate-video', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+    });
+    // Poll a submitted cloud render until it settles. A wan clip can take 4-30
+    // minutes, so the cap is generous; each poll is a fresh serverless invocation.
+    const renderScene = async (i, chainAnchor) => {
+      let res = await postScene({ scene: i + 1, prompt: sceneVideoText(i), imageUrl: sceneImages[i], ratio, chainAnchor, model: engine, duration: perScene });
+      let v = await res.json().catch(() => ({}));
+      if (v && v.pending && v.task) {
+        let waited = 0;
+        while (waited < 2700000) {            // 45 min ceiling
+          mvLog(`scene ${i + 1}/${n}: ${engineName} rendering in the cloud (${Math.round(waited / 1000)}s of ~${perScene}s clip)…`);
+          await new Promise(r => setTimeout(r, 15000));
+          waited += 15000;
+          res = await postScene({ scene: i + 1, pollTask: v.task, model: engine });
+          v = await res.json().catch(() => ({}));
+          if (!v || !v.pending) break;        // settled (done or hard failure)
+        }
       }
-      // 2) scene video — selected engine, chained to the previous scene's last frame
-      mvLog(`scene ${i + 1}/${n}: rendering video (${engineName}${prevChain ? ', chained' : ''})… this takes a few minutes`);
-      const res = await fetch('/api/flashloop/generate-video', {
+      return { res, v };
+    };
+    const ensureImage = async (i) => {
+      if (sceneImages[i]) return true;
+      mvLog(`scene ${i + 1}/${n}: generating first-frame image…`);
+      const r = await fetch('/api/flashloop/generate-i2i', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ scene: i + 1, prompt: sceneVideoText(i), imageUrl: sceneImages[i], ratio, chainAnchor: prevChain, model: engine, duration: perScene })
+        body: JSON.stringify({ prompt: sceneImageText(i), refImageUrl: refAnchorUrl() || trendThumbnail, ratio, model: $('i2iModel').value, trendName: name, tagline })
       });
-      const v = await res.json().catch(() => ({}));
-      if (!res.ok || v.error) {
-        mvLog(`scene ${i + 1}: FAILED — ${v.error || 'HTTP ' + res.status} (continuing without chain anchor)`, true);
-        prevChain = ''; // broken chain: next scene falls back to its own image
-        continue;
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || j.error) { mvLog(`scene ${i + 1} image FAILED — ${j.error || 'HTTP ' + r.status}`, true); return false; }
+      // Direct-URL providers (AquaDevs, Logfare, Novita) answer with the finished
+      // image; task-based providers (PaxSenix) answer with a taskUrl to poll.
+      if (j.imageUrl) sceneImages[i] = j.imageUrl;
+      else if (j.taskUrl) sceneImages[i] = await pollTask(j.taskUrl);
+      if (!sceneImages[i]) { mvLog(`scene ${i + 1} image: no image URL returned`, true); return false; }
+      mvLog(`scene ${i + 1}/${n}: image done`);
+      return true;
+    };
+
+    if (doChain) {
+      // SEQUENTIAL — each scene needs the previous scene's last frame.
+      let prevChain = '';
+      for (let i = 0; i < n; i++) {
+        if (!(await ensureImage(i))) continue;
+        mvLog(`scene ${i + 1}/${n}: rendering video (${engineName}${prevChain ? ', chained' : ''})… 4-30 min`);
+        const { res, v } = await renderScene(i, prevChain);
+        if (!res.ok || v.error) { mvLog(`scene ${i + 1}: FAILED — ${v.error || 'HTTP ' + res.status} (continuing without chain anchor)`, true); prevChain = ''; continue; }
+        results[i] = v;
+        if (v.chain_image_url) prevChain = v.chain_image_url;
+        mvLog(`scene ${i + 1}/${n}: video done ✓`);
       }
-      rendered.push(i + 1);
-      clipUrls.push(v.clip_url || '');
-      if (v.chain_image_url) prevChain = v.chain_image_url;
-      mvLog(`scene ${i + 1}/${n}: video done ✓`);
+    } else {
+      // PARALLEL — all scenes at once (cap 4 concurrent renders), then combine.
+      mvLog(`rendering all ${n} scene(s) in parallel (max 4 at a time)…`);
+      const queue = [...Array(n).keys()];
+      const workers = Array.from({ length: Math.min(4, n) }, async () => {
+        while (queue.length) {
+          const i = queue.shift();
+          if (!(await ensureImage(i))) continue;
+          mvLog(`scene ${i + 1}/${n}: rendering video (${engineName})… 4-30 min`);
+          const { res, v } = await renderScene(i, '');
+          if (!res.ok || v.error) { mvLog(`scene ${i + 1}: FAILED — ${v.error || 'HTTP ' + res.status}`, true); continue; }
+          results[i] = v;
+          mvLog(`scene ${i + 1}/${n}: video done ✓`);
+        }
+      });
+      await Promise.all(workers);
     }
-    if (!rendered.length) throw new Error('all scenes failed');
-    // 3) combine into one film
+
+    // Show EVERY scene clip so problems in any single scene are visible.
+    const okIdx = results.map((r, i) => (r && r.ok !== false && (r.clip_url || r.video_path) ? i : -1)).filter(i => i >= 0);
+    if (okIdx.length) {
+      const box = $('mvClips');
+      box.style.display = 'block';
+      box.innerHTML = `<div style="font-size:12px;color:var(--dim);margin-bottom:8px">Scene clips (${okIdx.length}/${n}) — inspect each one before the final cut:</div>`;
+      for (const i of okIdx) {
+        const url = results[i].clip_url || results[i].video_path;
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex;gap:12px;align-items:center;flex-wrap:wrap;padding:8px 0;border-bottom:1px solid var(--line2)';
+        row.innerHTML = `<video controls playsinline style="width:170px;border-radius:8px;background:#000" src="${url}"></video>
+          <div style="font-size:12px;color:var(--dim)">scene ${i + 1} · ~${perScene}s${results[i].chain_image_url ? ' · chained' : ''}</div>
+          <a class="back-btn" style="background:var(--panel2);border-color:var(--green);color:var(--green)" href="${url}" download="scene_${String(i + 1).padStart(2, '0')}.mp4">⬇ scene ${i + 1}</a>`;
+        box.appendChild(row);
+      }
+    }
+    if (!okIdx.length) throw new Error('all scenes failed');
+
+    // combine into one film (scene order preserved; combine re-downloads any
+    // clip that is not on this instance from its hosted clip_url)
+    const rendered = okIdx.map(i => i + 1);
+    const clipUrls = okIdx.map(i => results[i].clip_url || '');
     mvLog(`combining ${rendered.length} clip(s) into the final video…`);
     const cr = await fetch('/api/flashloop/combine', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ scenes: rendered, clipUrls, ratio })
+      body: JSON.stringify({ scenes: rendered, clipUrls, ratio })
     });
     const cj = await cr.json().catch(() => ({}));
     if (!cr.ok || cj.error) throw new Error('combine: ' + (cj.error || 'HTTP ' + cr.status));

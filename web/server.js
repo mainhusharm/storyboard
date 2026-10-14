@@ -6313,69 +6313,107 @@ RULES:
     // chained: each scene's video is anchored to the LAST FRAME of the previous
     // scene's video (the client passes it back as chainAnchor), exactly like
     // the storyboard pipeline. Engine: omni-flash (default) or a Novita wan model
-    // (client passes `model` + per-scene `duration`). Synchronous so each
-    // invocation fits Vercel's 300s budget.
+    // (client passes `model` + per-scene `duration`).
+    //
+    // SERVERLESS-SAFE two-phase flow. A wan3.0 clip renders for 100-300s and a
+    // serverless request dies at ~60-300s (HTTP 504), so a Novita render is never
+    // awaited inside one request:
+    //   1. no `pollTask` in the body  -> submit the job, return {pending:true, task}
+    //      immediately (Novita keeps rendering after we respond)
+    //   2. `pollTask` in the body      -> poll that Novita task, download the clip,
+    //      host it (clip_url) and answer like the old synchronous route
+    // Omni-flash keeps the old synchronous behaviour (its clips render fast enough).
     if (p === '/api/flashloop/generate-video' && req.method === 'POST') {
       const body = await readBody(req).catch(() => ({}));
-      const { prompt = '', imageUrl = '', ratio = '9:16', chainAnchor = '', model: bodyModel = '', duration: bodyDuration = 0 } = body || {};
+      const { prompt = '', imageUrl = '', ratio = '9:16', chainAnchor = '', model: bodyModel = '', duration: bodyDuration = 0, pollTask: pollTaskId = '' } = body || {};
       const sceneN = Math.max(1, Number(body.scene) || 1);
-      if (!prompt) return sendJson(res, 400, { error: 'prompt required' });
-      if (!(await requireCredits(req, res, CREDIT_COSTS.flashloopVideo, 'flashloop video'))) return;
+      // A POLL request only carries the task id (the prompt went with the submit),
+      // so the prompt check only applies when submitting a new render.
+      if (!pollTaskId && !prompt) return sendJson(res, 400, { error: 'prompt required' });
+      const MODEL = isNovitaVideoModel(bodyModel) ? bodyModel : 'omni-flash';
+      const isNov = isNovitaVideoModel(MODEL);
+      const novDur = isNov ? novitaDurationFor(MODEL, Number(bodyDuration) || 8) : 0;
+      const out = path.join(VIDEO_DIR, `flash_scene_${String(sceneN).padStart(2, '0')}.mp4`);
+      const anchorPng = path.join(FRAMES_DIR, `flash_chain_${String(sceneN).padStart(2, '0')}.png`);
+      // Credit gate on the SUBMIT only — polling the same job must not charge twice.
+      if (!pollTaskId && !(await requireCredits(req, res, CREDIT_COSTS.flashloopVideo, 'flashloop video'))) return;
       return (async () => {
-        const MODEL = isNovitaVideoModel(bodyModel) ? bodyModel : 'omni-flash';
-        const isNov = isNovitaVideoModel(MODEL);
-        const novDur = isNov ? novitaDurationFor(MODEL, Number(bodyDuration) || 8) : 0;
-        const out = path.join(VIDEO_DIR, `flash_scene_${String(sceneN).padStart(2, '0')}.mp4`);
-        const anchorPng = path.join(FRAMES_DIR, `flash_chain_${String(sceneN).padStart(2, '0')}.png`);
         try {
           fs.mkdirSync(VIDEO_DIR, { recursive: true });
           fs.mkdirSync(FRAMES_DIR, { recursive: true });
-          logLine(`flashloop video scene ${sceneN}: rendering with ${MODEL}${isNov ? ` (${novDur}s)` : ''} (${chainAnchor ? 'chained to previous scene' : imageUrl ? 'from scene image' : 'text-to-video'})`);
-          // Anchor: chainAnchor (seamless chain) > imageUrl (scene's first frame).
-          // Always re-host through ffmpeg → JPG because omni-flash's i2v asset
-          // pipeline REJECTS PNG, and old PaxSenix/tmpfiles URLs expire.
-          let anchor = String(chainAnchor || '').trim() || String(imageUrl || '').trim() || null;
-          if (anchor) {
-            try {
-              const tmp = path.join(FRAMES_DIR, `flash_anchor_${Date.now()}.img`);
-              await download(anchor, tmp);
-              const jpg = tmp + '.jpg';
-              await new Promise((resolve, reject) => {
-                execFile(ffmpegBin(), ['-y', '-i', tmp, '-q:v', '2', jpg], { timeout: 60000 }, err => err ? reject(err) : resolve());
-              });
-              anchor = await uploadToImageHost(jpg, logLine);
-              logLine(`flashloop video scene ${sceneN}: anchor re-hosted as JPG`);
-            } catch (e) { logLine(`flashloop video scene ${sceneN}: anchor re-host failed (${e.message}) — trying as-is`); }
-          }
-          const mRatio = normalizeVideoRatio(ratio, MODEL);
-          // omni-flash's text filter needs softened wording; Novita wan models
-          // take the prompt raw (they accept the same language veo/grok do).
-          const softened = MODEL === 'omni-flash' ? softenOmniPrompt(prompt) : prompt;
-          const attempt = async (useImg) => {
-            if (isNov) {
+
+          // ---- phase 2: finish a job submitted earlier ----
+          if (pollTaskId) {
+            logLine(`flashloop video scene ${sceneN}: polling novita job for ${MODEL}…`);
+            const url = await novitaWait(pollTaskId, IS_VERCEL ? 4 : 25, logLine);
+            if (!url) return sendJson(res, 504, { error: `${MODEL} render still running or failed — try this scene again`, pending: true, task: pollTaskId });
+            if (!(await download(url, out))) return sendJson(res, 500, { error: 'clip download failed' });
+          } else {
+            // ---- phase 1: submit (and, off-Vercel, wait as before) ----
+            // Anchor: chainAnchor (seamless chain) > imageUrl (scene's first frame).
+            // Always re-host through ffmpeg → JPG because omni-flash's i2v asset
+            // pipeline REJECTS PNG, and old PaxSenix/tmpfiles URLs expire.
+            let anchor = String(chainAnchor || '').trim() || String(imageUrl || '').trim() || null;
+            let anchorTmp = null;                 // deleted after hosting — never leak these
+            if (anchor) {
+              try {
+                const tmp = path.join(FRAMES_DIR, `flash_anchor_${Date.now()}.img`);
+                anchorTmp = tmp;
+                await download(anchor, tmp);
+                const jpg = tmp + '.jpg';
+                await new Promise((resolve, reject) => {
+                  execFile(ffmpegBin(), ['-y', '-i', tmp, '-q:v', '2', jpg], { timeout: 60000 }, err => err ? reject(err) : resolve());
+                });
+                anchor = await uploadToImageHost(jpg, logLine);
+                logLine(`flashloop video scene ${sceneN}: anchor re-hosted as JPG`);
+              } catch (e) { logLine(`flashloop video scene ${sceneN}: anchor re-host failed (${e.message}) — trying as-is`); }
+              finally { for (const f of [anchorTmp, anchorTmp && anchorTmp + '.jpg']) { try { if (f) fs.unlinkSync(f); } catch {} } }
+            }
+            const mRatio = normalizeVideoRatio(ratio, MODEL);
+            // omni-flash's text filter needs softened wording; Novita wan models
+            // take the prompt raw (they accept the same language veo/grok do).
+            const softened = MODEL === 'omni-flash' ? softenOmniPrompt(prompt) : prompt;
+            const submitBody = (useImg) => {
               const useAnchor = novitaAcceptsImage(MODEL) && useImg && anchor;
-              const task = await novitaSubmit({
+              return {
                 model: MODEL,
                 input: { prompt: softened },
                 parameters: { duration: novDur, resolution: '720P', ratio: mRatio },
                 ...(useAnchor ? { imageUrls: [anchor] } : {})
-              }, logLine);
-              if (!task) return false;
-              const url = await novitaWait(task, IS_VERCEL ? 4 : 25, logLine);
-              return !!(url && await download(url, out));
+              };
+            };
+            if (isNov && IS_VERCEL) {
+              // Never block the request on a 100-300s render: submit, hand the
+              // task back, let the client poll it in a fresh invocation.
+              if (!NOVITA_API_KEY) {
+                logLine('flashloop video: NO Novita key on this instance — set NOVITA_API_KEY in the Vercel environment variables');
+                return sendJson(res, 500, { error: 'Novita API key is not set on this deployment — add NOVITA_API_KEY (and NOVITA_BASE_URL) to the Vercel environment variables and redeploy' });
+              }
+              const task = await novitaSubmit(submitBody(true), logLine);
+              if (!task) return sendJson(res, 502, { error: `${MODEL} submit failed` });
+              logLine(`flashloop video scene ${sceneN}: ${MODEL} submitted (${novDur}s) — returning task for polling`);
+              return sendJson(res, 202, { ok: true, pending: true, scene: sceneN, task, model: MODEL });
             }
-            const mode = useImg && anchor ? 'image-to-video' : 'text-to-video';
-            const imgParam = useImg && anchor ? `&${videoImgKey(MODEL)}=${encodeURIComponent(anchor)}` : '';
-            const q = `/ai-video/${MODEL}?prompt=${encodeURIComponent(softened)}&ratio=${mRatio}&type=${mode}${imgParam}`;
-            const task = await submitTask(q);
-            if (!task) return false;
-            const url = await waitTask(task, IS_VERCEL ? 4 : 25);
-            return !!(url && await download(url, out));
-          };
-          // Retry ladder: i2v (chained) → text-to-video. Never leaves a scene blank.
-          let ok = await attempt(true);
-          if (!ok) { logLine(`flashloop video scene ${sceneN}: i2v failed — retrying as text-to-video`); ok = await attempt(false); }
-          if (!ok) return sendJson(res, 500, { error: `${MODEL} failed for scene ${sceneN}` });
+            const attempt = async (useImg) => {
+              if (isNov) {
+                const task = await novitaSubmit(submitBody(useImg), logLine);
+                if (!task) return false;
+                const url = await novitaWait(task, IS_VERCEL ? 4 : 25, logLine);
+                return !!(url && await download(url, out));
+              }
+              const mode = useImg && anchor ? 'image-to-video' : 'text-to-video';
+              const imgParam = useImg && anchor ? `&${videoImgKey(MODEL)}=${encodeURIComponent(anchor)}` : '';
+              const q = `/ai-video/${MODEL}?prompt=${encodeURIComponent(softened)}&ratio=${mRatio}&type=${mode}${imgParam}`;
+              const task = await submitTask(q);
+              if (!task) return false;
+              const url = await waitTask(task, IS_VERCEL ? 4 : 25);
+              return !!(url && await download(url, out));
+            };
+            // Retry ladder: i2v (chained) → text-to-video. Never leaves a scene blank.
+            let ok = await attempt(true);
+            if (!ok) { logLine(`flashloop video scene ${sceneN}: i2v failed — retrying as text-to-video`); ok = await attempt(false); }
+            if (!ok) return sendJson(res, 500, { error: `${MODEL} failed for scene ${sceneN}` });
+          }
           // Extract the final frame → host it as the chain anchor for the NEXT scene.
           let chainUrl = '';
           try {

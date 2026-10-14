@@ -137,6 +137,17 @@ PaxSenix ones in every dropdown; the selected model still runs ALONE — no hidd
   `/api/flashloop/combine`, which re-downloads any clip missing from its own instance. Without
   this, combine hit `no scene clips found on this instance` whenever the two requests landed on
   different Vercel instances (each writes `video/flash_scene_NN.mp4` to its own `/tmp`).
+- **Two-phase Vercel render (no 504s)**: a wan clip renders for 4-30 minutes, far past a
+  serverless request, so on Vercel `generate-video` never awaits the render. It submits the job and
+  answers `202 {pending:true, task:"novita:task:<id>"}`; the client re-posts `{pollTask}` every 15s
+  (cap 45 min) and each poll is a fresh invocation, so no single request times out. A poll that
+  finds the job still rendering answers `504 {pending:true}` — the client treats `pending` as "keep
+  waiting", not as a failure. Locally (and for omni-flash) the old synchronous path is kept.
+  Credits are charged on submit only, never again while polling.
+- **Parallel or chained**: Make Video has a "Seamless chaining" checkbox. OFF (default) renders all
+  scenes in PARALLEL (max 4 concurrent) from their own first-frame images, shows every scene clip
+  inline for inspection, then combines. ON renders sequentially with each scene anchored to the
+  previous scene's last frame.
 - **Image models** (`novita:` prefix, e.g. `novita:qwen-image-3.0-pro`): `qwen-image-3.0-pro`,
   `wan2.7-image-pro`, `wanx2.1-t2i-turbo`, `wanx2.1-t2i-plus`. Sizes are W*H strings mapped from
   the app ratio (16:9→`1280*720`, 9:16→`720*1280`, 1:1→`1024*1024`, 4:3→`1024*768`, 3:4→`768*1024`);
