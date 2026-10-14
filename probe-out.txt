@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PaxSenixAPI Documentation | Worst API Ever.</title>
+    <meta name="description" content="Freemium REST API services for bots, and innovative projects." />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="PaxSenix-API Docs: Worst API Ever." />
+    <meta property="og:image" content="https://files.catbox.moe/p0dgj8.jpg" />
+    <meta property="og:url" content="https://api.paxsenix.org/docs" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="theme-color" content="#000000" />
+    <meta name="robots" content="index, follow" />
+    <link rel="canonical" href="https://api.paxsenix.org/docs" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@24,400,0,0" />
+    <link rel="stylesheet" href="docs/styles.css" />
+</head>
+<body class="pre-reveal">
+    <div id="ssh-overlay">
+        <div id="ssh-window">
+            <div id="ssh-titlebar">
+                <div class="ssh-dots">
+                    <span class="ssh-dot red"></span>
+                    <span class="ssh-dot yellow"></span>
+                    <span class="ssh-dot green"></span>
+                </div>
+                <span class="ssh-title"><a href="/cdn-cgi/l/email-protection" class="__cf_email__" data-cfemail="384859404b5d56514078594851164859404b5d56514016574a5f">[email&#160;protected]</a> — ssh — 80x24</span>
+                <div style="width:52px"></div>
+            </div>
+            <div id="ssh-body">
+                <div id="ssh-output"></div>
+                <div id="ssh-input-line">
+                    <span id="ssh-cursor-line"></span><span class="ssh-cursor blink">█</span>
+                </div>
+            </div>
+            <div id="ssh-footer">
+                <span id="ssh-status-text">Establishing connection...</span>
+                <button id="ssh-skip-btn">SKIP <span class="mso" style="font-size:12px;vertical-align:middle">arrow_forward</span></button>
+            </div>
+        </div>
+    </div>
+
+    <div id="log-panel" class="log-panel log-hidden">
+        <div id="log-header" class="log-header">
+            <span class="mso" style="font-size:14px">terminal</span>
+            <span class="log-title">Request Log</span>
+            <span id="log-badge" class="log-badge hidden">0</span>
+            <button id="log-toggle" class="log-toggle-btn">
+                <span class="mso" style="font-size:15px">expand_less</span>
+            </button>
+        </div>
+        <div id="log-body" class="log-body">
+            <div id="log-entries"></div>
+        </div>
+    </div>
+
+    <div id="loading-overlay" class="hidden"></div>
+
+    <div id="domain-notice-banner" class="domain-banner hidden">
+        <div class="domain-banner-inner">
+            <span class="mso" style="color:var(--warning)">warning</span>
+            <span><b>Notice:</b> This domain is being discontinued. Switch to
+                <a href="https://api.paxsenix.org">api.paxsenix.org</a>.
+            </span>
+            <button id="close-banner-btn" class="domain-banner-close">
+                <span class="mso">close</span>
+            </button>
+        </div>
+    </div>
+
+    <header class="navbar reveal-item" style="--delay:0ms">
+        <div class="nav-container">
+            <a href="/" class="nav-logo">
+                PaxSenix<span style="color:var(--text-muted)">_API</span>
+            </a>
+            <div class="nav-right">
+                <span class="api-version-badge">
+                    <span class="mso" style="font-size:12px;margin-right:4px">fork_right</span>v3.3.4
+                </span>
+                <a href="/" class="nav-link">Home</a>
+                <a href="/pricing" class="nav-link">Pricing</a>
+                <a href="https://t.me/PaxSenixAPI" class="nav-link" target="_blank">Telegram</a>
+            </div>
+        </div>
+    </header>
+
+    <div class="docs-layout">
+
+        <aside class="docs-sidebar reveal-item" style="--delay:80ms" id="docs-sidebar">
+            <div class="sidebar-section">
+                <div class="sidebar-label">Navigation</div>
+                <nav class="sidebar-nav">
+                    <a href="#intro" class="sidebar-link active">
+                        <span class="mso">home</span> Overview
+                    </a>
+                    <a href="#endpoints" class="sidebar-link">
+                        <span class="mso">api</span> Endpoints
+                    </a>
+                </nav>
+            </div>
+            <div class="sidebar-section" id="sidebar-categories-section" style="display:none">
+                <div class="sidebar-label">Categories</div>
+                <nav class="sidebar-nav" id="sidebar-categories"></nav>
+            </div>
+        </aside>
+
+        <main class="docs-main reveal-item" style="--delay:160ms">
+            <div class="docs-content">
+
+                <div class="intro-section" id="intro">
+                    <div class="section-header">
+                        <h1 class="section-title">
+                            PaxSenix-API <span class="gradient-text">Documentation</span>
+                        </h1>
+                        <p class="section-subtitle">// reference guide &amp; interactive explorer</p>
+                    </div>
+
+                    <div class="markdown-content" id="api-description"></div>
+
+                    <div class="action-row">
+                        <a href="/support" class="btn btn-primary">
+                            <span class="mso">send</span> Web Support
+                        </a>
+                        <a href="https://t.me/PaxSenixAPI" class="btn btn-secondary" target="_blank">
+                            <span class="mso">send</span> Telegram Community
+                        </a>
+                    </div>
+
+                    <div class="info-row">
+                        <div class="info-block base-url-container">
+                            <span class="info-label">Base URL</span>
+                            <div class="info-value-row">
+                                <span class="text-primary font-mono">https://api.paxsenix.org</span>
+                                <button class="copy-base-url-btn icon-btn" data-text="https://api.paxsenix.org">
+                                    <span class="mso">content_copy</span>
+                                </button>
+                            </div>
+                        </div>
+                        <div class="info-block api-key-container">
+                            <label for="api-key-input" class="info-label">
+                                <span class="mso" style="font-size:13px">key</span> API Key
+                            </label>
+                            <div class="info-value-row">
+                                <input type="password" id="api-key-input" placeholder="Enter your API Key" class="api-key-input" />
+                                <button class="api-key-toggle icon-btn">
+                                    <span class="mso">visibility</span>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="search-container">
+                        <span class="mso search-icon">search</span>
+                        <input type="text" placeholder="Search endpoints..." class="search-input" id="search-input" />
+                    </div>
+
+                    <div class="category-tabs-wrapper">
+                        <button class="cat-scroll-btn cat-scroll-left cat-btn-hidden" id="cat-scroll-left">
+                            <span class="mso">chevron_left</span>
+                        </button>
+                        <div class="category-tabs-container" id="cat-tabs-scroll">
+                            <div class="category-tabs" id="category-chips"></div>
+                        </div>
+                        <button class="cat-scroll-btn cat-scroll-right" id="cat-scroll-right">
+                            <span class="mso">chevron_right</span>
+                        </button>
+                    </div>
+                </div>
+
+                <div id="endpoints-container" class="endpoints-container"></div>
+            </div>
+        </main>
+    </div>
+
+    <footer class="docs-footer reveal-item" style="--delay:220ms">
+        <div class="footer-inner">
+            <div class="footer-left">
+                <span class="footer-logo">PaxSenix<span style="color:var(--text-muted)">_API</span></span>
+                <p class="footer-copy">© 2026 PaxSenix. Powered by Me, DFX, KAPPS.</p>
+            </div>
+            <div class="footer-links">
+                <a href="#" class="footer-link"><span class="mso">menu_book</span> Docs</a>
+                <a href="https://t.me/PaxSenixDoc" class="footer-link" target="_blank"><span class="mso">send</span> Telegram</a>
+                <a href="https://github.com/Paxsenix0" class="footer-link" target="_blank"><span class="mso">code</span> GitHub</a>
+            </div>
+        </div>
+    </footer>
+
+    <template id="endpoint-template">
+        <div class="endpoint-card">
+            <div class="endpoint-header">
+                <div class="flex items-center flex-grow min-w-0">
+                    <span class="method-tag">METHOD</span>
+                    <span class="endpoint-path">/api/path</span>
+                </div>
+                <button class="endpoint-toggle-btn"><span class="mso">expand_more</span></button>
+            </div>
+            <div class="endpoint-summary"></div>
+            <div class="endpoint-content">
+                <div class="endpoint-description mb-6"><div class="markdown-content"></div></div>
+                <div class="endpoint-tabs">
+                    <div class="tabs-header">
+                        <button class="tab-btn active" data-tab="documentation">Documentation</button>
+                        <button class="tab-btn" data-tab="try-it">Try It Out</button>
+                    </div>
+                    <div class="tabs-content"></div>
+                </div>
+            </div>
+        </div>
+    </template>
+
+    <div id="selection-dialog" class="selection-dialog hidden">
+        <div class="dialog-backdrop"></div>
+        <div class="dialog-container">
+            <div class="dialog-header">
+                <h3 class="dialog-title">Select a value</h3>
+                <button class="dialog-close-btn"><span class="mso">close</span></button>
+            </div>
+            <div class="dialog-content">
+                <div class="dialog-description mb-4"></div>
+                <div class="dialog-options"></div>
+            </div>
+            <div class="dialog-footer">
+                <button class="dialog-cancel-btn">Cancel</button>
+                <button class="dialog-confirm-btn">Confirm</button>
+            </div>
+        </div>
+    </div>
+
+    <script data-cfasync="false" src="/cdn-cgi/scripts/5c5dd728/cloudflare-static/email-decode.min.js"></script><script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+    <script>
+    (function() {
+        const overlay    = document.getElementById('ssh-overlay');
+        const output     = document.getElementById('ssh-output');
+        const cursorLine = document.getElementById('ssh-cursor-line');
+        const skipBtn    = document.getElementById('ssh-skip-btn');
+        const statusText = document.getElementById('ssh-status-text');
+
+        let skipped = false;
+        let swaggerMeta = null;
+        let animResolve = null;
+        let swaggerResolve = null;
+        let swaggerShown = false;
+
+        const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+        function addLine(text, cls) {
+            const d = document.createElement('div');
+            d.className = 'ssh-line' + (cls ? ' ' + cls : '');
+            d.textContent = text;
+            output.appendChild(d);
+            output.scrollTop = output.scrollHeight;
+            return d;
+        }
+
+        async function typeLine(text, speed, cls) {
+            speed = speed || 38;
+            const d = addLine('', cls);
+            for (const ch of text) {
+                if (skipped) { d.textContent = text; break; }
+                d.textContent += ch;
+                output.scrollTop = output.scrollHeight;
+                await sleep(speed + Math.random() * 14 - 7);
+            }
+            return d;
+        }
+
+        async function pause(ms) {
+            if (!skipped) await sleep(ms);
+        }
+
+        async function waitForSwagger() {
+            if (swaggerMeta) return;
+            await new Promise(r => { swaggerResolve = r; });
+        }
+
+        async function showSwaggerLines() {
+            if (swaggerShown) return;
+            swaggerShown = true;
+            if (!swaggerMeta) return;
+            const { totalEndpoints, totalCategories, description } = swaggerMeta;
+            const shortDesc = (description || 'REST API services for bots and innovative projects').split('\n')[0].slice(0, 68);
+            await typeLine('[server]$ registry: ' + totalEndpoints + ' endpoints across ' + totalCategories + ' categories', 26, 'ssh-ok');
+            await pause(80);
+            addLine('[server]$ info: ' + shortDesc, 'ssh-dim');
+        }
+
+        async function runSequence() {
+            await pause(200);
+
+            cursorLine.textContent = '[user@local ~]$ ';
+            await pause(280);
+            await typeLine('[user@local ~]$ ssh paxsenix@api.paxsenix.org -p 22', 40, 'ssh-prompt');
+            await pause(300);
+            addLine('The authenticity of host \'api.paxsenix.org\' can\'t be established.', 'ssh-dim');
+            addLine('ED25519 key fingerprint is SHA256:p4xS3n1xAP1/d0c5+k3yFiNg3rPr1NT==', 'ssh-dim');
+            await pause(250);
+            await typeLine('Are you sure you want to continue connecting (yes/no)? yes', 38, 'ssh-prompt');
+            await pause(200);
+            addLine('Warning: Permanently added \'api.paxsenix.org\' to the list of known hosts.', 'ssh-warn');
+            addLine('');
+            await pause(260);
+
+            const banner = [
+                ' █████╗ ██████╗   ██╗',
+                '██╔══██╗██╔══██╗██║',
+                '███████║██████╔╝██║',
+                '██╔══██║██╔═══╝  ██║',
+                '██║   ██║██║        ██║',
+                '╚═╝   ╚═╝╚═╝        ╚═╝',
+            ];
+            for (const row of banner) {
+                addLine(row, 'ssh-banner');
+                await pause(skipped ? 0 : 50);
+            }
+            addLine('');
+            addLine('  PaxSenix API Server  ·  Documentation v3.3.4  ·  2026', 'ssh-info');
+            addLine('');
+            await pause(220);
+
+            statusText.textContent = 'Loading registry...';
+            cursorLine.textContent = '[server]$ ';
+            await typeLine('[server]$ source /etc/api-registry --init --verbose', 36, 'ssh-prompt');
+            await pause(280);
+
+            if (swaggerMeta) {
+                await showSwaggerLines();
+            } else {
+                addLine('[server]$ Waiting for registry sync...', 'ssh-dim');
+                await waitForSwagger();
+                await showSwaggerLines();
+            }
+
+            await pause(160);
+            await typeLine('[server]$ boot docs-ui --env=production', 34, 'ssh-prompt');
+            await pause(220);
+            addLine('[server]$ Compiling routes...                 [  OK  ]', 'ssh-ok');
+            await pause(120);
+            addLine('[server]$ Mounting endpoint explorer...       [  OK  ]', 'ssh-ok');
+            await pause(120);
+            addLine('[server]$ Starting interactive interface...   [  OK  ]', 'ssh-ok');
+            await pause(180);
+            addLine('');
+            addLine('  ✓ Session established. Welcome, developer.', 'ssh-success');
+
+            statusText.textContent = 'Connected';
+            cursorLine.textContent = '[paxsenix@api ~]$ ';
+            await pause(700);
+            if (!skipped) finishReveal();
+        }
+
+        window.addEventListener('swaggerLoaded', function(e) {
+            var d = e.detail;
+            swaggerMeta = {
+                totalEndpoints: d.apiData.categories.reduce(function(a, c) { return a + c.endpoints.length; }, 0),
+                totalCategories: d.apiData.categories.length,
+                description: (d.swaggerDoc.info && d.swaggerDoc.info.description) || ''
+            };
+            if (swaggerResolve) { swaggerResolve(); swaggerResolve = null; }
+        }, { once: true });
+
+        function finishReveal() {
+            overlay.classList.add('ssh-exit');
+            setTimeout(function() {
+                overlay.style.display = 'none';
+                document.body.classList.remove('pre-reveal');
+                document.body.classList.add('revealed');
+            }, 520);
+        }
+
+        skipBtn.addEventListener('click', function() {
+            skipped = true;
+            if (swaggerResolve) { swaggerResolve(); swaggerResolve = null; }
+            finishReveal();
+        });
+
+        runSequence();
+    })();
+    </script>
+
+    <script>
+    (function() {
+        var scrollEl, leftBtn, rightBtn;
+        var STEP = 200;
+
+        function updateBtns() {
+            if (!scrollEl) return;
+            var atStart = scrollEl.scrollLeft <= 4;
+            var atEnd = scrollEl.scrollLeft + scrollEl.clientWidth >= scrollEl.scrollWidth - 4;
+            leftBtn.classList.toggle('cat-btn-hidden', atStart);
+            rightBtn.classList.toggle('cat-btn-hidden', atEnd && scrollEl.scrollWidth <= scrollEl.clientWidth + 8);
+        }
+
+        document.addEventListener('DOMContentLoaded', function() {
+            scrollEl = document.getElementById('cat-tabs-scroll');
+            leftBtn = document.getElementById('cat-scroll-left');
+            rightBtn = document.getElementById('cat-scroll-right');
+            if (!scrollEl) return;
+
+            leftBtn.addEventListener('click',  function() { scrollEl.scrollBy({ left: -STEP, behavior: 'smooth' }); });
+            rightBtn.addEventListener('click', function() { scrollEl.scrollBy({ left: STEP,  behavior: 'smooth' }); });
+            scrollEl.addEventListener('scroll', updateBtns, { passive: true });
+
+            var chips = document.getElementById('category-chips');
+            if (chips) {
+                var mo = new MutationObserver(function() { setTimeout(updateBtns, 50); });
+                mo.observe(chips, { childList: true });
+            }
+            updateBtns();
+        });
+    })();
+    </script>
+
+    <script>
+    (function() {
+        var panel = document.getElementById('log-panel');
+        var entries = document.getElementById('log-entries');
+        var badge = document.getElementById('log-badge');
+        var header = document.getElementById('log-header');
+        var toggle = document.getElementById('log-toggle');
+        var count = 0;
+        var collapsed = true;
+
+        function togglePanel() {
+            collapsed = !collapsed;
+            panel.classList.toggle('log-collapsed', collapsed);
+            toggle.querySelector('.mso').textContent = collapsed ? 'expand_less' : 'expand_more';
+            if (!collapsed) { badge.classList.add('hidden'); }
+        }
+
+        header.addEventListener('click', togglePanel);
+        panel.classList.add('log-collapsed');
+
+        window.addEventListener('apiRequest', function(e) {
+            var d = e.detail;
+            count++;
+            var cls = d.status < 300 ? 'log-ok' : d.status < 400 ? 'log-warn' : 'log-err';
+            var row = document.createElement('div');
+            row.className = 'log-entry';
+            row.innerHTML =
+                '<span class="log-method log-method-' + d.method.toLowerCase() + '">' + d.method + '</span>' +
+                '<span class="log-path">' + d.path + '</span>' +
+                '<span class="log-status ' + cls + '">' + d.status + '</span>' +
+                '<span class="log-dur">' + d.duration + 'ms</span>';
+            entries.appendChild(row);
+            entries.scrollTop = entries.scrollHeight;
+
+            panel.classList.remove('log-hidden');
+            if (collapsed) {
+                badge.textContent = count;
+                badge.classList.remove('hidden');
+                panel.classList.add('log-ping');
+                setTimeout(function() { panel.classList.remove('log-ping'); }, 600);
+            }
+        });
+    })();
+    </script>
+
+    <script src="docs/app.js"></script>
+</body>
+</html>

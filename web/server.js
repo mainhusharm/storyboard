@@ -4398,6 +4398,67 @@ const CREDIT_COSTS = {
   flashloopScript: 5                 // multi-scene LLM script (cheap but real)
 };
 
+// ===== PERSISTENT STORYBOARD JOB CACHE (Vercel cross-instance survival) =====
+// Completed storyboards live here keyed by userId so a refresh after async job
+// completion retrieves the result. Postgres or JSON fallback. 24h TTL.
+const SB_JOBS_FILE = path.join(STORYBOARD_DIR, 'sb_jobs.json');
+
+async function saveStoryboardJob(userId, result) {
+  await initAuthStore();
+  const expires = Date.now() + 24 * 3600 * 1000; // 24h TTL
+  if (authMode === 'pg') {
+    try {
+      await authPool.query(
+        'CREATE TABLE IF NOT EXISTS sb_jobs (user_id TEXT PRIMARY KEY, result JSONB NOT NULL, expires_at BIGINT NOT NULL)'
+      );
+      await authPool.query(
+        'INSERT INTO sb_jobs (user_id, result, expires_at) VALUES ($1, $2, $3) ON CONFLICT (user_id) DO UPDATE SET result = $2, expires_at = $3',
+        [userId, result, expires]
+      );
+    } catch (e) { logLine(`saveStoryboardJob pg failed: ${e.message}`); }
+    return;
+  }
+  // FILE MODE
+  const jobs = await readJson(SB_JOBS_FILE) || {};
+  jobs[userId] = { result, expires };
+  await writeJson(SB_JOBS_FILE, jobs);
+}
+
+async function loadStoryboardJob(userId) {
+  await initAuthStore();
+  const now = Date.now();
+  if (authMode === 'pg') {
+    try {
+      const r = await authPool.query('SELECT result, expires_at FROM sb_jobs WHERE user_id = $1', [userId]);
+      if (!r.rows[0]) return null;
+      if (r.rows[0].expires_at < now) {
+        await authPool.query('DELETE FROM sb_jobs WHERE user_id = $1', [userId]);
+        return null;
+      }
+      return r.rows[0].result;
+    } catch (e) { return null; }
+  }
+  // FILE MODE
+  const jobs = await readJson(SB_JOBS_FILE) || {};
+  const entry = jobs[userId];
+  if (!entry || entry.expires < now) {
+    if (entry) { delete jobs[userId]; await writeJson(SB_JOBS_FILE, jobs); }
+    return null;
+  }
+  return entry.result;
+}
+
+async function clearStoryboardJob(userId) {
+  await initAuthStore();
+  if (authMode === 'pg') {
+    try { await authPool.query('DELETE FROM sb_jobs WHERE user_id = $1', [userId]); } catch {}
+    return;
+  }
+  const jobs = await readJson(SB_JOBS_FILE) || {};
+  delete jobs[userId];
+  await writeJson(SB_JOBS_FILE, jobs);
+}
+
 async function loadUserMeta(userId) {
   await initAuthStore();
   if (authMode === 'pg') {
@@ -4908,37 +4969,44 @@ const requestHandler = async (req, res) => {
 
       // ==================== VERCEL AUTO PIPELINE ====================
       // Async storyboard job pattern: submit returns job ID immediately, client polls
-      // for completion. This prevents 504 timeouts when storyboard generation exceeds 300s.
+      // for completion. Completed jobs are saved to persistent storage (Postgres or JSON)
+      // so they survive page refreshes and cross-instance requests.
       if (IS_VERCEL) {
         const pipelineCost = Math.ceil(targetDuration * (CREDIT_COSTS.imagesPerSec + CREDIT_COSTS.videosPerSec));
         
-        // Poll mode: check if job is done
-        if (body.pollStoryboard && job.sbJobId) {
-          if (job.phase === 'storyboard' || job.phase === 'idle') {
-            // Still running or done
-            if (job.sbResult) {
-              // Done: return result and clear
+        // Poll mode: check persistent storage first, then ephemeral job state
+        if (body.pollStoryboard) {
+          // Check persistent storage (survives refresh + cross-instance)
+          const saved = await loadStoryboardJob(req.user.id);
+          if (saved) {
+            // Job completed earlier, return it and clear
+            await clearStoryboardJob(req.user.id);
+            return sendJson(res, 200, saved);
+          }
+          // Check ephemeral state (same-instance only)
+          if (job.sbJobId) {
+            if (job.phase === 'storyboard') {
+              // Still running
+              return sendJson(res, 202, { pending: true, jobId: job.sbJobId });
+            } else if (job.sbResult) {
+              // Done in this instance, return and clear
               const result = job.sbResult;
               job.sbJobId = null;
               job.sbResult = null;
               job.phase = 'idle';
+              await saveStoryboardJob(req.user.id, result);
               return sendJson(res, 200, result);
-            } else if (job.phase === 'storyboard') {
-              // Still running
-              return sendJson(res, 202, { pending: true, jobId: job.sbJobId });
-            } else {
-              // Done but failed (error was logged)
-              job.sbJobId = null;
-              job.phase = 'idle';
-              return sendJson(res, 500, { error: 'Storyboard generation failed' });
             }
           }
+          // No job found
+          return sendJson(res, 404, { error: 'No storyboard job found' });
         }
         
         // Submit mode: start async storyboard job
         if (!(await requireCredits(req, res, pipelineCost, 'create full film'))) return;
         const chargedAmount = pipelineCost;
         const jobId = `sb_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+        const userId = req.user.id;
         job.sbJobId = jobId;
         job.sbResult = null;
         
@@ -4950,16 +5018,19 @@ const requestHandler = async (req, res) => {
             const sb = await generateStoryboard(script, body.model || MODELS[0], targetDuration, body.look || '', language, secPerFrame, body.style);
             const characters = sb.characters, frames = sb.frames;
             logLine(`auto pipeline: storyboard ready — ${characters.length} characters, ${frames.length} frames — job ${jobId}`);
-            job.sbResult = {
+            const result = {
               ok: true, phase: 'storyboard-done', characters, frames,
               remaining: ['char-refs', 'images', 'videos', 'narration', 'combine'],
               pipelineCost: chargedAmount,
               jobId
             };
+            job.sbResult = result;
             job.phase = 'idle';
+            // Save to persistent storage so it survives refresh
+            await saveStoryboardJob(userId, result);
           } catch (e) {
             logLine(`auto pipeline: storyboard failed — ${e.message} — job ${jobId}`);
-            await refundCredits(req.user.id, chargedAmount);
+            await refundCredits(userId, chargedAmount);
             job.sbJobId = null;
             job.sbResult = null;
             job.phase = 'idle';
