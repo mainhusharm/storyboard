@@ -137,6 +137,15 @@ PaxSenix ones in every dropdown; the selected model still runs ALONE — no hidd
   `/api/flashloop/combine`, which re-downloads any clip missing from its own instance. Without
   this, combine hit `no scene clips found on this instance` whenever the two requests landed on
   different Vercel instances (each writes `video/flash_scene_NN.mp4` to its own `/tmp`).
+- **Final film is hosted too**: combine uploads `flash_final.mp4` and returns it as `clip_url` /
+  `hosted_url`; the studio plays that URL, not `/video/flash_final.mp4`. Same serverless reason —
+  the local path exists only on the instance that ran combine. Combine honours every ratio
+  (16:9→1280x720, 9:16→720x1280, 1:1→1024x1024, 4:3→1024x768, 3:4→768x1024) instead of forcing
+  everything except 9:16 to 16:9.
+- **Duration / ratio controls**: Make Video's Scene Length dropdown lists the full Wan 3.0 set
+  (1,2,3,4,5,10,15,20,25,30) and the engine picker auto-clamps it (omni-flash fixed 8s, Wan 3.0
+  snaps to the nearest allowed value, Wan 2.x capped at 15s), with a live one-line summary of
+  scenes × duration × ratio × total runtime.
 - **Two-phase Vercel render (no 504s)**: a wan clip renders for 4-30 minutes, far past a
   serverless request, so on Vercel `generate-video` never awaits the render. It submits the job and
   answers `202 {pending:true, task:"novita:task:<id>"}`; the client re-posts `{pollTask}` every 15s

@@ -6445,8 +6445,14 @@ RULES:
       if (!(await requireCredits(req, res, 1, 'combine video'))) return;
       return (async () => {
         try {
-          const ratio = normalizeVideoRatio(body.ratio || '9:16', 'omni-flash');
-          const [w, h] = ratio === '9:16' ? [720, 1280] : [1280, 720];
+          // Ratios are honoured per value (Novita renders 1:1, 4:3 and 3:4 too).
+          // Anything unknown falls back to 16:9.
+          const ratio = normalizeVideoRatio(body.ratio || '9:16', body.model && isNovitaVideoModel(body.model) ? body.model : 'omni-flash');
+          const DIM_BY_RATIO = {
+            '16:9': [1280, 720], '9:16': [720, 1280], '1:1': [1024, 1024],
+            '4:3': [1024, 768], '3:4': [768, 1024]
+          };
+          const [w, h] = DIM_BY_RATIO[ratio] || [1280, 720];
           const clipsDir = path.join(VIDEO_DIR, 'flash_clips');
           fs.mkdirSync(clipsDir, { recursive: true });
           const normClips = [];
@@ -6505,8 +6511,15 @@ RULES:
             });
           }
           if (!fs.existsSync(finalPath)) return sendJson(res, 500, { error: 'combine failed' });
-          logLine(`flashloop combine: final video ready (${normClips.length} clips, ${(fs.statSync(finalPath).size / 1048576).toFixed(1)} MB)`);
-          return sendJson(res, 200, { ok: true, video_path: '/video/flash_final.mp4', clips: normClips.length });
+          // Same serverless trap as the scene clips: /video/flash_final.mp4 only
+          // exists on THIS instance, so the browser's next request (possibly a
+          // different instance) would 404. Host the finished film too and return
+          // that URL; the local path is kept for the local pipeline.
+          let finalUrl = '';
+          try { finalUrl = await uploadVideoClip(finalPath, logLine); }
+          catch (e) { logLine(`flashloop combine: final upload failed (${e.message}) — local path only`); }
+          logLine(`flashloop combine: final video ready (${normClips.length} clips, ${(fs.statSync(finalPath).size / 1048576).toFixed(1)} MB)${finalUrl ? ', hosted' : ''}`);
+          return sendJson(res, 200, { ok: true, video_path: '/video/flash_final.mp4', clip_url: finalUrl, hosted_url: finalUrl, clips: normClips.length });
         } catch (e) { return sendJson(res, 500, { error: String(e.message || e) }); }
       })();
     }

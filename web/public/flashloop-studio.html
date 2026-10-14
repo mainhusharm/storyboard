@@ -130,15 +130,21 @@
         <div class="hint">Total video length — this sets the SCENE COUNT (total \u00f7 per-scene length below). Only the 30s option returns one single prompt.</div>
       </div>
       <div class="field">
-        <label for="sceneLength">Scene Length</label>
+        <label for="sceneLength">Scene Length (duration)</label>
         <select id="sceneLength">
           <option value="8" selected>8s per scene (omni-flash)</option>
+          <option value="1">1s per scene</option>
+          <option value="2">2s per scene</option>
+          <option value="3">3s per scene</option>
+          <option value="4">4s per scene</option>
           <option value="5">5s per scene</option>
           <option value="10">10s per scene</option>
-          <option value="15">15s per scene</option>
-          <option value="30">30s per scene</option>
+          <option value="15">15s per scene (max for Wan 2.x)</option>
+          <option value="20">20s per scene (Wan 3.0)</option>
+          <option value="25">25s per scene (Wan 3.0)</option>
+          <option value="30">30s per scene (Wan 3.0)</option>
         </select>
-        <div class="hint">Each scene's video prompt is timed exactly to this. 8s matches omni-flash clips; pick what your render engine needs.</div>
+        <div class="hint">Per-scene clip duration. Wan 3.0 accepts 1, 2, 3, 4, 5, 10, 15, 20, 25 or 30s; Wan 2.x caps at 15s (a bigger value is snapped down). Omni Flash is fixed 8s.</div>
       </div>
       <div class="field">
         <label for="ratio">Aspect Ratio</label>
@@ -146,7 +152,10 @@
           <option value="9:16">9:16 (vertical short)</option>
           <option value="16:9">16:9 (landscape)</option>
           <option value="1:1">1:1 (square)</option>
+          <option value="4:3">4:3 (classic)</option>
+          <option value="3:4">3:4 (portrait)</option>
         </select>
+        <div class="hint">Rendered and combined at this ratio. 4:3 and 3:4 need a Novita model — PaxSenix engines snap them to 16:9.</div>
       </div>
     </div>
     <div class="field">
@@ -277,6 +286,7 @@
         </select>
         <div class="hint">I2V models keep seamless chaining (start frame from the previous scene). T2V models continue via prompt only.</div>
       </div>
+      <div id="mvSummary" style="font-size:12px;color:var(--teal);margin:0 0 12px;padding:8px 10px;background:var(--panel2);border:1px solid var(--line2);border-radius:8px"></div>
       <div style="display:flex;align-items:center;gap:8px;margin:0 0 12px;font-size:12px;color:var(--dim);cursor:pointer">
         <input type="checkbox" id="mvChained" style="accent-color:var(--amber)">
         <label for="mvChained" style="cursor:pointer">Seamless chaining — render scenes in order, each starting from the previous scene's last frame (slower, true continuity). Unchecked: render all scenes in PARALLEL, show every scene clip, then combine.</label>
@@ -606,6 +616,7 @@ $('btnGenerate').onclick = async () => {
     $('makeVideoSection').style.display = 'block';
     sceneImages = {}; // new script — drop cached scene images
     syncMvEngine();
+    $('mvSummary').textContent = mvSummaryText();
   } catch (e) {
     $('error').textContent = 'Error: ' + e.message;
     $('error').classList.add('visible');
@@ -795,13 +806,41 @@ async function pollTask(taskUrl) {
 // scene (fits Vercel's 300s budget), each anchored to the previous scene's final
 // frame via chainAnchor. Finally combines all clips into one film.
 let sceneImages = {}; // scene index -> public first-frame image URL (session cache)
-// Keep the Make Video button label in sync with the chosen render engine.
+// Keep the Make Video button label in sync with the chosen render engine, and
+// auto-pick a duration the engine can actually render (wan3.0 does 30s clips,
+// wan2.x caps at 15s, omni-flash is fixed 8s).
+const WAN3_MAX = 30;
 function syncMvEngine(){
   const sel=$('mvModel');
   if(!sel||!sel.options.length)return;
-  $('btnMakeVideo').textContent='🎬 Make Video ('+((sel.options[sel.selectedIndex].text||'').split('—')[0].trim()||sel.value)+')';
+  const v=sel.value;
+  $('btnMakeVideo').textContent='🎬 Make Video ('+((sel.options[sel.selectedIndex].text||'').split('—')[0].trim()||v)+')';
+  const len=$('sceneLength');
+  if(!len)return;
+  if(v==='omni-flash'){ if(![6,8].includes(Number(len.value))) len.value='8'; }
+  else if(v.startsWith('wan3.0')){ if(![10,15,20,25,30].includes(Number(len.value))) len.value='30'; }
+  else { if(Number(len.value)>15) len.value='15'; }
 }
 document.getElementById('mvModel').addEventListener('change',syncMvEngine);
+document.getElementById('sceneLength').addEventListener('change',()=>{ $('mvSummary')&&($('mvSummary').textContent=mvSummaryText()); });
+document.getElementById('ratio').addEventListener('change',()=>{ $('mvSummary')&&($('mvSummary').textContent=mvSummaryText()); });
+// One-line readout of exactly what every scene will be rendered as.
+function mvSummaryText(){
+  const sel=$('mvModel');
+  if(!sel||!sel.options.length)return '';
+  const v=sel.value;
+  const model=(sel.options[sel.selectedIndex].text||'').split('—')[0].trim();
+  const want=Number($('sceneLength').value)||8;
+  let dur=want;
+  if(v==='omni-flash') dur=8;
+  else if(v.startsWith('wan3.0')) dur=[1,2,3,4,5,10,15,20,25,30].reduce((b,a)=>Math.abs(a-want)<Math.abs(b-want)?a:b,5);
+  else dur=Math.max(1,Math.min(15,want));
+  const r=$('ratio').value;
+  const px={ '16:9':'1280×720','9:16':'720×1280','1:1':'1024×1024','4:3':'1024×768','3:4':'768×1024' }[r]||r;
+  const n=scenes.length||0;
+  const tot=Math.round(n*dur/60*10)/10;
+  return `${n} scene${n===1?'':'s'} · ${model} · ${dur}s per scene · ${r} (${px}) · ≈${tot} min final film`;
+}
 function mvLog(msg, isErr){
   const el = $('mvStatus');
   el.style.display = 'block';
@@ -815,8 +854,15 @@ $('btnMakeVideo').onclick = async () => {
   if (!scenes.length) return;
   const n = scenes.length;
   const engine = $('mvModel').value;
-const engineName = ($('mvModel').options[$('mvModel').selectedIndex].text || '').split('—')[0].trim() || engine;
-  const perScene = Number($('sceneLength').value) || 8;
+  const engineName = ($('mvModel').options[$('mvModel').selectedIndex].text || '').split('—')[0].trim() || engine;
+  // Clamp the picked scene length to what this engine can actually render, the
+  // same way the server's novitaDurationFor() does (wan3.0 exact set, wan2.x ≤15,
+  // omni-flash fixed 8s) so the confirmation matches the real renders.
+  let perScene = Number($('sceneLength').value) || 8;
+  if (engine === 'omni-flash') perScene = 8;
+  else if (engine.indexOf('wan3.0') === 0) {
+    perScene = [1, 2, 3, 4, 5, 10, 15, 20, 25, 30].reduce((b, a) => Math.abs(a - perScene) < Math.abs(b - perScene) ? a : b, 5);
+  } else if (engine.indexOf('wan') === 0) perScene = Math.max(1, Math.min(15, perScene));
   // Seamless chaining renders in story order (each scene needs the previous
   // scene's last frame). Unchecked: every scene renders in PARALLEL from its own
   // first-frame image — much faster, and all clips are shown before combining.
@@ -935,7 +981,9 @@ const engineName = ($('mvModel').options[$('mvModel').selectedIndex].text || '')
     });
     const cj = await cr.json().catch(() => ({}));
     if (!cr.ok || cj.error) throw new Error('combine: ' + (cj.error || 'HTTP ' + cr.status));
-    const vurl = (cj.video_path || '/video/flash_final.mp4') + '?v=' + Date.now();
+    // Prefer the hosted final URL: /video/flash_final.mp4 only exists on the
+    // instance that ran combine, so on Vercel the player would hit a 404.
+    const vurl = (cj.clip_url || cj.hosted_url || cj.video_path || '/video/flash_final.mp4') + '?v=' + Date.now();
     $('mvVideo').src = vurl;
     $('mvVideo').style.display = 'block';
     $('mvDownload').href = vurl;
