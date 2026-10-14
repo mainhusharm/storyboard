@@ -694,15 +694,39 @@ async function runAutoVercel(script){
   SUBMITTING=true;LOCAL_BUSY=true;LOCAL_LOG=[];poll();
   const opts={ratio:$('ratio').value,imageModel:$('imageModel').value,videoModel:$('videoModel').value,style:$('style').value,voice:$('voice').value,consistency:$('consistency').checked,language:$('language').value,narrationMode:$('narrationMode').value,narrationEngine:$('narrationEngine').value,narrVolume:Number($('narrVolume').value),origVolume:Number($('origVolume').value),chainContinuity:$('chainContinuity').checked,clipDuration:Number($('clipDuration').value)};
   try{
-    // ---- Phase 1: storyboard (one request, returns inline) ----
+    // ---- Phase 1: storyboard (async job with polling) ----
     logLocal('phase 1/6: storyboard…','');
-    const sb=await api('/run-all',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({script,model:$('chatModel').value,duration:Number($('duration').value),look:$('look').value,...opts})});
-    if(sb.error)throw new Error(sb.error);
-    if(!sb.frames||!sb.frames.length)throw new Error('storyboard returned no frames');
-    CHARS=sb.characters||[];FRAMES=sb.frames||[];OFFLINE_BOARD=true;
-    try{localStorage.setItem('sb_chars',JSON.stringify(CHARS));localStorage.setItem('sb_frames',JSON.stringify(FRAMES))}catch(e){}
-    logLocal(`storyboard ready: ${CHARS.length} characters, ${FRAMES.length} frames`,'ok');
-    await refresh({characters:CHARS,frames:FRAMES});
+    const sbSubmit=await api('/run-all',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({script,model:$('chatModel').value,duration:Number($('duration').value),look:$('look').value,...opts})});
+    if(sbSubmit.error)throw new Error(sbSubmit.error);
+    if(sbSubmit.ok&&sbSubmit.frames){
+      // Old sync path (local server) — done immediately
+      CHARS=sbSubmit.characters||[];FRAMES=sbSubmit.frames||[];OFFLINE_BOARD=true;
+      try{localStorage.setItem('sb_chars',JSON.stringify(CHARS));localStorage.setItem('sb_frames',JSON.stringify(FRAMES))}catch(e){}
+      logLocal(`storyboard ready: ${CHARS.length} characters, ${FRAMES.length} frames`,'ok');
+      await refresh({characters:CHARS,frames:FRAMES});
+    }else if(sbSubmit.pending&&sbSubmit.jobId){
+      // New async path (Vercel) — poll for completion
+      logLocal('storyboard job submitted, polling…','');
+      const pollInterval=15000,maxPolls=180; // 15s × 180 = 45min cap
+      for(let i=0;i<maxPolls;i++){
+        await new Promise(r=>setTimeout(r,pollInterval));
+        const poll=await api('/run-all',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pollStoryboard:true})});
+        if(poll.ok&&poll.frames){
+          CHARS=poll.characters||[];FRAMES=poll.frames||[];OFFLINE_BOARD=true;
+          try{localStorage.setItem('sb_chars',JSON.stringify(CHARS));localStorage.setItem('sb_frames',JSON.stringify(FRAMES))}catch(e){}
+          logLocal(`storyboard ready: ${CHARS.length} characters, ${FRAMES.length} frames`,'ok');
+          await refresh({characters:CHARS,frames:FRAMES});
+          break;
+        }else if(poll.pending){
+          logLocal(`storyboard: ${Math.round((i+1)*pollInterval/1000)}s elapsed…`);
+        }else{
+          throw new Error(poll.error||'storyboard job failed');
+        }
+      }
+      if(!FRAMES.length)throw new Error('storyboard poll timeout');
+    }else{
+      throw new Error('unexpected storyboard response');
+    }
 
     // ---- Phase 2: character refs ----
     if(CHARS.length){

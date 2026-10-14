@@ -4907,37 +4907,66 @@ const requestHandler = async (req, res) => {
       const secPerFrame = Number(body.clipDuration) || 6;
 
       // ==================== VERCEL AUTO PIPELINE ====================
-      // On Vercel the 202 + background-async pattern DOES NOT WORK: the function
-      // gets killed at 300s and the "auto pipeline" silently stops right after the
-      // storyboard phase (the user's "stuck at storyboard ready" bug). So on Vercel
-      // run the whole pipeline through per-phase synchronous calls inside ONE
-      // request: storyboard → char-refs → images → (return early with
-      // remainingPhase), letting the client drive the remaining phases with the
-      // exact same per-frame /api/* requests the manual buttons use. No background
-      // jobs, no 300s budget blowups.
+      // Async storyboard job pattern: submit returns job ID immediately, client polls
+      // for completion. This prevents 504 timeouts when storyboard generation exceeds 300s.
       if (IS_VERCEL) {
         const pipelineCost = Math.ceil(targetDuration * (CREDIT_COSTS.imagesPerSec + CREDIT_COSTS.videosPerSec));
+        
+        // Poll mode: check if job is done
+        if (body.pollStoryboard && job.sbJobId) {
+          if (job.phase === 'storyboard' || job.phase === 'idle') {
+            // Still running or done
+            if (job.sbResult) {
+              // Done: return result and clear
+              const result = job.sbResult;
+              job.sbJobId = null;
+              job.sbResult = null;
+              job.phase = 'idle';
+              return sendJson(res, 200, result);
+            } else if (job.phase === 'storyboard') {
+              // Still running
+              return sendJson(res, 202, { pending: true, jobId: job.sbJobId });
+            } else {
+              // Done but failed (error was logged)
+              job.sbJobId = null;
+              job.phase = 'idle';
+              return sendJson(res, 500, { error: 'Storyboard generation failed' });
+            }
+          }
+        }
+        
+        // Submit mode: start async storyboard job
         if (!(await requireCredits(req, res, pipelineCost, 'create full film'))) return;
         const chargedAmount = pipelineCost;
-        return (async () => {
+        const jobId = `sb_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+        job.sbJobId = jobId;
+        job.sbResult = null;
+        
+        // Run storyboard generation in background
+        (async () => {
           try {
             setPhase('storyboard', 1);
-            logLine(`auto pipeline (vercel): storyboard — ${body.model || MODELS[0]} — target ${targetDuration}s — ${secPerFrame}s per clip`);
+            logLine(`auto pipeline (vercel async): storyboard — ${body.model || MODELS[0]} — target ${targetDuration}s — ${secPerFrame}s per clip — job ${jobId}`);
             const sb = await generateStoryboard(script, body.model || MODELS[0], targetDuration, body.look || '', language, secPerFrame, body.style);
             const characters = sb.characters, frames = sb.frames;
-            logLine(`auto pipeline: storyboard ready — ${characters.length} characters, ${frames.length} frames`);
-            job.phase = 'idle';
-            return sendJson(res, 200, {
+            logLine(`auto pipeline: storyboard ready — ${characters.length} characters, ${frames.length} frames — job ${jobId}`);
+            job.sbResult = {
               ok: true, phase: 'storyboard-done', characters, frames,
               remaining: ['char-refs', 'images', 'videos', 'narration', 'combine'],
-              pipelineCost: chargedAmount
-            });
-          } catch (e) {
-            await refundCredits(req.user.id, chargedAmount);
+              pipelineCost: chargedAmount,
+              jobId
+            };
             job.phase = 'idle';
-            return sendJson(res, 500, { error: String(e.message || e) });
+          } catch (e) {
+            logLine(`auto pipeline: storyboard failed — ${e.message} — job ${jobId}`);
+            await refundCredits(req.user.id, chargedAmount);
+            job.sbJobId = null;
+            job.sbResult = null;
+            job.phase = 'idle';
           }
         })();
+        
+        return sendJson(res, 202, { pending: true, jobId });
       }
 
       // ==================== LOCAL / SELF-HOSTED AUTO PIPELINE ====================
