@@ -127,37 +127,13 @@
           <option value="30">~2 min (15 scenes at 8s each)</option>
           <option value="5">30s — 1 prompt (single clip)</option>
         </select>
-        <div class="hint">Total video length — this sets the SCENE COUNT (total \u00f7 per-scene length below). Only the 30s option returns one single prompt.</div>
-      </div>
-      <div class="field">
-        <label for="sceneLength">Scene Length (duration)</label>
-        <select id="sceneLength">
-          <option value="8" selected>8s per scene (omni-flash)</option>
-          <option value="1">1s per scene</option>
-          <option value="2">2s per scene</option>
-          <option value="3">3s per scene</option>
-          <option value="4">4s per scene</option>
-          <option value="5">5s per scene</option>
-          <option value="10">10s per scene</option>
-          <option value="15">15s per scene (max for Wan 2.x)</option>
-          <option value="20">20s per scene (Wan 3.0)</option>
-          <option value="25">25s per scene (Wan 3.0)</option>
-          <option value="30">30s per scene (Wan 3.0)</option>
-        </select>
-        <div class="hint">Per-scene clip duration. Wan 3.0 accepts 1, 2, 3, 4, 5, 10, 15, 20, 25 or 30s; Wan 2.x caps at 15s (a bigger value is snapped down). Omni Flash is fixed 8s.</div>
-      </div>
-      <div class="field">
-        <label for="ratio">Aspect Ratio</label>
-        <select id="ratio">
-          <option value="9:16">9:16 (vertical short)</option>
-          <option value="16:9">16:9 (landscape)</option>
-          <option value="1:1">1:1 (square)</option>
-          <option value="4:3">4:3 (classic)</option>
-          <option value="3:4">3:4 (portrait)</option>
-        </select>
-        <div class="hint">Rendered and combined at this ratio. 4:3 and 3:4 need a Novita model — PaxSenix engines snap them to 16:9.</div>
+        <div class="hint">Total video length — this sets the SCENE COUNT. The per-scene duration and aspect ratio are the ③ Duration and ② Aspect Ratio columns under Make Video.</div>
       </div>
     </div>
+    <!-- The scene planner reads #sceneLength; it mirrors the ③ Duration column. -->
+    <select id="sceneLength" style="display:none" aria-hidden="true">
+      <option value="8" selected>8</option>
+    </select>
     <div class="field">
         <label for="model">Model</label>
         <select id="model">
@@ -270,21 +246,59 @@
 
     <div id="makeVideoSection" style="display:none;margin-top:24px;border-top:1px solid var(--line2);padding-top:20px">
       <div class="prompt-label">🎬 Make Video — all scenes</div>
-      <div class="hint" style="margin:8px 0 14px">Renders EVERY scene and combines them into one film. Omni Flash chains each scene from the previous scene's last frame; Novita wan models render the Scene Length selected below (wan3.0 supports 1-30s). Scene images are generated automatically first. Each scene takes 2-5 minutes (wan3.0 30s clips can take longer).</div>
-      <div class="field" style="max-width:360px;margin-bottom:12px">
-        <label for="mvModel">Render engine</label>
-        <select id="mvModel">
-          <option value="omni-flash" selected>Omni Flash — 8s clips (default)</option>
-          <option value="wan3.0-video-prime">Wan 3.0 Prime — up to 30s (Novita)</option>
-          <option value="wan3.0-video">Wan 3.0 — up to 30s (Novita)</option>
-          <option value="wan2.7-t2v">Wan 2.7 T2V — 1-15s (Novita)</option>
-          <option value="wan2.1-t2v-turbo">Wan 2.1 T2V Turbo — 1-15s (Novita)</option>
-          <option value="wan2.1-t2v-plus">Wan 2.1 T2V Plus — 1-15s (Novita)</option>
-          <option value="wan2.7-i2v">Wan 2.7 I2V — image-to-video (Novita)</option>
-          <option value="wan2.1-i2v-turbo">Wan 2.1 I2V Turbo — image-to-video (Novita)</option>
-          <option value="wan2.1-i2v-plus">Wan 2.1 I2V Plus — image-to-video (Novita)</option>
-        </select>
-        <div class="hint">I2V models keep seamless chaining (start frame from the previous scene). T2V models continue via prompt only.</div>
+      <div class="hint" style="margin:8px 0 14px">Renders every scene with the engine, aspect ratio and duration you pick below, then combines them into one film. Scene images are generated automatically first. A render takes 4-30 minutes per scene.</div>
+      <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-bottom:14px">
+        <div class="field" style="margin:0">
+          <label for="mvModel">① Model</label>
+          <select id="mvModel">
+            <optgroup label="Omni Flash (PaxSenix)">
+              <option value="omni-flash" selected>Omni Flash — 8s clips</option>
+            </optgroup>
+            <optgroup label="Wan 3.0 — Novita · up to 30s · image-anchored">
+              <option value="wan3.0-video-prime">Wan 3.0 Prime</option>
+              <option value="wan3.0-video">Wan 3.0</option>
+            </optgroup>
+            <optgroup label="Wan 2.x text-to-video — Novita · up to 15s">
+              <option value="wan2.7-t2v">Wan 2.7 T2V</option>
+              <option value="wan2.1-t2v-turbo">Wan 2.1 T2V Turbo</option>
+              <option value="wan2.1-t2v-plus">Wan 2.1 T2V Plus</option>
+            </optgroup>
+            <optgroup label="Wan 2.x image-to-video — Novita · up to 15s">
+              <option value="wan2.7-i2v">Wan 2.7 I2V</option>
+              <option value="wan2.1-i2v-turbo">Wan 2.1 I2V Turbo</option>
+              <option value="wan2.1-i2v-plus">Wan 2.1 I2V Plus</option>
+            </optgroup>
+          </select>
+          <div class="hint">The video engine for every scene.</div>
+        </div>
+        <div class="field" style="margin:0">
+          <label for="ratio">② Aspect Ratio</label>
+          <select id="ratio">
+            <option value="9:16">9:16 — vertical short</option>
+            <option value="16:9">16:9 — landscape</option>
+            <option value="1:1">1:1 — square</option>
+            <option value="4:3">4:3 — classic</option>
+            <option value="3:4">3:4 — portrait</option>
+          </select>
+          <div class="hint">Rendered and combined at this ratio. 4:3 and 3:4 need a Novita model — PaxSenix snaps them to 16:9.</div>
+        </div>
+        <div class="field" style="margin:0">
+          <label for="mvDuration">③ Duration (per scene)</label>
+          <select id="mvDuration">
+            <option value="1">1s</option>
+            <option value="2">2s</option>
+            <option value="3">3s</option>
+            <option value="4">4s</option>
+            <option value="5">5s</option>
+            <option value="8" selected>8s</option>
+            <option value="10">10s</option>
+            <option value="15">15s</option>
+            <option value="20">20s</option>
+            <option value="25">25s</option>
+            <option value="30">30s</option>
+          </select>
+          <div class="hint">Wan 3.0 allows 1-30s in these steps; Wan 2.x caps at 15s; Omni Flash is fixed 8s (the picker snaps it).</div>
+        </div>
       </div>
       <div id="mvSummary" style="font-size:12px;color:var(--teal);margin:0 0 12px;padding:8px 10px;background:var(--panel2);border:1px solid var(--line2);border-radius:8px"></div>
       <div style="display:flex;align-items:center;gap:8px;margin:0 0 12px;font-size:12px;color:var(--dim);cursor:pointer">
@@ -477,6 +491,10 @@ function syncSceneLength() {
   }
   wasSingle = single;
   sl.disabled = single;
+  // keep the visible ③ Duration column in step with the mirror
+  const md = $('mvDuration');
+  if (md && md.value !== sl.value) { md.value = sl.value; }
+  const s = $('mvSummary'); if (s) s.textContent = mvSummaryText();
   const hint = sl.parentElement && sl.parentElement.querySelector('.hint');
   if (hint) {
     hint.textContent = single
@@ -810,19 +828,36 @@ let sceneImages = {}; // scene index -> public first-frame image URL (session ca
 // auto-pick a duration the engine can actually render (wan3.0 does 30s clips,
 // wan2.x caps at 15s, omni-flash is fixed 8s).
 const WAN3_MAX = 30;
+function mvDuration(){
+  // ③ Duration is the source of truth; #sceneLength is the hidden mirror the
+  // scene planner reads, so prompts and renders always use the same length.
+  const d=$('mvDuration');
+  if(d){ $('sceneLength').value=d.value; return Number(d.value)||8; }
+  return Number($('sceneLength').value)||8;
+}
+function syncMvDuration(){
+  const v=$('mvModel').value, d=$('mvDuration');
+  if(!d)return;
+  const n=Number(d.value)||8;
+  if(v==='omni-flash') d.value='8';
+  else if(v.startsWith('wan3.0')&&![1,2,3,4,5,10,15,20,25,30].includes(n)) d.value='30';
+  else if(!v.startsWith('wan3.0')&&n>15) d.value='15';
+  $('sceneLength').value=d.value;
+}
 function syncMvEngine(){
   const sel=$('mvModel');
   if(!sel||!sel.options.length)return;
   const v=sel.value;
   $('btnMakeVideo').textContent='🎬 Make Video ('+((sel.options[sel.selectedIndex].text||'').split('—')[0].trim()||v)+')';
-  const len=$('sceneLength');
-  if(!len)return;
-  if(v==='omni-flash'){ if(![6,8].includes(Number(len.value))) len.value='8'; }
-  else if(v.startsWith('wan3.0')){ if(![10,15,20,25,30].includes(Number(len.value))) len.value='30'; }
-  else { if(Number(len.value)>15) len.value='15'; }
+  syncMvDuration();
+  const s=$('mvSummary'); if(s) s.textContent=mvSummaryText();
 }
 document.getElementById('mvModel').addEventListener('change',syncMvEngine);
-document.getElementById('sceneLength').addEventListener('change',()=>{ $('mvSummary')&&($('mvSummary').textContent=mvSummaryText()); });
+document.getElementById('mvDuration').addEventListener('change',()=>{
+  syncMvDuration();                       // mirror #sceneLength
+  if (typeof syncSceneLength === 'function') syncSceneLength();   // refresh scene-count preview
+  const s=$('mvSummary'); if(s) s.textContent=mvSummaryText();
+});
 document.getElementById('ratio').addEventListener('change',()=>{ $('mvSummary')&&($('mvSummary').textContent=mvSummaryText()); });
 // One-line readout of exactly what every scene will be rendered as.
 function mvSummaryText(){
@@ -830,7 +865,7 @@ function mvSummaryText(){
   if(!sel||!sel.options.length)return '';
   const v=sel.value;
   const model=(sel.options[sel.selectedIndex].text||'').split('—')[0].trim();
-  const want=Number($('sceneLength').value)||8;
+  const want=mvDuration();
   let dur=want;
   if(v==='omni-flash') dur=8;
   else if(v.startsWith('wan3.0')) dur=[1,2,3,4,5,10,15,20,25,30].reduce((b,a)=>Math.abs(a-want)<Math.abs(b-want)?a:b,5);
@@ -858,7 +893,7 @@ $('btnMakeVideo').onclick = async () => {
   // Clamp the picked scene length to what this engine can actually render, the
   // same way the server's novitaDurationFor() does (wan3.0 exact set, wan2.x ≤15,
   // omni-flash fixed 8s) so the confirmation matches the real renders.
-  let perScene = Number($('sceneLength').value) || 8;
+  let perScene = mvDuration();
   if (engine === 'omni-flash') perScene = 8;
   else if (engine.indexOf('wan3.0') === 0) {
     perScene = [1, 2, 3, 4, 5, 10, 15, 20, 25, 30].reduce((b, a) => Math.abs(a - perScene) < Math.abs(b - perScene) ? a : b, 5);
