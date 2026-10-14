@@ -37,13 +37,15 @@ console.log('\n[1] model helpers');
 check('wan3.0-video-prime recognised', isNovitaVideoModel('wan3.0-video-prime'));
 check('grok-video NOT novita', !isNovitaVideoModel('grok-video'));
 check('wan2.7-i2v is i2v', isNovitaI2VModel('wan2.7-i2v'));
-check('wan3.0-video-prime is t2v (no image input)', !isNovitaI2VModel('wan3.0-video-prime'));
+check('wan3.0-video-prime accepts an image (chaining works)', __internal.novitaAcceptsImage('wan3.0-video-prime'));
+check('wan2.7-t2v is prompt-only', !__internal.novitaAcceptsImage('wan2.7-t2v'));
+check('wan3.0-video-standard NOT offered (dead upstream)', !isNovitaVideoModel('wan3.0-video-standard'));
 check('novita: image prefix', isNovitaImageModel('novita:qwen-image-3.0-pro') && !isNovitaImageModel('seedream-5'));
 
 console.log('\n[2] duration clamping');
 check('wan3.0 30s kept', novitaDurationFor('wan3.0-video-prime', 30) === 30);
 check('wan3.0 8s → 10s (nearest allowed)', novitaDurationFor('wan3.0-video-prime', 8) === 10, 'got ' + novitaDurationFor('wan3.0-video-prime', 8));
-check('wan3.0 7s → 5s', novitaDurationFor('wan3.0-video-standard', 7) === 5);
+check('wan3.0 7s → 5s', novitaDurationFor('wan3.0-video', 7) === 5);
 check('wan3.0 0/undefined → 5s', novitaDurationFor('wan3.0-video', 0) === 5 && novitaDurationFor('wan3.0-video') === 5);
 check('wan2.7 30s → 15s (max)', novitaDurationFor('wan2.7-t2v', 30) === 15);
 check('wan2.1 9s kept', novitaDurationFor('wan2.1-t2v-turbo', 9) === 9);

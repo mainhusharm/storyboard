@@ -1244,9 +1244,8 @@ const VIDEO_MODELS = [
 // aspect_ratio). Image-to-video: a dedicated I2V model + the start-frame URL in
 // a TOP-LEVEL imageUrls array (t2v models ignore images entirely).
 const NOVITA_VIDEO_MODELS = [
-  { id: 'wan3.0-video-prime', label: 'Wan 3.0 Prime — up to 30s (Novita)', maxDuration: 30, wan3: true },
-  { id: 'wan3.0-video-standard', label: 'Wan 3.0 Standard — up to 30s (Novita)', maxDuration: 30, wan3: true },
-  { id: 'wan3.0-video', label: 'Wan 3.0 — up to 30s (Novita)', maxDuration: 30, wan3: true },
+  { id: 'wan3.0-video-prime', label: 'Wan 3.0 Prime — t2v + image-anchored, up to 30s (Novita)', maxDuration: 30, wan3: true, acceptsImage: true },
+  { id: 'wan3.0-video', label: 'Wan 3.0 — t2v + image-anchored, up to 30s (Novita)', maxDuration: 30, wan3: true, acceptsImage: true },
   { id: 'wan2.7-t2v', label: 'Wan 2.7 T2V — 1-15s (Novita)', maxDuration: 15 },
   { id: 'wan2.1-t2v-turbo', label: 'Wan 2.1 T2V Turbo — 1-15s, fast (Novita)', maxDuration: 15 },
   { id: 'wan2.1-t2v-plus', label: 'Wan 2.1 T2V Plus — 1-15s (Novita)', maxDuration: 15 },
@@ -1279,6 +1278,11 @@ const NOVITA_TASK_PREFIX = 'novita:task:';
 function isNovitaVideoModel(m) { return NOVITA_VIDEO_MODELS.some(v => v.id === m); }
 function novitaVideoMeta(m) { return NOVITA_VIDEO_MODELS.find(v => v.id === m) || null; }
 function isNovitaI2VModel(m) { const meta = novitaVideoMeta(m); return !!(meta && meta.i2v); }
+// True when the model accepts a start frame in the top-level imageUrls array.
+// Wan 3.0 t2v models DO honour imageUrls as the start frame (verified live: the
+// first frame of the render matches the passed image), so chaining works with
+// them; the wan2.x T2V models are prompt-only (docs say to use an I2V model).
+function novitaAcceptsImage(m) { const meta = novitaVideoMeta(m); return !!(meta && (meta.i2v || meta.acceptsImage)); }
 function isNovitaImageModel(m) { return /^novita:/.test(String(m || '')); }
 // WAN 3.0 accepts EXACTLY 1,2,3,4,5,10,15,20,25,30 — any other value is snapped
 // to the nearest allowed one; other Novita models take any int 1-15 (per docs).
@@ -3258,13 +3262,13 @@ async function generateVideos(frames, ratio, videoModel = DEFAULT_VIDEO_MODEL, c
     // unanchored scenes verify + refresh the frame's stored image URL first so a
     // dead/expired link never kills the video task's asset download. omni-flash
     // additionally gets PNG→JPG (its i2v asset pipeline rejects PNG).
-    // Novita T2V models are prompt-only (no image input at all) — skip the image
+    // Novita models that CANNOT take an image (wan2.x T2V) skip the image
     // resolve/upload entirely and note that seamless chaining can't anchor.
-    const novitaT2V = isNovitaVideoModel(model0) && !isNovitaI2VModel(model0);
-    if (novitaT2V && (anchorImg || fs.existsSync(frameFile(f.frame)))) {
-      logLine(`frame ${f.frame}: ${model0} is text-to-video — image anchor/chaining not applicable, continuing via prompt`);
+    const novitaNoImage = isNovitaVideoModel(model0) && !novitaAcceptsImage(model0);
+    if (novitaNoImage && (anchorImg || fs.existsSync(frameFile(f.frame)))) {
+      logLine(`frame ${f.frame}: ${model0} is text-only — image anchor/chaining not applicable, continuing via prompt`);
     }
-    const img = novitaT2V ? null : (anchorImg || await resolveVideoImage(f, model0));
+    const img = novitaNoImage ? null : (anchorImg || await resolveVideoImage(f, model0));
 
     // One render attempt. Returns 'ok' | 'fail' | 'cancel'.
     const attempt = async (label, p, useImg) => {
@@ -3273,9 +3277,9 @@ async function generateVideos(frames, ratio, videoModel = DEFAULT_VIDEO_MODEL, c
       const mRatio = normalizeVideoRatio(ratio, model0);
       let task;
       if (isNovitaVideoModel(model0)) {
-        // Novita async job: JSON body to /v1/submit. I2V models carry the start
-        // frame in a top-level imageUrls array; T2V models are prompt-only.
-        const useNovitaImg = isNovitaI2VModel(model0) && useImg && !!img;
+        // Novita async job: JSON body to /v1/submit. Models that accept a start
+        // frame (I2V models + wan3.0) carry it in a top-level imageUrls array.
+        const useNovitaImg = novitaAcceptsImage(model0) && useImg && !!img;
         task = await novitaSubmit({
           model: model0,
           input: { prompt: p },
@@ -6325,7 +6329,7 @@ RULES:
           const softened = MODEL === 'omni-flash' ? softenOmniPrompt(prompt) : prompt;
           const attempt = async (useImg) => {
             if (isNov) {
-              const useAnchor = isNovitaI2VModel(MODEL) && useImg && anchor;
+              const useAnchor = novitaAcceptsImage(MODEL) && useImg && anchor;
               const task = await novitaSubmit({
                 model: MODEL,
                 input: { prompt: softened },
@@ -7203,7 +7207,7 @@ module.exports.__internal = {
   flashloopScenePlan,
   // Novita async-job models (wan3.0 video + qwen/wanx image).
   NOVITA_VIDEO_MODELS, NOVITA_IMAGE_MODELS, NOVITA_TASK_PREFIX,
-  isNovitaVideoModel, isNovitaI2VModel, isNovitaImageModel,
+  isNovitaVideoModel, isNovitaI2VModel, isNovitaImageModel, novitaAcceptsImage,
   novitaDurationFor, novitaImageSize, novitaSubmit, novitaWait,
   // Logfare media (image models + Deepgram Aura-2 narration).
   LOGFARE_IMAGE_MODELS, LOGFARE_TTS_MODEL, LOGFARE_TTS_VOICES, LOGFARE_LOCAL_PREFIX,
