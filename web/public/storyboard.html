@@ -538,7 +538,13 @@ async function refresh(d){
   // final film
   if(hasFinal){
     $('finalSection').style.display='';
-    $('finalVideo').src=`/video/final_story.mp4?v=${Date.now()}`;
+    // Prefer a hosted URL. The mp4 lives only in the /tmp of the instance that ran
+    // combine, so /video/final_story.mp4 usually 404s on any other instance and the
+    // player shows nothing. Refresh always returns hasFinal from whatever instance
+    // answered, so the hosted URL is persisted from the combine response.
+    let src=null;
+    try{ src=localStorage.getItem('sb_final_url'); }catch(e){}
+    $('finalVideo').src=(src||'/video/final_story.mp4')+(src?'':'?v='+Date.now());
   } else { $('finalSection').style.display='none'; }
   // frames
   if(!FRAMES.length){$('frames').innerHTML='<div class="empty"><div class="big">🎬</div><h3>NO STORYBOARD YET</h3><p>Paste a script and hit <b>Generate Storyboard</b>.</p></div>';return;}
@@ -900,7 +906,16 @@ async function runAutoVercel(script){
     // ---- Phase 6: combine ----
     logLocal('phase 6/6: combining final film…','');
     const cb=await callPhase('/combine',sbPayload({ratio:opts.ratio,narrationMode:opts.narrationMode,narrVolume:opts.narrVolume,origVolume:opts.origVolume,clipUrls}));
-    if(cb&&cb.error)logLocal('combine: '+cb.error,'err'); else logLocal('🎬 FINAL FILM READY','ok');
+    if(cb&&cb.error)logLocal('combine: '+cb.error,'err');
+    else {
+      if(cb&&cb.finalUrl){
+        try{localStorage.setItem('sb_final_url',cb.finalUrl)}catch(e){}
+        $('finalSection').style.display='';
+        $('finalVideo').src=cb.finalUrl;
+        $('finalVideo').load();
+      }
+      logLocal('🎬 FINAL FILM READY','ok');
+    }
   }catch(e){logLocal('pipeline failed: '+e.message,'err');logLocal('⚠ stopped — the console above has the details. Click 🔧 Force Clean, then run again.','err')}
   finally{SUBMITTING=false;LOCAL_BUSY=false;poll();refresh();refreshCredits()}
 }

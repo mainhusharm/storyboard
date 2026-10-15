@@ -5573,12 +5573,27 @@ const requestHandler = async (req, res) => {
       return sendJson(res, 202, { started: true, count: frames.filter(f => f.animation_prompt).length });
     }
 
-    if (p === '/api/combine' && req.method === 'POST') {
+if (p === '/api/combine' && req.method === 'POST') {
       reapStaleJob();
       if (job.phase !== 'idle') return sendJson(res, 409, { error: 'busy' });
       const body = await readBody(req).catch(() => ({}));
       let { frames } = await storyDataFrom(body);
-      if (IS_VERCEL) return runJobOnVercel(res, async () => { await combineFilm(frames, body.ratio || '16:9', body.narrationMode, { narrVol: body.narrVolume, origVol: body.origVolume, clipUrls: body.clipUrls }); job.phase = 'idle'; });
+      if (IS_VERCEL) return (async () => {
+        try {
+          const fp = await combineFilm(frames, body.ratio || '16:9', body.narrationMode, { narrVol: body.narrVolume, origVol: body.origVolume, clipUrls: body.clipUrls });
+          job.phase = 'idle';
+          // Publish the finished film and return its URL. The file lives only in
+          // THIS instance's /tmp, so the browser's request for /video/final_story.mp4
+          // usually lands elsewhere and 404s — the player then shows nothing. The
+          // Flashloop combine already solved this by hosting the film; the
+          // storyboard plays the local path. Return a hosted URL instead.
+          let finalUrl = '';
+          try {
+            if (fp && fs.existsSync(fp)) { finalUrl = await uploadVideoClip(fp); logLine(`final film hosted: ${finalUrl}`); }
+          } catch (e) { logLine(`final film upload failed: ${e.message} — falling back to the local path`); }
+          return sendJson(res, 200, { ok: true, finalUrl });
+        } catch (e) { job.phase = 'idle'; return sendJson(res, 500, { error: String(e.message || e) }); }
+      })();
       combineFilm(frames, body.ratio || '16:9', body.narrationMode, { narrVol: body.narrVolume, origVol: body.origVolume, clipUrls: body.clipUrls }).then(fp => { if (!fp) logLine('combine: no output'); }).catch(e => { logLine(`combine crash: ${e.message}`); job.phase = 'idle'; });
       return sendJson(res, 202, { started: true });
     }
