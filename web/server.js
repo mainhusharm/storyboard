@@ -2318,11 +2318,12 @@ async function chatWithAqua(model, messages, maxTokens = 16000, temperature = 0.
   return text;
 }
 
-// Pinned Aqua model first, then the usual PaxSenix chain as last resort — same
-// shape as chatWithLogfareFallback so a flaky Aqua model never kills a render.
+// Pinned Aqua model first, then other Aqua models, then Logfare (the working
+// backend when Cloudflare blocks Vercel's IP), then PaxSenix as last resort.
 async function chatWithAquaFallback(model, messages, maxTokens = 16000, temperature = 0.7) {
   const pinned = String(model || '').replace(/^aqua:/, '');
   let lastErr = null;
+  // Try all Aqua models first
   for (const m of [pinned, ...AQUA_CHAT_FALLBACKS].filter((x, i, a) => x && a.indexOf(x) === i)) {
     try { return await chatWithAqua('aqua:' + m, messages, maxTokens, temperature); }
     catch (e) {
@@ -2337,11 +2338,14 @@ async function chatWithAquaFallback(model, messages, maxTokens = 16000, temperat
       }
     }
   }
+  // Aqua exhausted — try Logfare (not challenged, works on Vercel)
+  logLine(`all Aqua models failed — falling back to Logfare`);
   try {
-    return await chatWithFallback('gemini-2.5-pro', messages, maxTokens, temperature);
-  } catch (e) {
-    aquaStatus.lastError = lastErr ? lastErr.message : e.message;
-    throw new Error(`Aqua+fallback LLMs unavailable — ${lastErr ? lastErr.message : ''}${e && e.message ? ' | PaxSenix: ' + e.message : ''}`);
+    return await chatWithLogfareFallback('logfare:auto', messages, maxTokens, temperature);
+  } catch (logfareErr) {
+    logLine(`Logfare fallback failed: ${logfareErr.message}`);
+    aquaStatus.lastError = lastErr ? lastErr.message : logfareErr.message;
+    throw new Error(`Aqua+Logfare LLMs unavailable — Aqua: ${lastErr ? lastErr.message : 'no attempts'} | Logfare: ${logfareErr.message}`);
   }
 }
 
