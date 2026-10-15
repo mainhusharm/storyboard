@@ -707,14 +707,17 @@ $('btnAuto').onclick=async()=>{
 // it out instead of aborting the whole pipeline with a "Pipeline failed: busy".
 async function callPhase(path, body, opts = {}) {
   const attempts = opts.attempts || 12;
+  const timeoutMs = opts.timeoutMs || 280000; // under Vercel's 300s function kill
   for (let i = 0; i < attempts; i++) {
     let r = null;
     try {
-      r = await api(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      r = await api(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(timeoutMs) });
     } catch (e) {
       // A 401/402 is a real, actionable failure — surface it immediately.
       if (/session expired|Free trial|credits/i.test(e.message)) throw e;
       if (i === attempts - 1) throw e;
+      const why = (e.name === 'TimeoutError' || /timeout|abort/i.test(e.message)) ? 'timed out' : e.message;
+      logLocal(`${path}: ${why} (${i + 1}/${attempts}) — retrying…`,'err');
       await new Promise(r => setTimeout(r, 3000));
       continue;
     }

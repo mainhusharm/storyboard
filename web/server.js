@@ -3030,7 +3030,7 @@ async function generateCharRefs(characters, imageModel = 'seedream-5', style = '
     const task = await submitTask(q);
     if (!task) { job.failed.push(c.id); job.done++; logLine(`${c.id}: SUBMIT FAILED`); continue; }
     logLine(`${c.id}: submitted ref portrait (enhanced)`);
-    const url = await waitTask(task);
+    const url = await waitTask(task, IS_VERCEL ? 4 : 25);
     if (url && await download(url, out)) { c.reference_image_url = url; job.ok++; logLine(`${c.id}: REF DONE`); }
     else { job.failed.push(c.id); logLine(`${c.id}: REF FAILED`); }
     job.done++;
@@ -3070,12 +3070,19 @@ async function generateCharRefs(characters, imageModel = 'seedream-5', style = '
     return { c, task };
   }));
 
-  // Wait for all renders in parallel
+  // Wait for all renders in parallel.
+  // The per-task wait must fit INSIDE the request budget. waitTask defaults to a
+  // 25-minute deadline, so a single stuck provider kept this promise alive far
+  // past Vercel's 300s function kill — the client got no response at all and the
+  // pipeline looked frozen. On Vercel each render is budgeted a slice of the
+  // remaining time; locally there is no such ceiling so the long deadline stands.
   const results = submitted.filter(Boolean);
-  logLine(`waiting for ${results.length} ref renders in parallel...`);
+  const budgetMs = IS_VERCEL ? 240000 : Infinity;
+  const perTaskMin = IS_VERCEL ? Math.max(1, Math.floor(budgetMs / 60000)) : 25;
+  logLine(`waiting for ${results.length} ref renders in parallel (${IS_VERCEL ? perTaskMin + 'm each' : '25m each'})...`);
   await Promise.all(results.map(async ({ c, task }) => {
     if (job.cancelRequested) return;
-    const url = await waitTask(task);
+    const url = await waitTask(task, perTaskMin);
     if (job.cancelRequested) { logLine('cancelled'); return; }
     if (url && await download(url, charRefFile(c.id))) { c.reference_image_url = url; job.ok++; logLine(`${c.id}: REF DONE`); }
     else { job.failed.push(c.id); logLine(`${c.id}: REF FAILED`); }
@@ -3166,7 +3173,10 @@ async function generateImages(frames, imageModel, ratio, style, consistency = tr
       }
       if (!task) { logLine(`frame ${f.frame}: image SUBMIT FAILED (${label})`); return false; }
       logLine(`frame ${f.frame}: image submitted (${label}${useRef && refsFor().length ? ', img2img anchored' : ', t2i'})`);
-      const url = await waitTask(task);
+      // Budgeted wait: the default 25-minute deadline outlives Vercel's 300s
+      // function kill, so one slow provider froze this whole request with no
+      // response. Cap it to the remaining budget on Vercel.
+      const url = await waitTask(task, IS_VERCEL ? 4 : 25);
       if (job.cancelRequested) return 'cancel';
       if (url && await download(url, frameFile(f.frame))) {
         f.generated_image_url = url;

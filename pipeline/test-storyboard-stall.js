@@ -53,5 +53,16 @@ for (const p of followUps) {
 const successBlock = src.slice(src.indexOf('job.sbResult = result;'), src.indexOf('await saveStoryboardJob(userId, result);'));
 check('sbJobId cleared on success (not just on failure)', /job\.sbJobId = null;/.test(successBlock));
 
+console.log('\n[5] renders cannot outlive the Vercel function budget');
+// waitTask defaults to a 25-minute deadline. A provider that never answers kept
+// the promise alive past Vercel's 300s kill, so the request died with no
+// response and the pipeline looked frozen forever.
+check('char-refs parallel wait is budgeted', /waitTask\(task, perTaskMin\)/.test(src));
+check('per-task budget derived from the request budget', /IS_VERCEL \? Math\.max\(1, Math\.floor\(budgetMs \/ 60000\)\) : 25/.test(src));
+check('frame image wait is budgeted on Vercel', /waitTask\(task, IS_VERCEL \? 4 : 25\)/.test(src));
+check('client aborts a hung request', /AbortSignal\.timeout\(timeoutMs\)/.test(client));
+check('client timeout sits under the 300s kill', /timeoutMs = opts\.timeoutMs \|\| 280000/.test(client));
+check('client reports a timeout distinctly', /timed out/.test(client));
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);
