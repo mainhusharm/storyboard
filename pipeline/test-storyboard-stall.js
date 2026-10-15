@@ -138,5 +138,17 @@ check('watchdog aborts the in-flight request', /PHASE_ABORT && PHASE_ABORT\.abor
 check('watchdog threshold is 15 minutes', /STUCK_CLIENT_MS = 15 \* 60 \* 1000/.test(client));
 check('activity is stamped on every log line', /LOCAL_LAST_ACTIVITY=Date\.now\(\)/.test(client));
 
+console.log('\n[12] a POLL is never rejected as busy or script-less');
+// "pipeline failed: busy" 16s into a run: the poll POST to /run-all was being
+// rejected by the submit-time busy guard. Polling is how the client waits, so a
+// poll must never be turned away. The script-length check had the same flaw (a
+// poll carries no script) and was masked by the busy guard firing first.
+const runAll = src.slice(src.indexOf("p === '/api/run-all'"), src.indexOf("p === '/api/char-refs'"));
+check('busy guard is submit-only', /if \(!body\.pollStoryboard\) \{\s*\n\s*reapStaleJob\(true\);/.test(runAll));
+check('script-length check is submit-only', /if \(!body\.pollStoryboard && script\.length < 10\)/.test(runAll));
+check('poll branch still exists', /if \(body\.pollStoryboard\) \{/.test(runAll));
+check('poll answers pending', /pending: true, jobId: saved\.jobId/.test(runAll));
+check('poll branch precedes the submit path', runAll.indexOf('if (body.pollStoryboard)') < runAll.indexOf("create full film"));
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);

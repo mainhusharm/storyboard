@@ -5252,12 +5252,23 @@ const requestHandler = async (req, res) => {
 
     if (p === '/api/run-all' && req.method === 'POST') {
       const body = await readBody(req);
-      // Poll mode uses background reap; submit mode force-clears any stuck state
-      // since the user explicitly clicked "run" (a clear signal to unstick).
-      reapStaleJob(body.pollStoryboard !== true);
-      if (job.phase !== 'idle') return sendJson(res, 409, { error: 'busy' });
+        // POLL requests must NEVER be rejected as busy. Polling is how the client
+        // WAITS for a job, and the poll branch below has its own state machine
+        // (pending / result / timeout). Applying the submit-time busy guard here
+        // meant a poll landing on any instance with a stale non-idle phase got a
+        // 409 {error:'busy'}, which the client surfaced as "pipeline failed: busy"
+        // — killing runs that were progressing perfectly.
+        // Submit mode still force-reaps first: the user clicking run is an explicit
+        // signal to clear a stuck job.
+        if (!body.pollStoryboard) {
+          reapStaleJob(true);
+          if (job.phase !== 'idle') return sendJson(res, 409, { error: 'busy' });
+        }
       const script = (body.script || '').trim();
-      if (script.length < 10) return sendJson(res, 400, { error: 'script too short' });
+      // Script validation is SUBMIT-only: a poll request carries no script, so
+      // checking it here returned 400 "script too short" for every poll (masked
+      // until now by the busy guard firing first).
+      if (!body.pollStoryboard && script.length < 10) return sendJson(res, 400, { error: 'script too short' });
       const targetDuration = Math.max(10, Math.min(600, Number(body.duration) || 120));
       const narrationMode = body.narrationMode || DEFAULT_NARRATION_MODE;
       const language = body.language || DEFAULT_LANGUAGE;
