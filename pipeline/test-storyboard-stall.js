@@ -12,15 +12,14 @@ const check = (name, cond) => { if (cond) { console.log('  PASS', name); pass++;
 
 console.log('\n[1] cross-instance polling');
 check('timeout constant defined (8 min)', /STORYBOARD_JOB_TIMEOUT_MS = 8 \* 60 \* 1000/.test(src));
-check('submit writes a pending marker to storage', /await saveStoryboardJob\(userId, \{ pending: true, jobId, startedAt: Date\.now\(\)/.test(src));
-// The poll handler must branch on saved.pending before consuming the record.
-const pollBlock = src.slice(src.indexOf('if (body.pollStoryboard) {'), src.indexOf("if (!(await requireCredits(req, res, pipelineCost, 'create full film')))"));
-check('poll handles a pending marker', /if \(saved\.pending\)/.test(pollBlock));
-check('pending poll answers 202 pending', /sendJson\(res, 202, \{ pending: true, jobId: saved\.jobId/.test(pollBlock));
-check('pending past timeout is cleared, not waited on', /storyboard job timed out/.test(pollBlock));
-check('pending marker is NOT cleared while running', !/if \(saved\.pending\)[\s\S]{0,400}clearStoryboardJob\(req\.user\.id\);\s*\n\s*return sendJson\(res, 202/.test(pollBlock));
-check('completed result still clears storage', /await clearStoryboardJob\(req\.user\.id\);\s*\n\s*if \(saved\.ok === false\)/.test(pollBlock));
-check('404 retained for the pre-submit probe', /No storyboard job found/.test(pollBlock));
+// Superseded: submit no longer writes a pending marker (generation is synchronous).
+check('submit generates synchronously instead of a marker', /auto pipeline \(vercel sync\): storyboard/.test(src));
+check('poll branch retained for compatibility', /if \(body\.pollStoryboard\) \{/.test(src));
+check('poll handles a pending marker', /if \(saved\.pending\)/.test(src));
+check('pending poll answers 202 pending', /sendJson\(res, 202, \{ pending: true, jobId: saved\.jobId/.test(src));
+check('pending past timeout is cleared, not waited on', /storyboard job timed out/.test(src));
+check('completed result still clears storage', /await clearStoryboardJob\(req\.user\.id\);\s*\n\s*if \(saved\.ok === false\)/.test(src));
+check('404 retained for the pre-submit probe', /No storyboard job found/.test(src));
 
 console.log('\n[2] short frame output top-up');
 check('top-up triggered when frames < frameCount', /if \(frames\.length < frameCount/.test(src));
@@ -48,10 +47,10 @@ for (const p of followUps) {
   const used = new RegExp("callPhase\\('" + p.replace('/', '\\/') + "'").test(client);
   check('phase ' + p + ' goes through callPhase', used);
 }
-// Server must clear sbJobId on success too, or the instance that ran the job keeps
-// reporting it as running and the next phase hits a busy guard.
-const successBlock = src.slice(src.indexOf('job.sbResult = result;'), src.indexOf('await saveStoryboardJob(userId, result);'));
-check('sbJobId cleared on success (not just on failure)', /job\.sbJobId = null;/.test(successBlock));
+// Superseded: there is no in-memory sbJobId any more — the sync path returns the
+// storyboard in the response, so nothing needs clearing.
+check('sync path needs no sbJobId bookkeeping', /job\.phase = 'idle';/.test(src));
+check('sync submit sets phase idle before responding', /job\.phase = 'idle';\s*\n\s*\/\/ Return the storyboard inline/.test(src));
 
 console.log('\n[5] renders cannot outlive the Vercel function budget');
 // waitTask defaults to a 25-minute deadline. A provider that never answers kept
@@ -115,9 +114,9 @@ check('chatCompletion polls the cancel flag', /setInterval\(\(\) => \{ if \(job\
 check('cancel poll is cleared on completion', /clearInterval\(cancelPoll\)/.test(src));
 check('cancel is re-checked after a successful response', /if \(job\.cancelRequested\) throw new Error\('cancelled by user'\)/.test(src));
 // A cancelled job must not publish a result that the poll then picks up.
-check('cancelled storyboard discards its result', /cancelled during storyboard — discarding result/.test(src));
-check('cancelled job refunds credits', /discarding result[\s\S]{0,300}?refundCredits\(userId, chargedAmount\)/.test(src));
-check('cancelled job clears its marker', /discarding result[\s\S]{0,200}?clearStoryboardJob\(userId\)/.test(src));
+// A cancelled sync storyboard must refund the credits it charged.
+check('cancelled storyboard refunds credits', /cancelled during storyboard[\s\S]{0,300}?refundCredits\(req\.user\.id, chargedAmount\)/.test(src));
+check('cancelled storyboard reports 409 cancelled', /sendJson\(res, 409, \{ error: 'cancelled' \}\)/.test(src));
 // A new submit must clear a stale cancel or the first LLM call aborts instantly.
 check('submit clears a stale cancel flag', /job\.cancelRequested = false;\s*\n\s*job\.cancelling = false;\s*\n\s*setPhase\('storyboard', 1\);/.test(src));
 
@@ -127,8 +126,7 @@ console.log('\n[11] a hung browser request can never strand the UI');
 // LOCAL_BUSY stayed true — the UI was stuck until a page refresh reset the flags.
 check('pipeline requests carry a timeout helper', /function withTimeout\(opts = \{\}\)/.test(client));
 check('timeout sits under the 300s kill', /PIPELINE_TIMEOUT_MS = 285000/.test(client));
-check('resume probe is bounded', /const resume=await api\('\/run-all',withTimeout\(/.test(client));
-check('submit is bounded', /sbSubmit=await api\('\/run-all',withTimeout\(/.test(client));
+check('storyboard submit is bounded', /sbSubmit=await api\('\/run-all',withTimeout\(/.test(client));
 check('storyboard poll is bounded', /poll=await api\('\/run-all',withTimeout\(/.test(client));
 // Safety net: whatever await failed to settle, the flags get released.
 check('watchdog exists', /function clientWatchdog\(\)/.test(client));
@@ -149,6 +147,19 @@ check('script-length check is submit-only', /if \(!body\.pollStoryboard && scrip
 check('poll branch still exists', /if \(body\.pollStoryboard\) \{/.test(runAll));
 check('poll answers pending', /pending: true, jobId: saved\.jobId/.test(runAll));
 check('poll branch precedes the submit path', runAll.indexOf('if (body.pollStoryboard)') < runAll.indexOf("create full film"));
+
+console.log('\n[13] storyboard is generated in ONE request (no cross-instance state)');
+// The async job + poll pattern required work-after-response to survive (Vercel
+// freezes it) and job state shared across instances (only with DATABASE_URL).
+// Without both, the client polled forever while some instances 404'd and others
+// still reported "busy".
+check('vercel submit generates synchronously', /auto pipeline \(vercel sync\): storyboard/.test(src));
+check('submit returns the storyboard inline', /Return the storyboard inline\. No marker, no polling, no shared state/.test(src));
+check('submit no longer returns 202 pending', !/auto pipeline \(vercel async\)/.test(src));
+check('no pending marker is written on submit', !/pending: true, jobId, startedAt: Date\.now\(\)/.test(src));
+check('cancelled sync storyboard refunds and 409s', /cancelled during storyboard[\s\S]{0,300}?sendJson\(res, 409, \{ error: 'cancelled' \}\)/.test(src));
+check('client sends the storyboard submit directly (no resume probe)', !/const resume=await api\('\/run-all'/.test(client));
+check('client still falls back to polling if a server ever says pending', /sbSubmit\.pending&&sbSubmit\.jobId/.test(client));
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);

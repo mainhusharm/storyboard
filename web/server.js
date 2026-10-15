@@ -5327,73 +5327,51 @@ const requestHandler = async (req, res) => {
           return sendJson(res, 404, { error: 'No storyboard job found' });
         }
         
-        // Submit mode: start async storyboard job
+        // Submit mode: generate the storyboard SYNCHRONOUSLY in this request.
+        //
+        // This used to return 202 and run the work in a detached promise, with the
+        // client polling for the result. That pattern depends on two things this
+        // deployment does not have:
+        //   1. work started after the response is allowed to finish (Vercel freezes
+        //      it), and
+        //   2. job state shared across instances (it is stored in Postgres only when
+        //      DATABASE_URL is set; otherwise it is a per-instance /tmp file).
+        // With neither, the client polled forever: some instances returned the
+        // pending marker, others 404'd, and the storyboard never arrived.
+        //
+        // /api/storyboard already generates synchronously on Vercel with a 270s
+        // internal budget, and the client waits up to 285s, so this fits the
+        // function limit without any cross-instance state at all.
         if (!(await requireCredits(req, res, pipelineCost, 'create full film'))) return;
         const chargedAmount = pipelineCost;
         const jobId = `sb_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
-        const userId = req.user.id;
-        job.sbJobId = jobId;
-        job.sbResult = null;
-        // Write the "running" marker BEFORE returning 202. The background work runs
-        // on whichever instance served this request, but every poll may hit a
-        // different one — the marker is what tells those instances a job is in
-        // flight instead of 404ing and killing the run.
-        await saveStoryboardJob(userId, { pending: true, jobId, startedAt: Date.now(), phase: 'storyboard' });
-        // A fresh submit clears any cancel left over from a previous run — the
-        // cancel poll inside chatCompletion watches this flag, so leaving it set
-        // would abort the new job's very first LLM call.
         job.cancelRequested = false;
         job.cancelling = false;
         setPhase('storyboard', 1);
-        logLine(`auto pipeline (vercel async): storyboard — ${body.model || MODELS[0]} — target ${targetDuration}s — ${secPerFrame}s per clip — job ${jobId}`);
-        
-        // Run storyboard generation in background
-        (async () => {
-          try {
-            const sb = await generateStoryboard(script, body.model || MODELS[0], targetDuration, body.look || '', language, secPerFrame, body.style);
-            const characters = sb.characters, frames = sb.frames;
-            // A cancelled job must NOT publish a result. Saving after a cancel (or
-            // after force-clean cleared storage) is what resurrected the run the
-            // user had just stopped: the poll then found a finished storyboard and
-            // the pipeline carried on regardless.
-            if (job.cancelRequested) {
-              logLine(`auto pipeline: cancelled during storyboard — discarding result (job ${jobId})`);
-              try { await clearStoryboardJob(userId); } catch {}
-              job.sbResult = null; job.sbJobId = null; job.phase = 'idle';
-              await refundCredits(userId, chargedAmount);
-              return;
-            }
-            logLine(`auto pipeline: storyboard ready — ${characters.length} characters, ${frames.length} frames — job ${jobId}`);
-            const result = {
-              ok: true, phase: 'storyboard-done', characters, frames,
-              remaining: ['char-refs', 'images', 'videos', 'narration', 'combine'],
-              pipelineCost: chargedAmount,
-              jobId
-            };
-            job.sbResult = result;
+        logLine(`auto pipeline (vercel sync): storyboard — ${body.model || MODELS[0]} — target ${targetDuration}s — ${secPerFrame}s per clip — job ${jobId}`);
+        try {
+          const sb = await generateStoryboard(script, body.model || MODELS[0], targetDuration, body.look || '', language, secPerFrame, body.style);
+          const characters = sb.characters, frames = sb.frames;
+          if (job.cancelRequested) {
+            logLine(`auto pipeline: cancelled during storyboard — discarding result (job ${jobId})`);
             job.phase = 'idle';
-            // Clear sbJobId on SUCCESS too. Leaving it set made the poll's
-            // ephemeral check keep reporting a running job on this instance after
-            // the result was already saved, so the next phase could still hit a
-            // busy guard on the instance that ran the job.
-            job.sbJobId = null;
-            // Save to persistent storage so it survives refresh
-            await saveStoryboardJob(userId, result);
-          } catch (e) {
-            logLine(`auto pipeline: storyboard failed — ${e.message} — job ${jobId}`);
-            // Save failure to storage so polling can retrieve the error
-            await saveStoryboardJob(userId, {
-              ok: false, error: e.message, jobId,
-              phase: 'storyboard-failed'
-            });
-            await refundCredits(userId, chargedAmount);
-            job.sbJobId = null;
-            job.sbResult = null;
-            job.phase = 'idle';
+            await refundCredits(req.user.id, chargedAmount);
+            return sendJson(res, 409, { error: 'cancelled' });
           }
-        })();
-        
-        return sendJson(res, 202, { pending: true, jobId });
+          logLine(`auto pipeline: storyboard ready — ${characters.length} characters, ${frames.length} frames — job ${jobId}`);
+          job.phase = 'idle';
+          // Return the storyboard inline. No marker, no polling, no shared state.
+          return sendJson(res, 200, {
+            ok: true, phase: 'storyboard-done', characters, frames,
+            remaining: ['char-refs', 'images', 'videos', 'narration', 'combine'],
+            pipelineCost: chargedAmount, jobId
+          });
+        } catch (e) {
+          logLine(`auto pipeline: storyboard failed — ${e.message} — job ${jobId}`);
+          job.phase = 'idle';
+          await refundCredits(req.user.id, chargedAmount);
+          return sendJson(res, 500, { error: String(e.message || e) });
+        }
       }
 
       // ==================== LOCAL / SELF-HOSTED AUTO PIPELINE ====================

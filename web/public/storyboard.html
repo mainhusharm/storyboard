@@ -787,41 +787,24 @@ async function runAutoVercel(script){
   SUBMITTING=true;LOCAL_BUSY=true;LOCAL_LOG=[];USER_CANCELLED=false;PHASE_ABORT=null;poll();
   const opts={ratio:$('ratio').value,imageModel:$('imageModel').value,videoModel:$('videoModel').value,style:$('style').value,voice:$('voice').value,consistency:$('consistency').checked,language:$('language').value,narrationMode:$('narrationMode').value,narrationEngine:$('narrationEngine').value,narrVolume:Number($('narrVolume').value),origVolume:Number($('origVolume').value),chainContinuity:$('chainContinuity').checked,clipDuration:Number($('clipDuration').value)};
   try{
-    // ---- Phase 1: storyboard (async job with polling + persistence) ----
+    // ---- Phase 1: storyboard ----
+    // Generated SYNCHRONOUSLY by one request and returned inline. The old design
+    // returned 202 and made the client poll: that needed work-after-response to
+    // survive (Vercel freezes it) and job state shared across instances (only
+    // present with DATABASE_URL; otherwise a per-instance /tmp file). With neither,
+    // the poll looped forever while some instances 404'd and others still reported
+    // the job as busy. The 270s internal budget fits the 285s client timeout, so
+    // one request now does the whole thing with no cross-instance state.
     logLocal('phase 1/6: storyboard…','');
-    
-    // Try to resume in-progress job on page load
     let sbSubmit;
-    try{
-      const resume=await api('/run-all',withTimeout({method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pollStoryboard:true})}));
-      if(resume.ok&&resume.frames){
-        // Completed job from earlier (survived refresh)
-        CHARS=resume.characters||[];FRAMES=resume.frames||[];OFFLINE_BOARD=true;
-        try{localStorage.setItem('sb_chars',JSON.stringify(CHARS));localStorage.setItem('sb_frames',JSON.stringify(FRAMES))}catch(e){}
-        logLocal(`storyboard ready (resumed): ${CHARS.length} characters, ${FRAMES.length} frames`,'ok');
-        await refresh({characters:CHARS,frames:FRAMES});
-        sbSubmit={ok:true,frames:FRAMES,characters:CHARS}; // skip to next phase
-      }else if(resume.pending){
-        logLocal('resuming in-progress storyboard job…','');
-        sbSubmit={pending:true,jobId:resume.jobId};
-      }else{
-        // No job to resume, start new one
-        sbSubmit=await api('/run-all',withTimeout({method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({script,model:$('chatModel').value,duration:Number($('duration').value),look:$('look').value,...opts})}));
-      }
-    }catch(e){
-      // Resume failed (404 or other error), start new job
-      sbSubmit=await api('/run-all',withTimeout({method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({script,model:$('chatModel').value,duration:Number($('duration').value),look:$('look').value,...opts})}));
-    }
-    
+    sbSubmit=await api('/run-all',withTimeout({method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({script,model:$('chatModel').value,duration:Number($('duration').value),look:$('look').value,...opts})}));
+
     if(sbSubmit.error)throw new Error(sbSubmit.error);
     if(sbSubmit.ok&&sbSubmit.frames){
-      // Already done (local server sync path or resumed job)
-      if(!FRAMES.length){
-        CHARS=sbSubmit.characters||[];FRAMES=sbSubmit.frames||[];OFFLINE_BOARD=true;
-        try{localStorage.setItem('sb_chars',JSON.stringify(CHARS));localStorage.setItem('sb_frames',JSON.stringify(FRAMES))}catch(e){}
-        logLocal(`storyboard ready: ${CHARS.length} characters, ${FRAMES.length} frames`,'ok');
-        await refresh({characters:CHARS,frames:FRAMES});
-      }
+      CHARS=sbSubmit.characters||[];FRAMES=sbSubmit.frames||[];OFFLINE_BOARD=true;
+      try{localStorage.setItem('sb_chars',JSON.stringify(CHARS));localStorage.setItem('sb_frames',JSON.stringify(FRAMES))}catch(e){}
+      logLocal(`storyboard ready: ${CHARS.length} characters, ${FRAMES.length} frames`,'ok');
+      await refresh({characters:CHARS,frames:FRAMES});
     }else if(sbSubmit.pending&&sbSubmit.jobId){
       // Async path (Vercel) — poll for completion. Each poll may land on a
       // DIFFERENT instance than the one running the job, so a transient network
