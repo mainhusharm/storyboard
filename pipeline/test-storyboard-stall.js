@@ -101,5 +101,25 @@ check('parallel batch is announced', /running in parallel/.test(client));
 check('videos stay sequential for the chain anchor', /chainAnchor=prevChain/.test(client));
 check('videos still one frame per request', /callPhase\('\/videos',body\)/.test(client));
 
+console.log('\n[10] a cancelled run genuinely stops');
+// force-clean used to reset cancelRequested to FALSE, which told in-flight work
+// to keep going; the job then saved its result after the cleanup and resurrected
+// the run the user had just cancelled.
+const fcBlock = src.slice(src.indexOf("p === '/api/force-clean'"), src.indexOf("p === '/api/force-clean'") + 1200);
+check('force-clean requests cancellation', /job\.cancelRequested = true;/.test(fcBlock));
+check('force-clean never clears the cancel flag', !/job\.cancelRequested = false;/.test(fcBlock));
+check('force-clean reports cancelling', /cleaned: true, cancelling: true/.test(fcBlock));
+// The flag was only checked BETWEEN model attempts, so one 80-150s chat call ran
+// to completion after a cancel.
+check('chatCompletion polls the cancel flag', /setInterval\(\(\) => \{ if \(job\.cancelRequested\) ac\.abort\(\); \}, 1000\)/.test(src));
+check('cancel poll is cleared on completion', /clearInterval\(cancelPoll\)/.test(src));
+check('cancel is re-checked after a successful response', /if \(job\.cancelRequested\) throw new Error\('cancelled by user'\)/.test(src));
+// A cancelled job must not publish a result that the poll then picks up.
+check('cancelled storyboard discards its result', /cancelled during storyboard — discarding result/.test(src));
+check('cancelled job refunds credits', /discarding result[\s\S]{0,300}?refundCredits\(userId, chargedAmount\)/.test(src));
+check('cancelled job clears its marker', /discarding result[\s\S]{0,200}?clearStoryboardJob\(userId\)/.test(src));
+// A new submit must clear a stale cancel or the first LLM call aborts instantly.
+check('submit clears a stale cancel flag', /job\.cancelRequested = false;\s*\n\s*job\.cancelling = false;\s*\n\s*setPhase\('storyboard', 1\);/.test(src));
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);

@@ -2136,6 +2136,11 @@ async function chatCompletion(model, messages, maxTokens = 16384, temperature = 
   const cappedTokens = IS_VERCEL ? Math.min(maxTokens, 12000) : maxTokens;
   const body = { model, messages, temperature, max_tokens: cappedTokens, stream: false };
   const ac = new AbortController();
+  // A cancel must interrupt an in-flight call, not just be observed between them:
+  // phase 2 of the storyboard is a single 80-150s chatCompletion, so checking the
+  // flag only between model attempts meant "cancel" still ran the whole call.
+  // Poll the flag while we wait so a cancelled request aborts within a second.
+  const cancelPoll = setInterval(() => { if (job.cancelRequested) ac.abort(); }, 1000);
   // Vercel: cap each LLM call at 75s (was 100s). A model silent for 75s is
   // effectively dead — shorter timeout means faster failover when a model is down,
   // so the 270s storyboard budget can fit 3+ model attempts instead of timing out
@@ -2154,7 +2159,8 @@ async function chatCompletion(model, messages, maxTokens = 16384, temperature = 
     });
     if (!res.ok) throw new Error(`chat HTTP ${res.status}: ${stripHtml(await res.text()).slice(0, 160)}`);
     raw = await res.text();
-  } finally { clearTimeout(timer); }
+    if (job.cancelRequested) throw new Error('cancelled by user');
+  } finally { clearTimeout(timer); clearInterval(cancelPoll); }
 
   let content = '';
   let parseErrors = 0;
@@ -5179,19 +5185,20 @@ const requestHandler = async (req, res) => {
     }
 
     if (p === '/api/force-clean' && req.method === 'POST') {
-      // Force-clear: always reap with force=true, clear persistent storage, and
-      // reset both storyboard and influencer job states. Use when a stuck job is
-      // blocking the UI and Cancel doesn't unstick it.
+      // Force-clear: request cancellation, then clear persistent storage and reset
+      // both job states. The cancel flag MUST stay set — clearing it here told
+      // in-flight work to keep going, and the job then saved its result *after*
+      // the cleanup, resurrecting the run the user had just cancelled.
       reapStaleJob(true);
+      job.cancelRequested = true;   // stop in-flight work; do NOT reset to false
+      job.cancelling = true;
       job.phase = 'idle';
       job.sbJobId = null;
       job.sbResult = null;
-      job.cancelRequested = false;
-      job.cancelling = false;
       inflJob.phase = 'idle';
       try { await clearStoryboardJob(req.user.id); } catch {}
-      logLine('force-clean: all job state cleared');
-      return sendJson(res, 200, { ok: true, cleaned: true });
+      logLine('force-clean: cancellation requested and all job state cleared');
+      return sendJson(res, 200, { ok: true, cleaned: true, cancelling: true });
     }
 
     if (p === '/api/characters') {
@@ -5321,6 +5328,11 @@ const requestHandler = async (req, res) => {
         // different one — the marker is what tells those instances a job is in
         // flight instead of 404ing and killing the run.
         await saveStoryboardJob(userId, { pending: true, jobId, startedAt: Date.now(), phase: 'storyboard' });
+        // A fresh submit clears any cancel left over from a previous run — the
+        // cancel poll inside chatCompletion watches this flag, so leaving it set
+        // would abort the new job's very first LLM call.
+        job.cancelRequested = false;
+        job.cancelling = false;
         setPhase('storyboard', 1);
         logLine(`auto pipeline (vercel async): storyboard — ${body.model || MODELS[0]} — target ${targetDuration}s — ${secPerFrame}s per clip — job ${jobId}`);
         
@@ -5329,6 +5341,17 @@ const requestHandler = async (req, res) => {
           try {
             const sb = await generateStoryboard(script, body.model || MODELS[0], targetDuration, body.look || '', language, secPerFrame, body.style);
             const characters = sb.characters, frames = sb.frames;
+            // A cancelled job must NOT publish a result. Saving after a cancel (or
+            // after force-clean cleared storage) is what resurrected the run the
+            // user had just stopped: the poll then found a finished storyboard and
+            // the pipeline carried on regardless.
+            if (job.cancelRequested) {
+              logLine(`auto pipeline: cancelled during storyboard — discarding result (job ${jobId})`);
+              try { await clearStoryboardJob(userId); } catch {}
+              job.sbResult = null; job.sbJobId = null; job.phase = 'idle';
+              await refundCredits(userId, chargedAmount);
+              return;
+            }
             logLine(`auto pipeline: storyboard ready — ${characters.length} characters, ${frames.length} frames — job ${jobId}`);
             const result = {
               ok: true, phase: 'storyboard-done', characters, frames,
