@@ -871,6 +871,11 @@ async function runAutoVercel(script){
     const targets=FRAMES.filter(f=>f.animation_prompt).sort((a,b)=>a.frame-b.frame);
     logLocal(`phase 4/6: videos (${targets.length})…`,'');
     let prevChain='';
+    // Hosted clip URL per frame. Each render happens on its OWN Vercel instance
+    // with its own /tmp, so the mp4 is not visible to the combine invocation.
+    // Combine re-downloads from these URLs — without them the film silently came
+    // out as stills.
+    const clipUrls={};
     for(let i=0;i<targets.length;i++){
       const f=targets[i];
       logLocal(`video ${i+1}/${targets.length}: frame ${f.frame}…`);
@@ -884,14 +889,17 @@ async function runAutoVercel(script){
       else if(j&&j.frame){
         FRAMES=FRAMES.map(x=>x.frame===f.frame?{...x,...j.frame}:x);
         if(j.frame.chain_image_url)prevChain=j.frame.chain_image_url;
+        if(j.clipUrl||j.frame.clip_url)clipUrls[f.frame]=j.clipUrl||j.frame.clip_url;
         logLocal(`frame ${f.frame}: video done`,'ok');
       }
       try{localStorage.setItem('sb_frames',JSON.stringify(FRAMES))}catch(e){}
     }
+    const clipCount=Object.keys(clipUrls).length;
+    if(targets.length&&!clipCount)logLocal('note: no clip URLs returned — combine may fall back to stills on other instances','err');
 
     // ---- Phase 6: combine ----
     logLocal('phase 6/6: combining final film…','');
-    const cb=await callPhase('/combine',sbPayload({ratio:opts.ratio,narrationMode:opts.narrationMode,narrVolume:opts.narrVolume,origVolume:opts.origVolume}));
+    const cb=await callPhase('/combine',sbPayload({ratio:opts.ratio,narrationMode:opts.narrationMode,narrVolume:opts.narrVolume,origVolume:opts.origVolume,clipUrls}));
     if(cb&&cb.error)logLocal('combine: '+cb.error,'err'); else logLocal('🎬 FINAL FILM READY','ok');
   }catch(e){logLocal('pipeline failed: '+e.message,'err');logLocal('⚠ stopped — the console above has the details. Click 🔧 Force Clean, then run again.','err')}
   finally{SUBMITTING=false;LOCAL_BUSY=false;poll();refresh();refreshCredits()}

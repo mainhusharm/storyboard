@@ -161,5 +161,23 @@ check('cancelled sync storyboard refunds and 409s', /cancelled during storyboard
 check('client sends the storyboard submit directly (no resume probe)', !/const resume=await api\('\/run-all'/.test(client));
 check('client still falls back to polling if a server ever says pending', /sbSubmit\.pending&&sbSubmit\.jobId/.test(client));
 
+console.log('\n[14] combine can find clips rendered on another instance');
+// Each Vercel invocation has its own /tmp, so a clip rendered by one instance is
+// absent from the instance that runs combine — which silently fell back to stills
+// ("where did my video go"). The URL must travel to combine, which re-downloads.
+check('combineFilm re-fetches missing clips', /Re-fetch clips this instance does not have/.test(src));
+check('combineFilm accepts clip_url from frames', /for \(const f of frames\) if \(f\.clip_url\) urlByFrame\.set/.test(src));
+check('combineFilm accepts clipUrls from the client', /opts\.clipUrls && typeof opts\.clipUrls === 'object'/.test(src));
+check('combineFilm downloads the missing clip', /if \(await download\(url, vf\)\) \{ refetched\+\+/.test(src));
+check('combine reports how many were recovered', /recovered \$\{refetched\} clip\(s\) from remote hosts/.test(src));
+check('combine opts are threaded from the route', /clipUrls: body\.clipUrls/.test(src));
+check('videos endpoint uploads the clip', /clipUrl = await uploadVideoClip\(videoFile/.test(src));
+check('videos endpoint returns the clip URL', /return sendJson\(res, 200, \{ ok: true, frame: frames\[0\] \|\| null, clipUrl \}\)/.test(src));
+check('frame records its clip_url', /frames\[0\]\.clip_url = clipUrl/.test(src));
+check('partial renders do not clobber frames.json', /if \(!isPartial\) await writeJson\(FRAMES_JSON, frames\)/.test(src));
+check('client collects clip URLs per frame', /clipUrls\[f\.frame\]=j\.clipUrl\|\|j\.frame\.clip_url/.test(client));
+check('client passes clipUrls to combine', /clipUrls\}\)\);\s*\n\s*if\(cb&&cb\.error\)/.test(client));
+check('client warns when no clip URLs came back', /no clip URLs returned/.test(client));
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);

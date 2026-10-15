@@ -1,4 +1,4 @@
-// Storyboard Studio — zero-dependency Node server (Node 18+; built for v24)
+﻿// Storyboard Studio — zero-dependency Node server (Node 18+; built for v24)
 // Run:  node web/server.js   →  http://localhost:5173
 const http = require('http');
 const fs = require('fs');
@@ -4090,6 +4090,29 @@ async function combineFilm(frames, ratio = '16:9', narrationMode = 'tts', opts =
 
   if (frames.length === 0) { logLine('no frames to combine'); job.phase = 'idle'; return null; }
 
+  // Re-fetch clips this instance does not have. Each Vercel invocation has its own
+  // /tmp, so a clip rendered by another instance is simply absent here — that was
+  // the silent cause of a final film made of stills. clip_url is recorded when the
+  // clip is rendered; opts.clipUrls can also carry them from the client.
+  const urlByFrame = new Map();
+  for (const f of frames) if (f.clip_url) urlByFrame.set(Number(f.frame), String(f.clip_url));
+  if (opts.clipUrls && typeof opts.clipUrls === 'object') {
+    for (const [k, v] of Object.entries(opts.clipUrls)) if (v) urlByFrame.set(Number(k), String(v));
+  }
+  let refetched = 0;
+  for (const f of frames) {
+    if (job.cancelRequested) break;
+    const vf = videoFile(f.frame);
+    if (fs.existsSync(vf)) continue;            // already local
+    const url = urlByFrame.get(Number(f.frame));
+    if (!url) continue;
+    try {
+      fs.mkdirSync(path.dirname(vf), { recursive: true });
+      if (await download(url, vf)) { refetched++; logLine(`frame ${f.frame}: re-fetched clip from host (not on this instance)`); }
+    } catch (e) { logLine(`frame ${f.frame}: clip re-fetch failed (${e.message})`); }
+  }
+  if (refetched) logLine(`combine: recovered ${refetched} clip(s) from remote hosts`);
+
   // Calculate target dimensions from ratio
   const ratioParts = ratio.split(':');
   const rw = parseInt(ratioParts[0]) || 16;
@@ -5415,11 +5438,11 @@ const requestHandler = async (req, res) => {
           logLine('prompt-vocalized mode: narration embedded in video prompts, no TTS');
         }
         steps.push(['videos', () => generateVideos(videoFrames, body.ratio || '16:9', body.videoModel || DEFAULT_VIDEO_MODEL, body.chainContinuity === true)]);
-        steps.push(['combine', () => combineFilm(frames, body.ratio || '16:9', narrationMode, { narrVol: body.narrVolume, origVol: body.origVolume })]);
+        steps.push(['combine', () => combineFilm(frames, body.ratio || '16:9', narrationMode, { narrVol: body.narrVolume, origVol: body.origVolume, clipUrls: body.clipUrls })]);
         // After combine: generate full narration TTS and overlay on final video
         if (narrationMode === 'tts') {
           const engine = body.narrationEngine || body.engine || DEFAULT_NARRATION_ENGINE;
-          steps.push(['narration', () => { setPhase('narration', 1); return generateFullNarration(frames, body.voice || DEFAULT_VOICE, language, engine, { narrVol: body.narrVolume, origVol: body.origVolume }).then(() => { job.phase = 'idle'; }); }]);
+          steps.push(['narration', () => { setPhase('narration', 1); return generateFullNarration(frames, body.voice || DEFAULT_VOICE, language, engine, { narrVol: body.narrVolume, origVol: body.origVolume, clipUrls: body.clipUrls }).then(() => { job.phase = 'idle'; }); }]);
         }
 
         for (const [name, fn] of steps) {
@@ -5521,11 +5544,28 @@ const requestHandler = async (req, res) => {
             for (const f of frames) {
               if (fs.existsSync(videoFile(f.frame))) f.video_path = '/video/' + path.basename(videoFile(f.frame));
             }
+            // Publish the rendered clip to a public host. Every instance has its OWN
+            // /tmp, so the mp4 rendered here is invisible to the invocation that runs
+            // combine — which then found no video and silently fell back to stills
+            // ("where did my video go"). The client carries this URL to combine,
+            // which re-downloads anything missing locally. Mirrors the Flashloop
+            // combine's clipUrls handling.
+            let clipUrl = '';
+            try {
+              if (frames[0] && fs.existsSync(videoFile(frames[0].frame))) {
+                clipUrl = await uploadVideoClip(videoFile(frames[0].frame));
+                frames[0].clip_url = clipUrl;
+                // Only persist the board when this call covered the whole board —
+                // in per-frame (partial) mode `frames` is one entry and writing it
+                // would clobber frames.json with a single frame.
+                if (!isPartial) await writeJson(FRAMES_JSON, frames);
+              }
+            } catch (e) { logLine(`frame ${frames[0] && frames[0].frame}: clip upload failed: ${e.message} — combine may miss it`); }
             const failed = (job.failed || []).filter(n => frames.some(f => f.frame === n));
             if (failed.length) {
               return sendJson(res, 200, { ok: false, failed, error: `frame ${failed.join(', ')}: all render attempts failed` });
             }
-            return sendJson(res, 200, { ok: true, frame: frames[0] || null });
+            return sendJson(res, 200, { ok: true, frame: frames[0] || null, clipUrl });
           } catch (e) { job.phase = 'idle'; return sendJson(res, 500, { error: String(e.message || e) }); }
         })();
       }
@@ -5538,8 +5578,8 @@ const requestHandler = async (req, res) => {
       if (job.phase !== 'idle') return sendJson(res, 409, { error: 'busy' });
       const body = await readBody(req).catch(() => ({}));
       let { frames } = await storyDataFrom(body);
-      if (IS_VERCEL) return runJobOnVercel(res, async () => { await combineFilm(frames, body.ratio || '16:9', body.narrationMode, { narrVol: body.narrVolume, origVol: body.origVolume }); job.phase = 'idle'; });
-      combineFilm(frames, body.ratio || '16:9', body.narrationMode, { narrVol: body.narrVolume, origVol: body.origVolume }).then(fp => { if (!fp) logLine('combine: no output'); }).catch(e => { logLine(`combine crash: ${e.message}`); job.phase = 'idle'; });
+      if (IS_VERCEL) return runJobOnVercel(res, async () => { await combineFilm(frames, body.ratio || '16:9', body.narrationMode, { narrVol: body.narrVolume, origVol: body.origVolume, clipUrls: body.clipUrls }); job.phase = 'idle'; });
+      combineFilm(frames, body.ratio || '16:9', body.narrationMode, { narrVol: body.narrVolume, origVol: body.origVolume, clipUrls: body.clipUrls }).then(fp => { if (!fp) logLine('combine: no output'); }).catch(e => { logLine(`combine crash: ${e.message}`); job.phase = 'idle'; });
       return sendJson(res, 202, { started: true });
     }
 
@@ -5558,7 +5598,7 @@ const requestHandler = async (req, res) => {
       for (const f of fs.readdirSync(VIDEO_DIR).filter(f => f.startsWith('narr_chunk_') || f === 'full_narration.mp3')) { try { fs.unlinkSync(path.join(VIDEO_DIR, f)); } catch {} }
       setPhase('narration', 1);
       const engine = body.narrationEngine || body.engine || DEFAULT_NARRATION_ENGINE;
-      const narrOpts = { narrVol: body.narrVolume, origVol: body.origVolume };
+      const narrOpts = { narrVol: body.narrVolume, origVol: body.origVolume, clipUrls: body.clipUrls };
       if (IS_VERCEL) return runJobOnVercel(res, async () => { await generateFullNarration(frames, body.voice || DEFAULT_VOICE, body.language || DEFAULT_LANGUAGE, engine, narrOpts); job.phase = 'idle'; });
       (async () => {
         try { await generateFullNarration(frames, body.voice || DEFAULT_VOICE, body.language || DEFAULT_LANGUAGE, engine, narrOpts); }
