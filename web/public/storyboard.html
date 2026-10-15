@@ -188,6 +188,7 @@
     <button id="btnLogout" style="display:none;font-size:11px;padding:5px 12px" onclick="logout()">Log out</button>
     <div class="pill" id="phasepill"><div class="dot"></div><span id="phasetxt">IDLE</span></div>
     <button id="btnCancel" style="display:none;font-size:11px;padding:5px 12px;border:1px solid #f87171;color:#f87171;background:rgba(248,113,113,.1);border-radius:99px;cursor:pointer;font-weight:600;letter-spacing:.5px" onclick="cancelJob()">✕ Cancel</button>
+    <button id="btnForceClean" style="font-size:11px;padding:5px 12px;border:1px solid #fbbf24;color:#fbbf24;background:rgba(251,191,36,.1);border-radius:99px;cursor:pointer;font-weight:600;letter-spacing:.5px" onclick="forceClean()" title="Force-clear any stuck jobs">🔧 Force Clean</button>
     <div class="pill">GROK · OMNI · VEO</div>
   </div>
 </header>
@@ -625,6 +626,16 @@ async function poll(){
 async function cancelJob(){
   if(!confirm('Cancel the current task?')) return;
   try{ await api('/cancel',{method:'POST'}); }catch(e){}
+  poll();
+}
+// Force-clear any stuck jobs on the server (reaps all non-idle state immediately).
+async function forceClean(){
+  if(!confirm('Force-clear any stuck jobs? This will reset the pipeline state.')) return;
+  try{
+    await api('/force-clean',{method:'POST'});
+    LOCAL_BUSY=false;
+    alert('Pipeline state cleared. You can start a new job now.');
+  }catch(e){ alert('Force clean failed: '+e.message); }
   poll();
 }
 // If a task is running, ask the user before starting a new one — on confirm, cancel

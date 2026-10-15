@@ -5074,6 +5074,21 @@ const requestHandler = async (req, res) => {
       return sendJson(res, 200, { ok: true, cancelled: null });
     }
 
+    if (p === '/api/force-clean' && req.method === 'POST') {
+      // Force-clear: always reap with force=true, clear persistent storage, and
+      // reset both storyboard and influencer job states. Use when a stuck job is
+      // blocking the UI and Cancel doesn't unstick it.
+      reapStaleJob(true);
+      job.phase = 'idle';
+      job.sbJobId = null;
+      job.sbResult = null;
+      job.cancelRequested = false;
+      inflJob.phase = 'idle';
+      try { await clearStoryboardJob(req.user.id); } catch {}
+      logLine('force-clean: all job state cleared');
+      return sendJson(res, 200, { ok: true, cleaned: true });
+    }
+
     if (p === '/api/characters') {
       const chars = await readJson(CHARS_JSON) || [];
       for (const c of chars) { c.hasRef = fs.existsSync(charRefFile(c.id)); }
