@@ -1492,6 +1492,10 @@ function setPhase(phase, total = 0) {
 // 2min threshold: a real storyboard completes in 60-90s on Vercel, so anything
 // past 2min is frozen/dead from a cross-instance routing split.
 const JOB_STALE_MS = 2 * 60 * 1000;
+// Hard ceiling for a storyboard job, enforced by the poll endpoint against the
+// "pending" marker in storage. A real run finishes in ~2-3min; past 8min the
+// worker is gone for good, so the poll stops waiting on a corpse.
+const STORYBOARD_JOB_TIMEOUT_MS = 8 * 60 * 1000;
 function reapStaleJob(force = false) {
   if (job.phase === 'idle') return false;
   if (!job.startedAt) { job.phase = 'idle'; job.sbJobId = null; job.sbResult = null; return true; }
@@ -2949,6 +2953,45 @@ async function generateStoryboard(script, model, targetDuration = 120, look = ''
   })).filter(f => f.image_prompt);
 
   logLine(`phase 2 done: ${frames.length} frames (model: ${frameModel})`);
+  // Some models (notably claude-haiku-5-5) silently return fewer frames than asked
+  // for — 1 frame for a 3-frame target truncates the film to a third of its
+  // intended runtime. Re-ask once for the shortfall before accepting it.
+  if (frames.length < frameCount && !outOfTime() && timeForOneMoreCall()) {
+    const missing = frameCount - frames.length;
+    logLine(`phase 2 short by ${missing} frame(s) — re-asking ${frameModel} for the remainder`);
+    try {
+      const cont = [
+        ...frameMsgs,
+        { role: 'assistant', content: 'Here is the first frame.' },
+        { role: 'user', content: `You returned only ${frames.length} of the ${frameCount} required frames. Continue the SAME story from exactly where it stopped and return ONLY a JSON object with a "frames" key containing the remaining ${missing} frame(s). Do not repeat the frames you already wrote. Each needs at least "image_prompt" and "summary".` }
+      ];
+      const extraRaw = await chatCompletion(frameModel, cont);
+      const extraParsed = await parseOrSalvage(extraRaw, `frames topup (${frameModel})`).catch(() => null);
+      let extra = Array.isArray(extraParsed?.frames) ? extraParsed.frames : [];
+      if (!extra.length && Array.isArray(extraParsed)) extra = extraParsed;
+      const shaped = extra.map((f, i) => ({
+        frame: frames.length + i + 1, scene: f.scene || (frames.length + i + 1),
+        timestamp: f.timestamp || '00:00', narration: f.narration || '', dialogue: f.dialogue || '',
+        summary: f.summary || '', shot_type: f.shot_type || 'Medium Shot',
+        camera_angle: f.camera_angle || 'Eye Level', lens: f.lens || '35mm',
+        lighting: f.lighting || 'Natural', mood: f.mood || '', location: f.location || '',
+        characters_present: f.characters_present || f.characters || [], continuity_notes: f.continuity_notes || '',
+        image_prompt: f.image_prompt || f.prompt || '',
+        negative_prompt: f.negative_prompt || 'low quality, blurry, watermark, text, bad anatomy, distorted face',
+        animation_prompt: f.animation_prompt || 'slow cinematic push-in', sound_design: f.sound_design || '',
+        transition: f.transition || 'cut', duration_sec: f.duration_sec || secPerFrame,
+        importance: f.importance || 'medium'
+      })).filter(f => f.image_prompt);
+      if (shaped.length) {
+        frames = frames.concat(shaped);
+        logLine(`phase 2 top-up added ${shaped.length} frame(s) — now ${frames.length}/${frameCount}`);
+      } else {
+        logLine(`phase 2 top-up returned nothing — keeping ${frames.length} frame(s)`);
+      }
+    } catch (e) { logLine(`phase 2 top-up failed: ${e.message} — keeping ${frames.length} frame(s)`); }
+  } else if (frames.length < frameCount) {
+    logLine(`phase 2 returned ${frames.length}/${frameCount} frames — no time/budget for a top-up re-ask`);
+  }
   await writeJson(FRAMES_JSON, frames);
   return { characters, frames };
 }
@@ -5158,26 +5201,38 @@ const requestHandler = async (req, res) => {
       if (IS_VERCEL) {
         const pipelineCost = Math.ceil(targetDuration * (CREDIT_COSTS.imagesPerSec + CREDIT_COSTS.videosPerSec));
         
-        // Poll mode: check persistent storage first, then ephemeral job state
+        // Poll mode: check persistent storage first, then ephemeral job state.
+        // A poll can land on ANY Vercel instance while the job runs on another, so
+        // the "running" state must live in storage too. Without this marker a poll
+        // on a foreign instance sees no saved result and no in-memory sbJobId and
+        // answers 404 — which the client treats as a fatal failure and kills a
+        // perfectly healthy run.
         if (body.pollStoryboard) {
-          // Check persistent storage (survives refresh + cross-instance)
           const saved = await loadStoryboardJob(req.user.id);
           if (saved) {
-            // Job completed or failed earlier
+            // A pending marker means the job is still running (on some instance).
+            if (saved.pending) {
+              const age = Date.now() - (Number(saved.startedAt) || 0);
+              if (age < STORYBOARD_JOB_TIMEOUT_MS) {
+                return sendJson(res, 202, { pending: true, jobId: saved.jobId || null, elapsed: Math.round(age / 1000) });
+              }
+              // Ran past the timeout — the worker died (frozen invocation, killed
+              // function). Clear the marker so the UI stops polling a corpse.
+              await clearStoryboardJob(req.user.id);
+              return sendJson(res, 500, { error: `storyboard job timed out after ${Math.round(STORYBOARD_JOB_TIMEOUT_MS / 60000)}m` });
+            }
+            // Completed or failed earlier — consume it.
             await clearStoryboardJob(req.user.id);
             if (saved.ok === false) {
-              // Failed job: return error and clear busy state
               return sendJson(res, 500, { error: saved.error || 'Storyboard generation failed' });
             }
             return sendJson(res, 200, saved);
           }
-          // Check ephemeral state (same-instance only)
+          // No storage marker. Fall back to same-instance ephemeral state.
           if (job.sbJobId) {
             if (job.phase === 'storyboard') {
-              // Still running
               return sendJson(res, 202, { pending: true, jobId: job.sbJobId });
             } else if (job.sbResult) {
-              // Done in this instance, return and clear
               const result = job.sbResult;
               job.sbJobId = null;
               job.sbResult = null;
@@ -5186,7 +5241,9 @@ const requestHandler = async (req, res) => {
               return sendJson(res, 200, result);
             }
           }
-          // No job found
+          // Nothing in storage and nothing here. If this is the FIRST poll (the
+          // client probes before submitting) there is genuinely no job, so 404 is
+          // correct — the client uses that to start a new run.
           return sendJson(res, 404, { error: 'No storyboard job found' });
         }
         
@@ -5197,12 +5254,17 @@ const requestHandler = async (req, res) => {
         const userId = req.user.id;
         job.sbJobId = jobId;
         job.sbResult = null;
+        // Write the "running" marker BEFORE returning 202. The background work runs
+        // on whichever instance served this request, but every poll may hit a
+        // different one — the marker is what tells those instances a job is in
+        // flight instead of 404ing and killing the run.
+        await saveStoryboardJob(userId, { pending: true, jobId, startedAt: Date.now(), phase: 'storyboard' });
+        setPhase('storyboard', 1);
+        logLine(`auto pipeline (vercel async): storyboard — ${body.model || MODELS[0]} — target ${targetDuration}s — ${secPerFrame}s per clip — job ${jobId}`);
         
         // Run storyboard generation in background
         (async () => {
           try {
-            setPhase('storyboard', 1);
-            logLine(`auto pipeline (vercel async): storyboard — ${body.model || MODELS[0]} — target ${targetDuration}s — ${secPerFrame}s per clip — job ${jobId}`);
             const sb = await generateStoryboard(script, body.model || MODELS[0], targetDuration, body.look || '', language, secPerFrame, body.style);
             const characters = sb.characters, frames = sb.frames;
             logLine(`auto pipeline: storyboard ready — ${characters.length} characters, ${frames.length} frames — job ${jobId}`);

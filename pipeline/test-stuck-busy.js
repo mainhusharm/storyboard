@@ -11,9 +11,15 @@ console.log('reapStaleJob present:', /function reapStaleJob\(/.test(src));
 check('reapStaleJob is defined', /function reapStaleJob\(/.test(src));
 check('stale threshold is 2 minutes', /JOB_STALE_MS = 2 \* 60 \* 1000/.test(src));
 
-const guards = src.split("if (job.phase !== 'idle') return sendJson(res, 409, { error: 'busy' });").length - 1;
-const reaped = src.split("reapStaleJob();\n      if (job.phase !== 'idle') return sendJson(res, 409").length - 1;
-check('every storyboard busy guard reaps first (' + guards + ' guards, ' + reaped + ' patched)', guards === reaped && guards > 0);
+const GUARD = "if (job.phase !== 'idle') return sendJson(res, 409, { error: 'busy' });";
+let guardCount = 0, guardReaped = 0, idx = src.indexOf(GUARD);
+while (idx !== -1) {
+  guardCount++;
+  // Look at the 200 chars immediately BEFORE this guard for a reap call.
+  if (/reapStaleJob\([^)]*\);\s*$/.test(src.slice(Math.max(0, idx - 200), idx))) guardReaped++;
+  idx = src.indexOf(GUARD, idx + GUARD.length);
+}
+check('every storyboard busy guard reaps first (' + guardCount + ' guards, ' + guardReaped + ' preceded by reap)', guardCount === guardReaped && guardCount > 0);
 check('/api/status reaps', /p === '\/api\/status'\) \{ reapStaleJob\(\);/.test(src));
 
 // Behavioural check against the real implementation, isolated from the server.

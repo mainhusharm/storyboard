@@ -744,21 +744,36 @@ async function runAutoVercel(script){
         await refresh({characters:CHARS,frames:FRAMES});
       }
     }else if(sbSubmit.pending&&sbSubmit.jobId){
-      // Async path (Vercel) — poll for completion
+      // Async path (Vercel) — poll for completion. Each poll may land on a
+      // DIFFERENT instance than the one running the job, so a transient network
+      // error or a 5xx must NOT be treated as fatal: the job is still alive
+      // server-side. Only a real error payload (or the timeout) ends the wait.
       const pollInterval=15000,maxPolls=180; // 15s × 180 = 45min cap
+      let consecutiveErrors=0;
       for(let i=0;i<maxPolls;i++){
         await new Promise(r=>setTimeout(r,pollInterval));
-        const poll=await api('/run-all',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pollStoryboard:true})});
-        if(poll.ok&&poll.frames){
+        let poll=null;
+        try{
+          poll=await api('/run-all',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pollStoryboard:true})});
+        }catch(e){
+          // Transient (network/5xx) — keep waiting, the job is not necessarily dead.
+          consecutiveErrors++;
+          logLocal(`poll error (${consecutiveErrors}): ${e.message} — retrying…`,'err');
+          if(consecutiveErrors>=6)throw new Error('storyboard polling failed repeatedly: '+e.message);
+          continue;
+        }
+        if(poll&&poll.ok&&poll.frames){
           CHARS=poll.characters||[];FRAMES=poll.frames||[];OFFLINE_BOARD=true;
           try{localStorage.setItem('sb_chars',JSON.stringify(CHARS));localStorage.setItem('sb_frames',JSON.stringify(FRAMES))}catch(e){}
           logLocal(`storyboard ready: ${CHARS.length} characters, ${FRAMES.length} frames`,'ok');
           await refresh({characters:CHARS,frames:FRAMES});
           break;
-        }else if(poll.pending){
+        }else if(poll&&poll.pending){
+          consecutiveErrors=0;
           logLocal(`storyboard: ${Math.round((i+1)*pollInterval/1000)}s elapsed…`);
         }else{
-          throw new Error(poll.error||'storyboard job failed');
+          // An explicit error payload from the server (failed / timed out) is real.
+          throw new Error((poll&&poll.error)||'storyboard job failed');
         }
       }
       if(!FRAMES.length)throw new Error('storyboard poll timeout');
