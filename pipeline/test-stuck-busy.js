@@ -9,7 +9,7 @@ const check = (name, cond) => { if (cond) { console.log('  PASS', name); pass++;
 
 console.log('reapStaleJob present:', /function reapStaleJob\(\)/.test(src));
 check('reapStaleJob is defined', /function reapStaleJob\(\)/.test(src));
-check('stale threshold is 12 minutes', /JOB_STALE_MS = 12 \* 60 \* 1000/.test(src));
+check('stale threshold is 2 minutes', /JOB_STALE_MS = 2 \* 60 \* 1000/.test(src));
 
 const guards = src.split("if (job.phase !== 'idle') return sendJson(res, 409, { error: 'busy' });").length - 1;
 const reaped = src.split("reapStaleJob();\n      if (job.phase !== 'idle') return sendJson(res, 409").length - 1;
@@ -17,7 +17,7 @@ check('every storyboard busy guard reaps first (' + guards + ' guards, ' + reape
 check('/api/status reaps', /p === '\/api\/status'\) \{ reapStaleJob\(\);/.test(src));
 
 // Behavioural check against the real implementation, isolated from the server.
-const JOB_STALE_MS = 12 * 60 * 1000;
+const JOB_STALE_MS = 2 * 60 * 1000;
 function makeJob() { return { phase: 'idle', startedAt: null, sbJobId: null, sbResult: null, log: [] }; }
 function reap(job) {
   if (job.phase === 'idle') return false;

@@ -1489,7 +1489,9 @@ function setPhase(phase, total = 0) {
 // /api/run-all then 409s and /api/cancel cannot clear it (cancel only sets the
 // flag, which a dead job never reads). Reap such a job on the next status check
 // so a fresh run is never blocked by the corpse of an earlier one.
-const JOB_STALE_MS = 12 * 60 * 1000;
+// 2min threshold: a real storyboard completes in 60-90s on Vercel, so anything
+// past 2min is frozen/dead from a cross-instance routing split.
+const JOB_STALE_MS = 2 * 60 * 1000;
 function reapStaleJob() {
   if (job.phase === 'idle') return false;
   if (!job.startedAt) { job.phase = 'idle'; return true; }
