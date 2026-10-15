@@ -66,5 +66,26 @@ check('10 min target + 6s clips → 100 frames', storyboardFrameCount(600, 6) ==
 check('defaults still apply for bad input', storyboardFrameCount(0, 0) === 20, 'got ' + storyboardFrameCount(0, 0));
 check('UI explains the shot math', /Shots = target duration ÷ clip duration/.test(client));
 
+console.log('\n[5] wan renders never hit the 280s request timeout (two-phase /videos)');
+// A wan clip renders 4-30 min — longer than any serverless request. The old sync
+// path burned the whole budget and the client's "timed out (n/12) — retrying…"
+// loop re-submitted a NEW paid render every retry, so long clips could never land.
+check('novitaPollOnce helper exists', /async function novitaPollOnce\(marker\)/.test(src));
+check('poll answers immediately (no blocking wait)', !/novitaPollOnce[\s\S]{0,400}while \(Date\.now\(\) < deadline\)/.test(src));
+check('transient poll errors report PENDING, not failure', /client will poll again`\); return \{ status: 'PENDING' \}/.test(src));
+check('/videos poll is never rejected as busy', /if \(!body\.pollTask && job\.phase !== 'idle'\) return sendJson\(res, 409, \{ error: 'busy' \}\);/.test(src));
+check('credit gate skipped while polling (charged on submit only)', /if \(!body\.pollTask && \!\(await requireCredits\(req, res, vidCost, 'generate videos'\)\)\) return;/.test(src));
+check('two-phase block only for novita models', /if \(isNovitaVideoModel\(vidModel\) && frames\[0\] && frames\[0\]\.animation_prompt\)/.test(src));
+check('submit answers pending+task immediately', /return sendJson\(res, 202, \{ ok: true, pending: true, task, frame: f\.frame, model: vidModel \}\)/.test(src));
+check('poll of a live task answers pending again', /return sendJson\(res, 202, \{ pending: true, task: body\.pollTask, status: st\.status \}\)/.test(src));
+check('completion still saves the chain anchor', /chain anchor saved → next scene starts from its last frame/.test(src));
+check('completion still hosts the clip for combine', /clipUrl = await uploadVideoClip\(videoFile\(f\.frame\)\)/.test(src));
+check('wan3.0 start frame passed via imageUrls', /\.\.\.\(useImg \? \{ imageUrls: \[anchor\] \} : \{\}\)/.test(src));
+check('client polls pending renders (45-min ceiling)', /while\(waited<2700000\)/.test(client));
+check('client polls every 15s', /setTimeout\(r,15000\)\);\s*\r?\n\s*waited\+=15000;/.test(client));
+check('client treats pending as keep-waiting, not failure', /if\(!j\|\|!j\.pending\)break;/.test(client));
+check('client cancel still stops the poll loop', /if\(USER_CANCELLED\)throw new Error\('cancelled'\);/.test(client));
+check('sync path kept for PaxSenix models', /PaxSenix models \(grok \/ omni-flash \/ veo\) render inside the 300s budget/.test(src));
+
 console.log('\n' + (failures ? failures + ' FAILED' : 'all passed'));
 process.exit(failures ? 1 : 0);

@@ -54,6 +54,17 @@ consistency**, generates frame images, animates them via Grok Video / Omni Flash
   budget was exhausted; the client then retries the frame once. `vercel.json` rewrites `/frames/*`
   and `/video/*` to `/api/_route?p=...` so rendered assets are reachable. Regression-test with
   `node pipeline/test-vercel-video.js` (self-hosts the handler in Vercel mode).
+- **Two-phase video render for Wan models (no more `/videos: timed out (n/12)`)**:
+  a wan clip renders 4-30 min — far past a serverless request — so on Vercel
+  `/api/videos` never awaits it for Novita models. It submits and answers
+  `202 {pending:true, task:"novita:task:<id>"}`; the client re-posts `{pollTask}`
+  every 15s (45-min ceiling per frame) and each poll is a fresh invocation
+  (`novitaPollOnce` answers immediately — no blocking wait). Polls skip the busy
+  guard AND the credit gate (charged on submit only — the old timeout-retry loop
+  re-submitted a NEW paid render every retry). Completion extracts + hosts the
+  chain anchor and the clip exactly like the synchronous path, so seamless
+  chaining and the clipUrls handoff to combine are unchanged. PaxSenix models
+  (grok/omni/veo) keep the synchronous per-frame path (they fit the budget).
 - **Combine never loses a frame's image** — when a frame has no local video AND no
   local image (typical on Vercel, where every invocation has its own `/tmp`, or after
   an archived run), `combineFilm` first re-downloads the frame's OWN stored

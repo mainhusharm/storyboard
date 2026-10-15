@@ -891,6 +891,24 @@ async function runAutoVercel(script){
         const body=sbPayload({frames:[f.frame],ratio:opts.ratio,videoModel:opts.videoModel,chainContinuity:opts.chainContinuity});
         if(prevChain)body.chainAnchor=prevChain;
         j=await callPhase('/videos',body);
+        // Wan (Novita) renders run 4-30 minutes — far longer than any single
+        // serverless request — so the server submits the job and hands back
+        // {pending, task} instead of waiting. Poll THAT task with fresh requests
+        // (same two-phase flow Make Video uses): "pending" means keep waiting,
+        // never a failure. Without this the request timed out at ~280s and every
+        // retry re-submitted a NEW paid render.
+        if(j&&j.pending&&j.task){
+          const pollBody=sbPayload({frames:[f.frame],ratio:opts.ratio,videoModel:opts.videoModel,chainContinuity:opts.chainContinuity,pollTask:j.task});
+          let waited=0;
+          while(waited<2700000){            // 45-min ceiling for one scene (wan3.0 30s clips can be slow)
+            logLocal(`frame ${f.frame}: rendering in the cloud (${Math.round(waited/1000)}s elapsed — wan clips take 4-30 min, no timeout here)…`);
+            await new Promise(r=>setTimeout(r,15000));
+            waited+=15000;
+            if(USER_CANCELLED)throw new Error('cancelled');
+            j=await callPhase('/videos',pollBody,{attempts:4});
+            if(!j||!j.pending)break;       // settled (done or hard failure)
+          }
+        }
       }catch(e){j={error:e.message}}
       if(j&&j.error)logLocal(`frame ${f.frame}: ${j.error}`,'err');
       else if(j&&j.frame){

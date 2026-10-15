@@ -1914,6 +1914,22 @@ async function novitaWait(marker, maxMin = 25, logFn = logLine, outInfo = null) 
   return null;
 }
 
+// Single status check for the two-phase poll loop. The client re-polls every 15s
+// with a FRESH invocation, so the server must answer immediately instead of
+// blocking like novitaWait does. Transient network errors report PENDING — the
+// client simply polls again; a genuinely dead task surfaces a FAIL status.
+async function novitaPollOnce(marker) {
+  const taskId = String(marker).slice(NOVITA_TASK_PREFIX.length);
+  try {
+    const res = await novitaFetch('/v1/status/' + encodeURIComponent(taskId), {}, 60000);
+    const j = await res.json().catch(() => ({}));
+    const status = String(j.status || 'PENDING').toUpperCase();
+    if (status === 'SUCCEEDED' || status === 'SUCCESS' || status === 'DONE') return { status, url: novitaResultUrl(j) };
+    if (/FAIL|ERROR|CANCEL/.test(status)) return { status, failed: true, payload: j };
+    return { status };
+  } catch (e) { logLine(`novita poll network error (${e.message}) — client will poll again`); return { status: 'PENDING' }; }
+}
+
 async function submitTask(pathAndQuery, logFn = logLine) {
   // Dead model guard: PaxSenix removed the base `nano-banana` model (400s every
   // time). Rewrite any `model=nano-banana` param to the live `nano-banana-pro`
@@ -5548,8 +5564,11 @@ const requestHandler = async (req, res) => {
 
     if (p === '/api/videos' && req.method === 'POST') {
       reapStaleJob();
-      if (job.phase !== 'idle') return sendJson(res, 409, { error: 'busy' });
       const body = await readBody(req).catch(() => ({}));
+      // POLL requests must NEVER be rejected as busy: on Vercel each poll is a
+      // fresh invocation finishing a Novita task submitted earlier (two-phase
+      // render below), and the submit-time busy guard would kill healthy renders.
+      if (!body.pollTask && job.phase !== 'idle') return sendJson(res, 409, { error: 'busy' });
       let { frames } = await storyDataFrom(body);
       if (!frames.length) return sendJson(res, 400, { error: 'no frames' });
       // Optional per-frame scope — on Vercel the client renders ONE frame per request
@@ -5565,14 +5584,88 @@ const requestHandler = async (req, res) => {
       // the client tracks the anchor across calls and passes it along explicitly.
       if (body.chainAnchor && isPartial) { for (const f of frames) f._chainAnchor = String(body.chainAnchor); }
       if (body.force) { for (const f of frames) { if (f.animation_prompt) { try { fs.unlinkSync(videoFile(f.frame)); } catch {} } } }
-      // Credit gate: 1 credit per second of generated motion (videosPerSec).
+      // Credit gate on the SUBMIT only — polling an already-charged task must
+      // never charge twice (mirrors the Flashloop two-phase route).
       const vidCost = Math.max(1, Math.round(frames.reduce((s, f) => s + (f.duration_sec || 6), 0) * CREDIT_COSTS.videosPerSec));
-      if (!(await requireCredits(req, res, vidCost, 'generate videos'))) return;
+      if (!body.pollTask && !(await requireCredits(req, res, vidCost, 'generate videos'))) return;
       if (IS_VERCEL) {
-        // On Vercel the client renders ONE frame per request (each request fits the
-        // 300s function budget). Return the rendered frame (incl. chain_image_url for
-        // seamless chaining) so the client can anchor the next frame across separate
-        // serverless invocations — /tmp never survives reliably between calls.
+        const vidModel = body.videoModel || DEFAULT_VIDEO_MODEL;
+        // ---- SERVERLESS-SAFE two-phase flow for Novita (wan) models ----
+        // A wan clip renders 4-30 minutes — far past the 300s function budget — so
+        // it is NEVER awaited inside one request (mirrors /api/flashloop/generate-video):
+        //   1. submit → 202 {pending:true, task} immediately (Novita keeps rendering)
+        //   2. {pollTask} → poll that task, download, host the clip + chain anchor,
+        //      answer exactly like the synchronous route
+        // The old sync path burned the whole request and the client saw
+        // "/videos: timed out (n/12) — retrying…" — which resubmitted a NEW paid
+        // render every retry and could never finish a long clip.
+        if (isNovitaVideoModel(vidModel) && frames[0] && frames[0].animation_prompt) {
+          const f = frames[0];
+          const mRatio = normalizeVideoRatio(body.ratio || '16:9', vidModel);
+          const dur = novitaDurationFor(vidModel, f.duration_sec);
+          return (async () => {
+            try {
+              fs.mkdirSync(VIDEO_DIR, { recursive: true });
+              fs.mkdirSync(FRAMES_DIR, { recursive: true });
+              // ---- phase 2: finish a task submitted earlier ----
+              if (body.pollTask) {
+                const st = await novitaPollOnce(body.pollTask);
+                if (st.failed) return sendJson(res, 500, { error: `${vidModel} render failed (${st.status})` });
+                if (!st.url) return sendJson(res, 202, { pending: true, task: body.pollTask, status: st.status });
+                if (!(await download(st.url, videoFile(f.frame)))) return sendJson(res, 500, { error: 'clip download failed' });
+              } else {
+                // ---- phase 1: submit and hand the task back for polling ----
+                if (!NOVITA_API_KEY) {
+                  return sendJson(res, 500, { error: 'Novita API key is not set on this deployment — add NOVITA_API_KEY (and NOVITA_BASE_URL) to the Vercel environment variables and redeploy' });
+                }
+                // Text-only wan models take no start frame — note it and continue
+                // via prompt (same behaviour as the synchronous render path).
+                if (!novitaAcceptsImage(vidModel) && f._chainAnchor) {
+                  logLine(`frame ${f.frame}: ${vidModel} is text-only — image anchor/chaining not applicable, continuing via prompt`);
+                }
+                // Anchor = client-tracked chain anchor (previous scene's last frame)
+                // or the frame's own image; wan3.0 accepts a top-level imageUrls start.
+                let anchor = f._chainAnchor || null;
+                if (!anchor && novitaAcceptsImage(vidModel)) anchor = await resolveVideoImage(f, vidModel);
+                const useImg = novitaAcceptsImage(vidModel) && !!anchor;
+                const task = await novitaSubmit({
+                  model: vidModel,
+                  input: { prompt: f.animation_prompt || f.summary || 'cinematic story scene, dramatic lighting' },
+                  parameters: { duration: dur, resolution: '720P', ratio: mRatio },
+                  ...(useImg ? { imageUrls: [anchor] } : {})
+                }, logLine);
+                if (!task) return sendJson(res, 502, { error: `${vidModel} submit failed` });
+                logLine(`frame ${f.frame}: ${vidModel} submitted (${dur}s, ${useImg ? 'image-to-video' : 'text-to-video'}) — returning task for polling`);
+                return sendJson(res, 202, { ok: true, pending: true, task, frame: f.frame, model: vidModel });
+              }
+              // ---- shared finish: chain anchor + hosted clip + frame payload ----
+              // (identical to the synchronous path so seamless chaining and the
+              // clipUrls handoff to combine work unchanged)
+              if (body.chainContinuity === true) {
+                try {
+                  const png = chainRefFile(f.frame);
+                  await extractLastFrame(videoFile(f.frame), png);
+                  const cUrl = await uploadVideoImage(png, vidModel, logLine);
+                  if (cUrl) {
+                    f.chain_image_url = cUrl;
+                    await persistChainImage(f);
+                    logLine(`frame ${f.frame}: chain anchor saved → next scene starts from its last frame`);
+                  }
+                } catch (e) { logLine(`frame ${f.frame}: chain anchor extract/upload failed: ${e.message}`); }
+              }
+              let clipUrl = '';
+              try {
+                clipUrl = await uploadVideoClip(videoFile(f.frame));
+                f.clip_url = clipUrl;
+              } catch (e) { logLine(`frame ${f.frame}: clip upload failed: ${e.message} — combine may miss it`); }
+              logLine(`frame ${f.frame}: VIDEO DONE (${vidModel})`);
+              f.video_path = '/video/' + path.basename(videoFile(f.frame));
+              return sendJson(res, 200, { ok: true, frame: f, clipUrl });
+            } catch (e) { return sendJson(res, 500, { error: String(e.message || e) }); }
+          })();
+        }
+        // PaxSenix models (grok / omni-flash / veo) render inside the 300s budget
+        // and keep the synchronous per-frame path.
         return (async () => {
           try {
             await generateVideos(frames, body.ratio || '16:9', body.videoModel || DEFAULT_VIDEO_MODEL, body.chainContinuity === true, { skipPurge: isPartial });
@@ -7880,7 +7973,7 @@ module.exports.__internal = {
   // Logfare async-job models (wan3.0 video + qwen/wanx image).
   NOVITA_VIDEO_MODELS, NOVITA_IMAGE_MODELS, NOVITA_TASK_PREFIX,
   isNovitaVideoModel, isNovitaI2VModel, isNovitaImageModel, novitaAcceptsImage,
-  novitaDurationFor, novitaImageSize, novitaSubmit, novitaWait, novitaResultUrl,
+  novitaDurationFor, novitaImageSize, novitaSubmit, novitaWait, novitaResultUrl, novitaPollOnce,
   uploadVideoClip,
   // LLM routing (chatCompletion honours "logfare:<model>" ids).
   chatCompletion, chatWithLogfareFallback, logfareStatus,
