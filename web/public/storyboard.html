@@ -219,6 +219,7 @@ The Director AI will:
         <option value="600">10 minutes (100 shots)</option>
       </select>
       <label class="f">Clip duration (per shot)</label>
+      <div style="font-size:10.5px;color:var(--dim);margin:-4px 0 6px;line-height:1.5">Shots = target duration ÷ clip duration — e.g. 1 minute target with 30s Wan 3.0 clips = <b>2 shots</b> (2 rendered videos)</div>
       <select id="clipDuration">
         <option value="6" selected>6 seconds — Grok Video default</option>
         <option value="8">8 seconds — Omni Flash / Veo 3.1 (fixed 8s clips)</option>
@@ -905,7 +906,7 @@ async function runAutoVercel(script){
 
     // ---- Phase 6: combine ----
     logLocal('phase 6/6: combining final film…','');
-    const cb=await callPhase('/combine',sbPayload({ratio:opts.ratio,narrationMode:opts.narrationMode,narrVolume:opts.narrVolume,origVolume:opts.origVolume,clipUrls}));
+    const cb=await callPhase('/combine',sbPayload({ratio:opts.ratio,narrationMode:opts.narrationMode,narrVolume:opts.narrVolume,origVolume:opts.origVolume,clipUrls,imageModel:opts.imageModel}));
     if(cb&&cb.error)logLocal('combine: '+cb.error,'err');
     else {
       if(cb&&cb.finalUrl){
@@ -975,7 +976,7 @@ async function runVideosVercel(){
   finally{SUBMITTING=false;LOCAL_BUSY=false;poll();}
 }
 $('btnNarration').onclick=async()=>{await postJob('/narration',sbPayload({voice:$('voice').value,language:$('language').value,narrationEngine:$('narrationEngine').value,narrVolume:Number($('narrVolume').value),origVolume:Number($('origVolume').value),force:true}))};
-$('btnCombine').onclick=async()=>{await postJob('/combine',sbPayload({ratio:$('ratio').value,narrationMode:$('narrationMode').value,narrVolume:Number($('narrVolume').value),origVolume:Number($('origVolume').value)}))};
+$('btnCombine').onclick=async()=>{await postJob('/combine',sbPayload({ratio:$('ratio').value,narrationMode:$('narrationMode').value,narrVolume:Number($('narrVolume').value),origVolume:Number($('origVolume').value),imageModel:$('imageModel').value}))};
 async function regenFrame(n){await api('/images',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sbPayload({frames:[n],imageModel:$('imageModel').value,ratio:$('ratio').value,style:$('style').value,consistency:$('consistency').checked}))})}
 async function regenChar(id){const r=await api('/char-refs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sbPayload({force:[id]}))});if(r.characters){CHARS=r.characters;try{localStorage.setItem('sb_chars',JSON.stringify(CHARS))}catch(e){}}}
 

@@ -54,6 +54,16 @@ consistency**, generates frame images, animates them via Grok Video / Omni Flash
   budget was exhausted; the client then retries the frame once. `vercel.json` rewrites `/frames/*`
   and `/video/*` to `/api/_route?p=...` so rendered assets are reachable. Regression-test with
   `node pipeline/test-vercel-video.js` (self-hosts the handler in Vercel mode).
+- **Combine never loses a frame's image** — when a frame has no local video AND no
+  local image (typical on Vercel, where every invocation has its own `/tmp`, or after
+  an archived run), `combineFilm` first re-downloads the frame's OWN stored
+  `generated_image_url` (the real rendered still — zero credits) and only if that
+  fails generates an emergency still through an IMAGE MODEL CHAIN
+  (`emergencyImageChain(opts.imageModel)`): the user's selected image model → Logfare
+  `flux-2-klein-9b` (independent quota — keeps working on a day when PaxSenix answers
+  `image_quota_exceeded`) → `nano-banana-pro`. The old code hardcoded PaxSenix
+  nano-banana, so a quota-blocked day turned every un-locatable frame into a skipped
+  blank. The client sends `imageModel` with `/api/combine` and the run-all combine step.
 - **🚀 Create Full Film — auto** — one-click button that runs the entire pipeline:
   clean → storyboard → character refs → images → narration → videos → final combine
 - **Per-frame re-render** — individual frame re-render buttons still work with consistency
@@ -327,6 +337,12 @@ so the new storyboard never gets stuck behind skipped existing files. The **Imag
 
 Storyboard generation: streaming chat with 3 retries + JSON repair for robustness.
 Default model: `gemini-2.5-pro` (reliable). `gpt-5.5` available but may timeout on PaxSenix.
+
+Storyboard frame count is `storyboardFrameCount(target, clipDuration)` = exactly
+target ÷ clip duration with a minimum of 1 (1-minute target + 30s Wan 3.0 clips →
+**2** frames/renders). The old hard minimum of 3 silently overrode small picks — a
+60s/30s board rendered three 30s clips (a 1:30 film instead of the requested 1:00).
+Regression test: `node pipeline/test-fullfilm-fixes.js` (offline).
 
 ### CLI pipeline (alternative)
 

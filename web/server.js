@@ -2839,8 +2839,18 @@ async function parseOrSalvage(content, label) {
   }
 }
 
+// Storyboard frame count = EXACTLY what the user's Target duration ÷ Clip duration
+// asks for (1 min target with 30s Wan 3.0 clips → 2 frames → 2 rendered videos).
+// The old hard minimum of 3 silently overrode small selections: a 60s/30s board
+// rendered THREE 30-second clips — a 1:30 film instead of the requested 1:00.
+function storyboardFrameCount(targetDuration, secPerFrame) {
+  const total = Number(targetDuration) || 120;
+  const per = Number(secPerFrame) || 6;
+  return Math.max(1, Math.ceil(total / per));
+}
+
 async function generateStoryboard(script, model, targetDuration = 120, look = '', language = DEFAULT_LANGUAGE, secPerFrame = 6, style = 'cinematic') {
-  const frameCount = Math.max(3, Math.ceil(targetDuration / secPerFrame));
+  const frameCount = storyboardFrameCount(targetDuration, secPerFrame);
   // Model chain — the selected model first, then reliable fallbacks. A single
   // model returning malformed JSON used to kill the whole storyboard phase
   // ("no valid characters JSON, next" → nothing next → "all models failed").
@@ -4081,6 +4091,18 @@ function stillImageToVideo(imagePath, targetSec, outputPath) {
   });
 }
 
+// IMAGE MODEL CHAIN for the combine phase's emergency still. The user's selected
+// image model comes first; then a Logfare model (an INDEPENDENT quota — it keeps
+// working on a day when PaxSenix answers `image_quota_exceeded`); then the
+// PaxSenix default. submitTask() already routes Logfare/novita ids (finishing them
+// behind the `logfare-local:` marker), so every chain member goes through the same
+// submit → wait → download path.
+function emergencyImageChain(preferred) {
+  const chain = [preferred, 'flux-2-klein-9b', 'nano-banana-pro'].filter(Boolean);
+  return chain.filter((m, i) => chain.indexOf(m) === i &&
+    (IMAGE_MODELS.includes(m) || isLogfareImageModel(m) || isNovitaImageModel(m)));
+}
+
 // ================================ FINAL FILM CONCATENATION ================================
 
 async function combineFilm(frames, ratio = '16:9', narrationMode = 'tts', opts = {}) {
@@ -4147,21 +4169,37 @@ async function combineFilm(frames, ratio = '16:9', narrationMode = 'tts', opts =
       sourceVideo = vf;
     } else {
       let img = frameFile(f.frame);
-      // LAST-RESORT BLANK GUARD: the frame has neither video nor image (all render
-      // attempts failed). Instead of skipping the frame — a blank hole in the film —
-      // generate a simple on-model still from the frame summary and use that.
+      // LAST-RESORT BLANK GUARD: the frame has neither video nor image locally (all
+      // render attempts failed, OR the image was rendered on ANOTHER Vercel instance
+      // whose /tmp this invocation cannot see). Instead of skipping the frame — a
+      // blank hole in the film — restore it in two steps:
+      //   1) re-download the frame's OWN stored image URL (the real rendered still —
+      //      this alone fixes cold-instance combines and costs nothing);
+      //   2) only when that fails, generate an emergency still through the IMAGE
+      //      MODEL CHAIN (user's selected model → Logfare → PaxSenix). The old code
+      //      hardcoded PaxSenix nano-banana, which dies with "image_quota_exceeded"
+      //      while the user's selected Logfare model still renders fine.
       if (!fs.existsSync(img)) {
-        logLine(`frame ${f.frame}: no video AND no image — generating emergency fallback still`);
+        const stored = f.generated_image_url || f.chain_image_url;
+        if (stored && /^https?:\/\//i.test(stored)) {
+          logLine(`frame ${f.frame}: no local image — restoring from stored URL`);
+          try { await download(stored, img); } catch (e) { logLine(`frame ${f.frame}: stored image restore failed: ${e.message}`); }
+        }
+        if (!fs.existsSync(img)) logLine(`frame ${f.frame}: no video AND no image — generating emergency fallback still`);
+      }
+      if (!fs.existsSync(img)) {
         const essPrompt = `cinematic film still of ${f.summary || f.image_prompt?.slice(0, 200) || 'the scene'}${(f.characters_present || []).length ? `, featuring ${f.characters_present.join(' and ')}` : ''}, dramatic lighting, ${ratio}`;
-        try {
-          const fbModel = safeImageModel('nano-banana');
-          const q = `${imageEndpoint(fbModel)}?prompt=${encodeURIComponent(sanitizeImagePrompt(essPrompt))}&model=${encodeURIComponent(fbModel)}&ratio=${encodeURIComponent(ratio)}`;
-          const task = await submitTask(q);
-          if (task) {
-            const url = await waitTask(task, 10);
+        for (const chainModel of emergencyImageChain(opts.imageModel)) {
+          if (job.cancelRequested) break;
+          try {
+            const fbModel = safeImageModel(chainModel);
+            const q = `${imageEndpoint(fbModel)}?prompt=${encodeURIComponent(sanitizeImagePrompt(essPrompt))}&model=${encodeURIComponent(fbModel)}&ratio=${encodeURIComponent(ratio)}`;
+            const task = await submitTask(q);
+            const url = task ? await waitTask(task, 10) : null;
             if (url) await download(url, img);
-          }
-        } catch (e) { logLine(`frame ${f.frame}: emergency image failed: ${e.message}`); }
+            if (fs.existsSync(img)) { logLine(`frame ${f.frame}: emergency still generated via ${fbModel}`); break; }
+          } catch (e) { logLine(`frame ${f.frame}: emergency image via ${chainModel} failed: ${e.message}`); }
+        }
       }
       if (fs.existsSync(img)) {
         logLine(`frame ${f.frame}: no video${f.animation_prompt ? ' (all render attempts failed)' : ' (no animation prompt)'}, using still image`);
@@ -5438,7 +5476,7 @@ const requestHandler = async (req, res) => {
           logLine('prompt-vocalized mode: narration embedded in video prompts, no TTS');
         }
         steps.push(['videos', () => generateVideos(videoFrames, body.ratio || '16:9', body.videoModel || DEFAULT_VIDEO_MODEL, body.chainContinuity === true)]);
-        steps.push(['combine', () => combineFilm(frames, body.ratio || '16:9', narrationMode, { narrVol: body.narrVolume, origVol: body.origVolume, clipUrls: body.clipUrls })]);
+        steps.push(['combine', () => combineFilm(frames, body.ratio || '16:9', narrationMode, { narrVol: body.narrVolume, origVol: body.origVolume, clipUrls: body.clipUrls, imageModel: body.imageModel })]);
         // After combine: generate full narration TTS and overlay on final video
         if (narrationMode === 'tts') {
           const engine = body.narrationEngine || body.engine || DEFAULT_NARRATION_ENGINE;
@@ -5580,7 +5618,7 @@ if (p === '/api/combine' && req.method === 'POST') {
       let { frames } = await storyDataFrom(body);
       if (IS_VERCEL) return (async () => {
         try {
-          const fp = await combineFilm(frames, body.ratio || '16:9', body.narrationMode, { narrVol: body.narrVolume, origVol: body.origVolume, clipUrls: body.clipUrls });
+          const fp = await combineFilm(frames, body.ratio || '16:9', body.narrationMode, { narrVol: body.narrVolume, origVol: body.origVolume, clipUrls: body.clipUrls, imageModel: body.imageModel });
           job.phase = 'idle';
           // Publish the finished film and return its URL. The file lives only in
           // THIS instance's /tmp, so the browser's request for /video/final_story.mp4
@@ -5594,7 +5632,7 @@ if (p === '/api/combine' && req.method === 'POST') {
           return sendJson(res, 200, { ok: true, finalUrl });
         } catch (e) { job.phase = 'idle'; return sendJson(res, 500, { error: String(e.message || e) }); }
       })();
-      combineFilm(frames, body.ratio || '16:9', body.narrationMode, { narrVol: body.narrVolume, origVol: body.origVolume, clipUrls: body.clipUrls }).then(fp => { if (!fp) logLine('combine: no output'); }).catch(e => { logLine(`combine crash: ${e.message}`); job.phase = 'idle'; });
+      combineFilm(frames, body.ratio || '16:9', body.narrationMode, { narrVol: body.narrVolume, origVol: body.origVolume, clipUrls: body.clipUrls, imageModel: body.imageModel }).then(fp => { if (!fp) logLine('combine: no output'); }).catch(e => { logLine(`combine crash: ${e.message}`); job.phase = 'idle'; });
       return sendJson(res, 202, { started: true });
     }
 
@@ -7838,6 +7876,7 @@ module.exports = requestHandler;
 // Exposed for the pipeline/test-*.js regression tests.
 module.exports.__internal = {
   flashloopScenePlan,
+  storyboardFrameCount, emergencyImageChain,
   // Logfare async-job models (wan3.0 video + qwen/wanx image).
   NOVITA_VIDEO_MODELS, NOVITA_IMAGE_MODELS, NOVITA_TASK_PREFIX,
   isNovitaVideoModel, isNovitaI2VModel, isNovitaImageModel, novitaAcceptsImage,
