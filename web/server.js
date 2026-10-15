@@ -1930,10 +1930,17 @@ async function submitTask(pathAndQuery, logFn = logLine) {
       parameters: { size: novitaImageSize(qv('ratio', '16:9')) }
     }, logFn);
   }
-  for (let attempt = 1; attempt <= 4; attempt++) {
+  // Attempt budget. paxFetch defaults to a 120s timeout, so 4 attempts plus backoff
+// could burn ~9 minutes on ONE submission — far past Vercel's 300s function kill,
+// which left the request dead with no response and the UI frozen before any image
+// appeared. Keep a single attempt short and cap the count on Vercel so the whole
+// image phase stays inside the budget.
+const submitAttempts = IS_VERCEL ? 2 : 4;
+const submitTimeoutMs = IS_VERCEL ? 45000 : 120000;
+for (let attempt = 1; attempt <= submitAttempts; attempt++) {
     if (storyboardCancelRequested(logFn)) { logFn('submit cancelled by user'); return null; }
     try {
-      const res = await paxFetch(`${API}${pq}`);
+      const res = await paxFetch(`${API}${pq}`, {}, submitTimeoutMs);
       const j = await res.json().catch(() => ({}));
       if (res.ok && j.ok && j.task_url) return j.task_url;
       logFn(`submit attempt ${attempt}: HTTP ${res.status} ${JSON.stringify(j).slice(0, 200)}`);
@@ -2017,11 +2024,15 @@ async function submitImg2ImgTask(prompt, refUrls, imageModel = 'seedream-5', rat
     } else if (u) usableRefs.push(u);
   }
   const postBody = JSON.stringify({ prompt, model, ratio, image_urls: usableRefs });
-  for (let attempt = 1; attempt <= 3; attempt++) {
+  // Same budget reasoning as submitTask: 3 × 120s + backoff is ~7min, which
+  // Vercel kills at 300s with no response.
+  const i2iAttempts = IS_VERCEL ? 2 : 3;
+  const i2iTimeoutMs = IS_VERCEL ? 45000 : 120000;
+  for (let attempt = 1; attempt <= i2iAttempts; attempt++) {
     try {
       const res = await paxFetch(`${API}${endpoint}`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: postBody
-      }, 120000);
+      }, i2iTimeoutMs);
       const j = await res.json().catch(() => ({}));
       if (res.ok && j.ok && j.task_url) return j.task_url;
       logLine(`img2img ${model} attempt ${attempt}: HTTP ${res.status} ${JSON.stringify(j).slice(0, 120)}`);
@@ -3219,8 +3230,15 @@ async function generateImages(frames, imageModel, ratio, style, consistency = tr
   // inside each frame; frames themselves render in parallel).
   logLine(`rendering ${enhanced.length} frame images (prompt-repair ladder active)...`);
   const urlMap = new Map();
+  // Hard ceiling for the whole phase. Every rung below is individually budgeted,
+  // but a board of slow frames can still add up past Vercel's 300s kill, and a
+  // killed invocation returns NOTHING to the client. Stopping here guarantees a
+  // response listing the frames that did land, which /api/images reports as
+  // `failed` so the client can retry just those.
+  const phaseDeadline = Date.now() + (IS_VERCEL ? 240000 : Infinity);
   await Promise.all(enhanced.map(async ({ f, prompt }) => {
     if (job.cancelRequested) return;
+    if (Date.now() > phaseDeadline) { logLine(`frame ${f.frame}: image phase out of budget — skipping`); job.failed.push(f.frame); job.done++; return; }
     const ok = await renderFrameImage(f, prompt);
     if (!ok && !job.cancelRequested) { job.failed.push(f.frame); logLine(`frame ${f.frame}: IMAGE FAILED (all attempts)`); }
     job.done++;

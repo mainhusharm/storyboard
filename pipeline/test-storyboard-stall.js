@@ -64,5 +64,22 @@ check('client aborts a hung request', /AbortSignal\.timeout\(timeoutMs\)/.test(c
 check('client timeout sits under the 300s kill', /timeoutMs = opts\.timeoutMs \|\| 280000/.test(client));
 check('client reports a timeout distinctly', /timed out/.test(client));
 
+console.log('\n[6] no submission or render can outlive the function budget');
+// paxFetch defaults to a 120s timeout. submitTask retried 4x with backoff, so a
+// single hung submission burned ~9min and the invocation was killed at 300s with
+// no response — the UI froze before any image appeared.
+check('submitTask attempts capped on Vercel', /submitAttempts = IS_VERCEL \? 2 : 4/.test(src));
+check('submitTask timeout bounded on Vercel', /submitTimeoutMs = IS_VERCEL \? 45000 : 120000/.test(src));
+check('submitTask uses the bounded timeout', /paxFetch\(`\$\{API\}\$\{pq\}`, \{\}, submitTimeoutMs\)/.test(src));
+check('img2img attempts capped on Vercel', /i2iAttempts = IS_VERCEL \? 2 : 3/.test(src));
+check('img2img timeout bounded on Vercel', /i2iTimeoutMs = IS_VERCEL \? 45000 : 120000/.test(src));
+check('img2img uses the bounded timeout', /\}, i2iTimeoutMs\);/.test(src));
+check('image phase has a hard deadline', /phaseDeadline = Date\.now\(\) \+ \(IS_VERCEL \? 240000/.test(src));
+check('out-of-budget frames are reported, not hung', /image phase out of budget/.test(src));
+
+console.log('\n[7] no blocking "Pipeline failed" popup');
+check('auto pipeline catch does not alert', !/alert\('Pipeline failed/.test(client));
+check('auto pipeline catch logs guidance instead', /Force Clean, then run again/.test(client));
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);

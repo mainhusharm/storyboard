@@ -859,7 +859,7 @@ async function runAutoVercel(script){
     logLocal('phase 6/6: combining final film…','');
     const cb=await callPhase('/combine',sbPayload({ratio:opts.ratio,narrationMode:opts.narrationMode,narrVolume:opts.narrVolume,origVolume:opts.origVolume}));
     if(cb&&cb.error)logLocal('combine: '+cb.error,'err'); else logLocal('🎬 FINAL FILM READY','ok');
-  }catch(e){logLocal('pipeline failed: '+e.message,'err');alert('Pipeline failed: '+e.message)}
+  }catch(e){logLocal('pipeline failed: '+e.message,'err');logLocal('⚠ stopped — the console above has the details. Click 🔧 Force Clean, then run again.','err')}
   finally{SUBMITTING=false;LOCAL_BUSY=false;poll();refresh();refreshCredits()}
 }
 $('btnCharRefs').onclick=async()=>{const r=await postJob('/char-refs',sbPayload({imageModel:$('imageModel').value,style:$('style').value,force:true}));if(r&&r.characters){CHARS=r.characters;try{localStorage.setItem('sb_chars',JSON.stringify(CHARS))}catch(e){}}};
