@@ -1492,15 +1492,26 @@ function setPhase(phase, total = 0) {
 // 2min threshold: a real storyboard completes in 60-90s on Vercel, so anything
 // past 2min is frozen/dead from a cross-instance routing split.
 const JOB_STALE_MS = 2 * 60 * 1000;
-function reapStaleJob() {
+function reapStaleJob(force = false) {
   if (job.phase === 'idle') return false;
-  if (!job.startedAt) { job.phase = 'idle'; return true; }
-  if (Date.now() - job.startedAt < JOB_STALE_MS) return false;
-  logLine(`reaping stuck "${job.phase}" job (no progress for ${Math.round((Date.now() - job.startedAt) / 60000)}m) — marking idle`);
-  job.phase = 'idle';
-  job.sbJobId = null;
-  job.sbResult = null;
-  return true;
+  if (!job.startedAt) { job.phase = 'idle'; job.sbJobId = null; job.sbResult = null; return true; }
+  const age = Date.now() - job.startedAt;
+  // Force mode: user explicitly started a new run, so clear any non-idle state
+  // immediately instead of waiting for the time threshold (a stuck job from a
+  // cross-instance split blocks the UI instantly, so the user pressing "run"
+  // again is an explicit request to unstick).
+  if (force || age >= JOB_STALE_MS) {
+    if (force && age < JOB_STALE_MS) {
+      logLine(`force-clearing "${job.phase}" job (${Math.round(age / 1000)}s old) for new user-initiated run`);
+    } else {
+      logLine(`reaping stuck "${job.phase}" job (no progress for ${Math.round(age / 60000)}m) — marking idle`);
+    }
+    job.phase = 'idle';
+    job.sbJobId = null;
+    job.sbResult = null;
+    return true;
+  }
+  return false;
 }
 // Cancel coordination: POST /api/cancel sets job.cancelRequested; pipeline loops and
 // task polls check it and abort. Only the storyboard job is cancellable this way
@@ -5113,9 +5124,11 @@ const requestHandler = async (req, res) => {
     }
 
     if (p === '/api/run-all' && req.method === 'POST') {
-      reapStaleJob();
-      if (job.phase !== 'idle') return sendJson(res, 409, { error: 'busy' });
       const body = await readBody(req);
+      // Poll mode uses background reap; submit mode force-clears any stuck state
+      // since the user explicitly clicked "run" (a clear signal to unstick).
+      reapStaleJob(body.pollStoryboard !== true);
+      if (job.phase !== 'idle') return sendJson(res, 409, { error: 'busy' });
       const script = (body.script || '').trim();
       if (script.length < 10) return sendJson(res, 400, { error: 'script too short' });
       const targetDuration = Math.max(10, Math.min(600, Number(body.duration) || 120));

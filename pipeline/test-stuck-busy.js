@@ -7,8 +7,8 @@ const src = fs.readFileSync(path.join(__dirname, '..', 'web', 'server.js'), 'utf
 let pass = 0, fail = 0;
 const check = (name, cond) => { if (cond) { console.log('  PASS', name); pass++; } else { console.log('  FAIL', name); fail++; } };
 
-console.log('reapStaleJob present:', /function reapStaleJob\(\)/.test(src));
-check('reapStaleJob is defined', /function reapStaleJob\(\)/.test(src));
+console.log('reapStaleJob present:', /function reapStaleJob\(/.test(src));
+check('reapStaleJob is defined', /function reapStaleJob\(/.test(src));
 check('stale threshold is 2 minutes', /JOB_STALE_MS = 2 \* 60 \* 1000/.test(src));
 
 const guards = src.split("if (job.phase !== 'idle') return sendJson(res, 409, { error: 'busy' });").length - 1;
@@ -19,20 +19,25 @@ check('/api/status reaps', /p === '\/api\/status'\) \{ reapStaleJob\(\);/.test(s
 // Behavioural check against the real implementation, isolated from the server.
 const JOB_STALE_MS = 2 * 60 * 1000;
 function makeJob() { return { phase: 'idle', startedAt: null, sbJobId: null, sbResult: null, log: [] }; }
-function reap(job) {
+function reap(job, force = false) {
   if (job.phase === 'idle') return false;
-  if (!job.startedAt) { job.phase = 'idle'; return true; }
-  if (Date.now() - job.startedAt < JOB_STALE_MS) return false;
-  job.phase = 'idle'; job.sbJobId = null; job.sbResult = null; return true;
+  if (!job.startedAt) { job.phase = 'idle'; job.sbJobId = null; job.sbResult = null; return true; }
+  const age = Date.now() - job.startedAt;
+  if (force || age >= JOB_STALE_MS) {
+    job.phase = 'idle'; job.sbJobId = null; job.sbResult = null; return true;
+  }
+  return false;
 }
 const j1 = makeJob(); j1.phase = 'storyboard'; j1.startedAt = Date.now() - 20 * 60 * 1000; j1.sbJobId = 'sb_old';
 check('a 20-minute-old job is reaped to idle', reap(j1) === true && j1.phase === 'idle' && j1.sbJobId === null);
 const j2 = makeJob(); j2.phase = 'storyboard'; j2.startedAt = Date.now() - 60 * 1000;
-check('a 1-minute-old job is left running', reap(j2) === false && j2.phase === 'storyboard');
-const j3 = makeJob();
-check('an idle job is untouched', reap(j3) === false && j3.phase === 'idle');
-const j4 = makeJob(); j4.phase = 'storyboard'; j4.startedAt = null;
-check('a job with no start time is released', reap(j4) === true && j4.phase === 'idle');
+check('a 1-minute-old job is left running (background reap)', reap(j2, false) === false && j2.phase === 'storyboard');
+const j3 = makeJob(); j3.phase = 'storyboard'; j3.startedAt = Date.now() - 30 * 1000;
+check('a 30-second-old job is force-cleared (user clicked run)', reap(j3, true) === true && j3.phase === 'idle');
+const j4 = makeJob();
+check('an idle job is untouched', reap(j4) === false && j4.phase === 'idle');
+const j5 = makeJob(); j5.phase = 'storyboard'; j5.startedAt = null;
+check('a job with no start time is released', reap(j5) === true && j5.phase === 'idle');
 
 // cancel must clear the phase, not just set the cooperative flag.
 const cancelBlock = src.slice(src.indexOf("p === '/api/cancel'"), src.indexOf("p === '/api/characters'"));
