@@ -1473,42 +1473,49 @@ function applyStyle(prompt, styleKey) {
 }
 
 // ---------------- in-memory job state ----------------
-const job = { phase: 'idle', total: 0, done: 0, ok: 0, failed: [], log: [], startedAt: null, cancelRequested: false };
+const job = { phase: 'idle', total: 0, done: 0, ok: 0, failed: [], log: [], startedAt: null, lastProgressAt: null, cancelRequested: false };
 function logLine(msg) {
   job.log.push(`[${new Date().toLocaleTimeString()}] ${msg}`);
   if (job.log.length > 500) job.log.shift();
+  // Any log line means the worker is alive. Reaping is based on this, not on
+  // startedAt, so a long-but-healthy run is never mistaken for a frozen one.
+  job.lastProgressAt = Date.now();
 }
 function setPhase(phase, total = 0) {
   job.phase = phase; job.total = total; job.done = 0; job.ok = 0; job.failed = [];
-  job.startedAt = Date.now(); job.log = []; job.cancelRequested = false;
+  job.startedAt = Date.now(); job.lastProgressAt = Date.now(); job.log = []; job.cancelRequested = false;
 }
-// A job is considered stuck when it has been non-idle for longer than the client
-// is willing to poll. On Vercel a detached background promise can be frozen or
+// A job is considered stuck when it has produced NO LOG OUTPUT for longer than the
+// staleness window. On Vercel a detached background promise can be frozen or
 // killed when its invocation ends, so the lines that reset job.phase back to
 // 'idle' never run and the warm instance stays "busy" forever — every later
 // /api/run-all then 409s and /api/cancel cannot clear it (cancel only sets the
-// flag, which a dead job never reads). Reap such a job on the next status check
-// so a fresh run is never blocked by the corpse of an earlier one.
-// 2min threshold: a real storyboard completes in 60-90s on Vercel, so anything
-// past 2min is frozen/dead from a cross-instance routing split.
-const JOB_STALE_MS = 2 * 60 * 1000;
+// flag, which a dead job never reads).
+// This measures INACTIVITY, not total runtime: a storyboard that is genuinely
+// working between phases can legitimately run several minutes, and reaping on
+// startedAt killed a live job mid-phase ("no progress for 2m" while phase 2 was
+// still running). 3 minutes of complete silence is the real corpse signal.
+const JOB_STALE_MS = 3 * 60 * 1000;
 // Hard ceiling for a storyboard job, enforced by the poll endpoint against the
-// "pending" marker in storage. A real run finishes in ~2-3min; past 8min the
+// "pending" marker in storage. A real run finishes in ~2-4min; past 8min the
 // worker is gone for good, so the poll stops waiting on a corpse.
 const STORYBOARD_JOB_TIMEOUT_MS = 8 * 60 * 1000;
 function reapStaleJob(force = false) {
   if (job.phase === 'idle') return false;
   if (!job.startedAt) { job.phase = 'idle'; job.sbJobId = null; job.sbResult = null; return true; }
-  const age = Date.now() - job.startedAt;
+  // Age of the last actual progress, falling back to startedAt for jobs that
+  // predate this field.
+  const lastTick = job.lastProgressAt || job.startedAt;
+  const silentMs = Date.now() - lastTick;
   // Force mode: user explicitly started a new run, so clear any non-idle state
-  // immediately instead of waiting for the time threshold (a stuck job from a
+  // immediately instead of waiting for the silence window (a stuck job from a
   // cross-instance split blocks the UI instantly, so the user pressing "run"
   // again is an explicit request to unstick).
-  if (force || age >= JOB_STALE_MS) {
-    if (force && age < JOB_STALE_MS) {
-      logLine(`force-clearing "${job.phase}" job (${Math.round(age / 1000)}s old) for new user-initiated run`);
+  if (force || silentMs >= JOB_STALE_MS) {
+    if (force && silentMs < JOB_STALE_MS) {
+      logLine(`force-clearing "${job.phase}" job (silent ${Math.round(silentMs / 1000)}s) for new user-initiated run`);
     } else {
-      logLine(`reaping stuck "${job.phase}" job (no progress for ${Math.round(age / 60000)}m) — marking idle`);
+      logLine(`reaping stuck "${job.phase}" job (silent for ${Math.round(silentMs / 60000)}m) — marking idle`);
     }
     job.phase = 'idle';
     job.sbJobId = null;
@@ -2113,7 +2120,11 @@ async function chatCompletion(model, messages, maxTokens = 16384, temperature = 
   // effectively dead — shorter timeout means faster failover when a model is down,
   // so the 270s storyboard budget can fit 3+ model attempts instead of timing out
   // on the first 503.
-  const timer = setTimeout(() => ac.abort(), IS_VERCEL ? 75000 : 120000);
+  // A genuine slow model (claude-haiku-5-5 took ~130s on the frames phase once)
+  // was being aborted at 75s and lost its answer, so the phase fell through to the
+  // dead fallbacks. 150s leaves room for a real answer while still failing over
+  // fast on a hard 403/503 (those return in well under a second).
+  const timer = setTimeout(() => ac.abort(), IS_VERCEL ? 150000 : 180000);
   let raw = '';
   try {
     const res = await fetch(`${API}/v1/chat/completions`, {
@@ -2807,7 +2818,12 @@ async function generateStoryboard(script, model, targetDuration = 120, look = ''
   // Model chain — the selected model first, then reliable fallbacks. A single
   // model returning malformed JSON used to kill the whole storyboard phase
   // ("no valid characters JSON, next" → nothing next → "all models failed").
-  const modelsToTry = [model, 'gemini-2.5-pro', 'deepseek-v3.2'].filter((m, i, a) => m && a.indexOf(m) === i);
+  // The fallbacks must be models that actually WORK on this account: gemini-2.5-pro
+  // is paywalled on the free plan (model_requires_upgrade) and deepseek-v3.2
+  // returns prose instead of JSON, so the old chain had no usable member and any
+  // hiccup ended the run. These three were verified to return a parseable
+  // {"frames":[...]} object, and all are fast enough for the per-call budget.
+  const modelsToTry = [model, 'gemini-3.8-flash', 'deepseek-v4-flash', 'claude-haiku-5-5'].filter((m, i, a) => m && a.indexOf(m) === i);
   // Vercel deadline: the whole storyboard (2 phases × retries) must fit inside
   // the 300s function budget with margin. Once past the deadline, stop trying
   // new models and fail fast instead of letting Vercel kill the function
@@ -2819,8 +2835,11 @@ async function generateStoryboard(script, model, targetDuration = 120, look = ''
   // EXTENDED: 270s total budget (was 230s) + 80s per-call reserve (was 105s) —
   // aggressive failover on 503/timeout means a model that's down costs <20s instead
   // of burning 100s, so we can afford more total time and fit 3+ model attempts.
+  // Vercel kills a function at 300s, so the deadline sits just under it and the
+  // reserve must exceed the 150s per-call cap — otherwise the guard thinks there
+  // is room for another attempt while the call itself would be cut off.
   const sbDeadline = IS_VERCEL ? Date.now() + 270000 : Infinity;
-  const CALL_RESERVE_MS = 80000; // per-call cap (75s) + response margin
+  const CALL_RESERVE_MS = 155000; // per-call cap (150s) + response margin
   const outOfTime = () => Date.now() > sbDeadline;
   const timeForOneMoreCall = () => Date.now() + CALL_RESERVE_MS < sbDeadline;
   const lookBlock = look && look.trim()
