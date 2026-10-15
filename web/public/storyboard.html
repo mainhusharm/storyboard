@@ -393,7 +393,32 @@ let IS_VERCEL_CLIENT=false; // set from /api/health — Vercel renders videos on
 // Client-side log buffer: on Vercel the server's in-memory job log is per-instance
 // and can vanish between calls, so per-frame runs log locally instead.
 let LOCAL_LOG=[];
-function logLocal(msg,cls=''){LOCAL_LOG.push({t:new Date().toLocaleTimeString(),m:String(msg),c:cls});if(LOCAL_LOG.length>200)LOCAL_LOG.shift();const el=$('log');if(el){el.innerHTML=LOCAL_LOG.map(l=>`<span class="${l.c}"><span class="t">[${esc(l.t)}]</span> ${esc(l.m)}</span>`).join('\n');el.scrollTop=el.scrollHeight;}}
+let LOCAL_LAST_ACTIVITY = Date.now();
+function logLocal(msg,cls=''){LOCAL_LOG.push({t:new Date().toLocaleTimeString(),m:String(msg),c:cls});if(LOCAL_LOG.length>200)LOCAL_LOG.shift();LOCAL_LAST_ACTIVITY=Date.now();const el=$('log');if(el){el.innerHTML=LOCAL_LOG.map(l=>`<span class="${l.c}"><span class="t">[${esc(l.t)}]</span> ${esc(l.m)}</span>`).join('\n');el.scrollTop=el.scrollHeight;}}
+
+// A request with NO timeout can hang forever (Vercel cold start, a stalled
+// invocation). The pipeline awaits these inline, so one hung request left
+// LOCAL_BUSY true with no path back to idle — the UI stayed stuck until a page
+// refresh reset the in-memory flags. Every pipeline request now carries a timeout
+// so it always settles one way or another.
+const PIPELINE_TIMEOUT_MS = 285000;
+function withTimeout(opts = {}) {
+  return Object.assign({}, opts, { signal: opts.signal || AbortSignal.timeout(PIPELINE_TIMEOUT_MS) });
+}
+
+// Watchdog: regardless of which await failed to settle, if the client believes it
+// is running but nothing has logged for this long, the run is stranded. Clear the
+// flags so the buttons work again instead of forcing a refresh.
+const STUCK_CLIENT_MS = 15 * 60 * 1000;
+function clientWatchdog() {
+  if (!LOCAL_BUSY && !SUBMITTING) return;
+  if (Date.now() - LOCAL_LAST_ACTIVITY < STUCK_CLIENT_MS) return;
+  try { PHASE_ABORT && PHASE_ABORT.abort('watchdog'); } catch (e) {}
+  PHASE_ABORT = null;
+  LOCAL_BUSY = false; SUBMITTING = false;
+  logLocal('no progress for 15 minutes — released the stuck pipeline. Click Force Clean, then run again.', 'err');
+  poll();
+}
 
 async function api(p,opts){
   const r=await fetch('/api'+p,opts);
@@ -624,6 +649,7 @@ async function poll(){
   }
   if(!busy&&poll.wasBusy){poll.wasBusy=false;refresh()}
   if(busy)poll.wasBusy=true;
+  clientWatchdog();
 }
 
 // Cancel the currently running task. This ALSO aborts the browser's own in-flight
@@ -767,7 +793,7 @@ async function runAutoVercel(script){
     // Try to resume in-progress job on page load
     let sbSubmit;
     try{
-      const resume=await api('/run-all',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pollStoryboard:true})});
+      const resume=await api('/run-all',withTimeout({method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pollStoryboard:true})}));
       if(resume.ok&&resume.frames){
         // Completed job from earlier (survived refresh)
         CHARS=resume.characters||[];FRAMES=resume.frames||[];OFFLINE_BOARD=true;
@@ -780,11 +806,11 @@ async function runAutoVercel(script){
         sbSubmit={pending:true,jobId:resume.jobId};
       }else{
         // No job to resume, start new one
-        sbSubmit=await api('/run-all',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({script,model:$('chatModel').value,duration:Number($('duration').value),look:$('look').value,...opts})});
+        sbSubmit=await api('/run-all',withTimeout({method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({script,model:$('chatModel').value,duration:Number($('duration').value),look:$('look').value,...opts})}));
       }
     }catch(e){
       // Resume failed (404 or other error), start new job
-      sbSubmit=await api('/run-all',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({script,model:$('chatModel').value,duration:Number($('duration').value),look:$('look').value,...opts})});
+      sbSubmit=await api('/run-all',withTimeout({method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({script,model:$('chatModel').value,duration:Number($('duration').value),look:$('look').value,...opts})}));
     }
     
     if(sbSubmit.error)throw new Error(sbSubmit.error);
@@ -807,7 +833,7 @@ async function runAutoVercel(script){
         await new Promise(r=>setTimeout(r,pollInterval));
         let poll=null;
         try{
-          poll=await api('/run-all',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pollStoryboard:true})});
+          poll=await api('/run-all',withTimeout({method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pollStoryboard:true})}));
         }catch(e){
           // Transient (network/5xx) — keep waiting, the job is not necessarily dead.
           consecutiveErrors++;

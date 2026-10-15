@@ -121,5 +121,22 @@ check('cancelled job clears its marker', /discarding result[\s\S]{0,200}?clearSt
 // A new submit must clear a stale cancel or the first LLM call aborts instantly.
 check('submit clears a stale cancel flag', /job\.cancelRequested = false;\s*\n\s*job\.cancelling = false;\s*\n\s*setPhase\('storyboard', 1\);/.test(src));
 
+console.log('\n[11] a hung browser request can never strand the UI');
+// The storyboard poll used raw api() with no timeout. A request that never settled
+// left the await pending forever, so runAutoVercel never reached its finally and
+// LOCAL_BUSY stayed true — the UI was stuck until a page refresh reset the flags.
+check('pipeline requests carry a timeout helper', /function withTimeout\(opts = \{\}\)/.test(client));
+check('timeout sits under the 300s kill', /PIPELINE_TIMEOUT_MS = 285000/.test(client));
+check('resume probe is bounded', /const resume=await api\('\/run-all',withTimeout\(/.test(client));
+check('submit is bounded', /sbSubmit=await api\('\/run-all',withTimeout\(/.test(client));
+check('storyboard poll is bounded', /poll=await api\('\/run-all',withTimeout\(/.test(client));
+// Safety net: whatever await failed to settle, the flags get released.
+check('watchdog exists', /function clientWatchdog\(\)/.test(client));
+check('watchdog runs from poll', /clientWatchdog\(\);\s*\n\}/.test(client));
+check('watchdog releases busy flags', /LOCAL_BUSY = false; SUBMITTING = false;/.test(client));
+check('watchdog aborts the in-flight request', /PHASE_ABORT && PHASE_ABORT\.abort\('watchdog'\)/.test(client));
+check('watchdog threshold is 15 minutes', /STUCK_CLIENT_MS = 15 \* 60 \* 1000/.test(client));
+check('activity is stamped on every log line', /LOCAL_LAST_ACTIVITY=Date\.now\(\)/.test(client));
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);
