@@ -1194,7 +1194,7 @@ const aquaStatus = { key: !!AQUA_API_KEY, lastOkAt: 0, lastModel: '', lastError:
 // renders from this list; chatCompletion falls over to gemini-2.5-pro →
 // deepseek-v3.2 when a model 502s/empty-responds, so a "broken" model never kills
 // a storyboard.
-const MODELS = ['gemini-2.5-pro', 'gemini-3.1-pro', 'gemini-3.1-flash-lite', 'gpt-5.5', 'gpt-5', 'gpt-5.2', 'gpt-4.1', 'claude-opus-4-8', 'claude-sonnet-4-5', 'kimi-k3', 'kimi-k2.6', 'glm-5.2', 'glm-5.3', 'deepseek-v3.2', 'deepseek-v4-flash', 'mimo-v2.5', 'qwen3.8-max', 'qwen3.7-plus', 'grok-4.6', 'minimax-m3',
+const MODELS = ['gemini-2.5-pro', 'gemini-3.1-pro', 'gemini-3.1-flash-lite', 'gemini-3.8-flash', 'gpt-5.5', 'gpt-5', 'gpt-5.2', 'gpt-4.1', 'claude-opus-4-8', 'claude-sonnet-4-5', 'claude-haiku-5-5', 'kimi-k3', 'kimi-k2.6', 'glm-5.2', 'glm-5.3', 'deepseek-v3.2', 'deepseek-v4-flash', 'mimo-v2.5', 'qwen3.8-max', 'qwen3.7-plus', 'grok-4.6', 'minimax-m3',
   // Logfare prompt models — same "logfare:<model>" ids the SJinn / Flashloop
   // studio uses, so picking one routes through chatCompletion()'s Logfare path
   // (pinned model first, PaxSenix fallback) exactly as it does there.
@@ -1931,17 +1931,10 @@ async function submitTask(pathAndQuery, logFn = logLine) {
   return null;
 }
 
-// PaxSenix prompt enhancer — improves prompts before image/video generation
+// PaxSenix prompt enhancer — disabled because /ai-tools/prompt-enhancer requires
+// a paid plan. Prompts pass through unchanged.
 async function enhancePrompt(prompt) {
-  if (!prompt || prompt.length < 20) return prompt; // skip short prompts
-  try {
-    const res = await paxFetch(`${API}/ai-tools/prompt-enhancer?prompt=${encodeURIComponent(prompt)}`, {}, 60000);
-    const j = await res.json().catch(() => ({}));
-    if (j.ok && j.enhanced_prompt && j.enhanced_prompt.length > prompt.length) {
-      return j.enhanced_prompt;
-    }
-  } catch (e) { logLine(`prompt enhance failed: ${e.message}`); }
-  return prompt; // fallback to original
+  return prompt; // disabled: free plan blocks /ai-tools/prompt-enhancer
 }
 
 // The reference image bytes for img2img. A Logfare render is a LOCAL file (it is
