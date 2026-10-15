@@ -5295,6 +5295,11 @@ const requestHandler = async (req, res) => {
             };
             job.sbResult = result;
             job.phase = 'idle';
+            // Clear sbJobId on SUCCESS too. Leaving it set made the poll's
+            // ephemeral check keep reporting a running job on this instance after
+            // the result was already saved, so the next phase could still hit a
+            // busy guard on the instance that ran the job.
+            job.sbJobId = null;
             // Save to persistent storage so it survives refresh
             await saveStoryboardJob(userId, result);
           } catch (e) {

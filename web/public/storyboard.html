@@ -700,6 +700,34 @@ $('btnAuto').onclick=async()=>{
   })}).catch(e=>{alert('Error: '+e.message);return{error:e.message}});
   if(r.error)alert(r.error);
 };
+// A phase call can transiently answer 409 "busy" even though nothing is really
+// running: on Vercel each request may land on a different instance, and the one
+// that served the storyboard submit may still be finishing its background work
+// when the next phase arrives. That is a queueing delay, not a failure — so wait
+// it out instead of aborting the whole pipeline with a "Pipeline failed: busy".
+async function callPhase(path, body, opts = {}) {
+  const attempts = opts.attempts || 12;
+  for (let i = 0; i < attempts; i++) {
+    let r = null;
+    try {
+      r = await api(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    } catch (e) {
+      // A 401/402 is a real, actionable failure — surface it immediately.
+      if (/session expired|Free trial|credits/i.test(e.message)) throw e;
+      if (i === attempts - 1) throw e;
+      await new Promise(r => setTimeout(r, 3000));
+      continue;
+    }
+    if (r && r.error === 'busy') {
+      if (i === attempts - 1) throw new Error('busy (waited ' + attempts + ' tries)');
+      logLocal(`${path}: busy (${i + 1}/${attempts}) — waiting…`);
+      await new Promise(r => setTimeout(r, 3000));
+      continue;
+    }
+    return r;
+  }
+  return r;
+}
 // VERCEL AUTO PIPELINE — the whole pipeline must NOT run inside one serverless
 // invocation (300s kill → "stuck at storyboard ready"). Instead the client drives
 // each phase with separate requests, exactly like the manual buttons do:
@@ -784,7 +812,7 @@ async function runAutoVercel(script){
     // ---- Phase 2: character refs ----
     if(CHARS.length){
       logLocal('phase 2/6: character reference portraits…','');
-      const cr=await api('/char-refs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sbPayload({imageModel:opts.imageModel,style:opts.style,force:true}))});
+      const cr=await callPhase('/char-refs',sbPayload({imageModel:opts.imageModel,style:opts.style,force:true}));
       if(cr&&cr.characters){CHARS=cr.characters;try{localStorage.setItem('sb_chars',JSON.stringify(CHARS))}catch(e){}}
       if(cr&&cr.error)logLocal('char-refs: '+cr.error,'err'); else logLocal('char-refs done','ok');
     }
@@ -792,7 +820,7 @@ async function runAutoVercel(script){
     // ---- Phase 3: frame images ----
     logLocal(`phase 3/6: frame images (${FRAMES.length})…`,'');
     const frameNumbers=FRAMES.map(f=>f.frame);
-    const im=await api('/images',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sbPayload({frames:frameNumbers,imageModel:opts.imageModel,ratio:opts.ratio,style:opts.style,consistency:opts.consistency}))});
+    const im=await callPhase('/images',sbPayload({frames:frameNumbers,imageModel:opts.imageModel,ratio:opts.ratio,style:opts.style,consistency:opts.consistency}));
     if(im&&im.error)logLocal('images: '+im.error,'err'); else if(im&&im.failed&&im.failed.length)logLocal('images: '+im.failed.length+' failed — continuing','err'); else logLocal('images done','ok');
 
     // ---- Phase 4: videos (one frame per request) ----
@@ -806,7 +834,7 @@ async function runAutoVercel(script){
       try{
         const body=sbPayload({frames:[f.frame],ratio:opts.ratio,videoModel:opts.videoModel,chainContinuity:opts.chainContinuity});
         if(prevChain)body.chainAnchor=prevChain;
-        j=await api('/videos',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+        j=await callPhase('/videos',body);
       }catch(e){j={error:e.message}}
       if(j&&j.error)logLocal(`frame ${f.frame}: ${j.error}`,'err');
       else if(j&&j.frame){
@@ -820,13 +848,13 @@ async function runAutoVercel(script){
     // ---- Phase 5: narration ----
     if(opts.narrationMode==='tts'){
       logLocal('phase 5/6: narration TTS…','');
-      const nr=await api('/narration',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sbPayload({voice:opts.voice,language:opts.language,narrationEngine:opts.narrationEngine,narrVolume:opts.narrVolume,origVolume:opts.origVolume,force:true}))});
+      const nr=await callPhase('/narration',sbPayload({voice:opts.voice,language:opts.language,narrationEngine:opts.narrationEngine,narrVolume:opts.narrVolume,origVolume:opts.origVolume,force:true}));
       if(nr&&nr.error)logLocal('narration: '+nr.error,'err'); else logLocal('narration done','ok');
     }
 
     // ---- Phase 6: combine ----
     logLocal('phase 6/6: combining final film…','');
-    const cb=await api('/combine',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sbPayload({ratio:opts.ratio,narrationMode:opts.narrationMode,narrVolume:opts.narrVolume,origVolume:opts.origVolume}))});
+    const cb=await callPhase('/combine',sbPayload({ratio:opts.ratio,narrationMode:opts.narrationMode,narrVolume:opts.narrVolume,origVolume:opts.origVolume}));
     if(cb&&cb.error)logLocal('combine: '+cb.error,'err'); else logLocal('🎬 FINAL FILM READY','ok');
   }catch(e){logLocal('pipeline failed: '+e.message,'err');alert('Pipeline failed: '+e.message)}
   finally{SUBMITTING=false;LOCAL_BUSY=false;poll();refresh();refreshCredits()}

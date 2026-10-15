@@ -36,5 +36,22 @@ const pollLoop = client.slice(client.indexOf('const pollInterval=15000'), client
 check('client loops on pending', /poll\.pending/.test(pollLoop));
 check('client retries a transient poll error instead of throwing', /catch/.test(pollLoop));
 
+console.log('\n[4] transient "busy" on follow-up phases is waited out, not fatal');
+check('callPhase helper exists', /async function callPhase\(/.test(client));
+check('callPhase retries on error==="busy"', /r\.error === 'busy'/.test(client));
+check('callPhase waits between busy retries', /setTimeout\(r, 3000\)/.test(client));
+check('callPhase rethrows a real 401/402 immediately', /session expired\|Free trial\|credits/i.test(client));
+check('callPhase gives up with a clear message', /busy \(waited/.test(client));
+// Every follow-up phase must route through callPhase, not raw api().
+const followUps = ['/char-refs', '/images', '/videos', '/narration', '/combine'];
+for (const p of followUps) {
+  const used = new RegExp("callPhase\\('" + p.replace('/', '\\/') + "'").test(client);
+  check('phase ' + p + ' goes through callPhase', used);
+}
+// Server must clear sbJobId on success too, or the instance that ran the job keeps
+// reporting it as running and the next phase hits a busy guard.
+const successBlock = src.slice(src.indexOf('job.sbResult = result;'), src.indexOf('await saveStoryboardJob(userId, result);'));
+check('sbJobId cleared on success (not just on failure)', /job\.sbJobId = null;/.test(successBlock));
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);
