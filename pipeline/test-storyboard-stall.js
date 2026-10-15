@@ -60,7 +60,7 @@ console.log('\n[5] renders cannot outlive the Vercel function budget');
 check('char-refs parallel wait is budgeted', /waitTask\(task, perTaskMin\)/.test(src));
 check('per-task budget derived from the request budget', /IS_VERCEL \? Math\.max\(1, Math\.floor\(budgetMs \/ 60000\)\) : 25/.test(src));
 check('frame image wait is budgeted on Vercel', /waitTask\(task, IS_VERCEL \? 4 : 25\)/.test(src));
-check('client aborts a hung request', /AbortSignal\.timeout\(timeoutMs\)/.test(client));
+check('client bounds the request with a manual abort timer', /setTimeout\(\(\) => \{ timedOut = true; ac\.abort\(\); \}, timeoutMs\)/.test(client));
 check('client timeout sits under the 300s kill', /timeoutMs = opts\.timeoutMs \|\| 280000/.test(client));
 check('client reports a timeout distinctly', /timed out/.test(client));
 
@@ -80,6 +80,26 @@ check('out-of-budget frames are reported, not hung', /image phase out of budget/
 console.log('\n[7] no blocking "Pipeline failed" popup');
 check('auto pipeline catch does not alert', !/alert\('Pipeline failed/.test(client));
 check('auto pipeline catch logs guidance instead', /Force Clean, then run again/.test(client));
+
+console.log('\n[8] cancel actually stops the run');
+// The cancel handler used to force phase='idle' while renders were still in
+// flight, so the UI reported done, the user clicked again, and a second job
+// stacked on top of the first.
+check('job tracks a cancelling state', /cancelling: false/.test(src));
+check('releaseJob centralises the release', /function releaseJob\(/.test(src));
+check('cancel sets cancelling rather than plain idle', /releaseJob\(\{ cancelling: true \}\)/.test(src));
+check('status clears cancelling once quiet', /job\.cancelling && job\.lastProgressAt/.test(src));
+check('force-clean clears cancelling too', /job\.cancelling = false;/.test(src));
+check('client aborts the in-flight phase request', /PHASE_ABORT&&PHASE_ABORT\.abort/.test(client));
+check('client stops retrying after a user cancel', /if \(USER_CANCELLED\) throw new Error\('cancelled'\)/.test(client));
+check('UI shows CANCELLING instead of idle', /CANCELLING…/.test(client));
+check('cancel button hides while cancelling', /busy&&!cancelling/.test(client));
+
+console.log('\n[9] independent phases run concurrently');
+check('char-refs, images and narration start together', /await Promise\.all\(\[charRefsP,imagesP,narrP\]\)/.test(client));
+check('parallel batch is announced', /running in parallel/.test(client));
+check('videos stay sequential for the chain anchor', /chainAnchor=prevChain/.test(client));
+check('videos still one frame per request', /callPhase\('\/videos',body\)/.test(client));
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);

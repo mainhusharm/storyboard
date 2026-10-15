@@ -595,13 +595,17 @@ async function poll(){
   try{s=await api('/status')}catch(e){}
   // LOCAL_BUSY covers long synchronous jobs (e.g. storyboard on Vercel) whose
   // in-memory progress isn't visible cross-instance via /api/status.
+  // A cancelled job reports phase idle but cancelling:true while work unwinds —
+  // showing it as a busy "CANCELLING" state stops the user from starting a second
+  // run on top of the one still finishing.
   const busy=LOCAL_BUSY||s.phase!=='idle';
-  $('phasepill').classList.toggle('busy',busy);
-  $('phasetxt').textContent=busy?`${s.phase.toUpperCase()} ${s.done}/${s.total||'?'}`:'IDLE';
-  $('gprog').firstElementChild.style.width=s.total?Math.round(100*s.done/s.total)+'%':(busy?'12%':'0%');
+  const cancelling=!!s.cancelling;
+  $('phasepill').classList.toggle('busy',busy||cancelling);
+  $('phasetxt').textContent=cancelling?'CANCELLING…':(busy?`${s.phase.toUpperCase()} ${s.done}/${s.total||'?'}`:'IDLE');
+  $('gprog').firstElementChild.style.width=s.total?Math.round(100*s.done/s.total)+'%':((busy||cancelling)?'12%':'0%');
   // Run buttons stay ENABLED while busy — clicking one asks to cancel the running
   // task first (guardBusy) so a new run never gets stuck behind the previous one.
-  $('btnCancel').style.display=busy?'':'none';
+  $('btnCancel').style.display=(busy&&!cancelling)?'':'none';
   // On Vercel, prefer the client-side log buffer while a per-frame run is active
   // (server log is per-instance). Once idle, fall back to the server log so stale
   // video lines never mask a later job's output.
@@ -622,9 +626,18 @@ async function poll(){
   if(busy)poll.wasBusy=true;
 }
 
-// Cancel the currently running task (server stops at the next frame/poll boundary).
+// Cancel the currently running task. This ALSO aborts the browser's own in-flight
+// phase requests — without that, cancelling only told the server to stop at its
+// next checkpoint while the client sat waiting on a response for minutes, which
+// is what made cancel feel like it did nothing.
+let PHASE_ABORT=null;
+let USER_CANCELLED=false;
 async function cancelJob(){
   if(!confirm('Cancel the current task?')) return;
+  USER_CANCELLED=true;
+  try{ PHASE_ABORT&&PHASE_ABORT.abort('user-cancel'); }catch(e){}
+  PHASE_ABORT=null;
+  logLocal('cancel requested — stopping after the current step…','err');
   try{ await api('/cancel',{method:'POST'}); }catch(e){}
   poll();
 }
@@ -710,17 +723,26 @@ async function callPhase(path, body, opts = {}) {
   const timeoutMs = opts.timeoutMs || 280000; // under Vercel's 300s function kill
   for (let i = 0; i < attempts; i++) {
     let r = null;
+    // A cancel aborts the request in the browser too; never retry a cancelled call.
+    const ac = new AbortController();
+    PHASE_ABORT = ac;
+    let timedOut = false;
+    const timer = setTimeout(() => { timedOut = true; ac.abort(); }, timeoutMs);
     try {
-      r = await api(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(timeoutMs) });
+      r = await api(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: ac.signal });
     } catch (e) {
+      clearTimeout(timer); PHASE_ABORT = null;
+      // The user pressed Cancel: stop now and never retry.
+      if (USER_CANCELLED) throw new Error('cancelled');
       // A 401/402 is a real, actionable failure — surface it immediately.
       if (/session expired|Free trial|credits/i.test(e.message)) throw e;
       if (i === attempts - 1) throw e;
-      const why = (e.name === 'TimeoutError' || /timeout|abort/i.test(e.message)) ? 'timed out' : e.message;
+      const why = timedOut ? 'timed out' : e.message;
       logLocal(`${path}: ${why} (${i + 1}/${attempts}) — retrying…`,'err');
       await new Promise(r => setTimeout(r, 3000));
       continue;
     }
+    clearTimeout(timer); PHASE_ABORT = null;
     if (r && r.error === 'busy') {
       if (i === attempts - 1) throw new Error('busy (waited ' + attempts + ' tries)');
       logLocal(`${path}: busy (${i + 1}/${attempts}) — waiting…`);
@@ -736,7 +758,7 @@ async function callPhase(path, body, opts = {}) {
 // each phase with separate requests, exactly like the manual buttons do:
 // storyboard → char-refs → images → videos (one frame per request) → narration → combine.
 async function runAutoVercel(script){
-  SUBMITTING=true;LOCAL_BUSY=true;LOCAL_LOG=[];poll();
+  SUBMITTING=true;LOCAL_BUSY=true;LOCAL_LOG=[];USER_CANCELLED=false;PHASE_ABORT=null;poll();
   const opts={ratio:$('ratio').value,imageModel:$('imageModel').value,videoModel:$('videoModel').value,style:$('style').value,voice:$('voice').value,consistency:$('consistency').checked,language:$('language').value,narrationMode:$('narrationMode').value,narrationEngine:$('narrationEngine').value,narrVolume:Number($('narrVolume').value),origVolume:Number($('origVolume').value),chainContinuity:$('chainContinuity').checked,clipDuration:Number($('clipDuration').value)};
   try{
     // ---- Phase 1: storyboard (async job with polling + persistence) ----
@@ -812,21 +834,31 @@ async function runAutoVercel(script){
       throw new Error('unexpected storyboard response');
     }
 
-    // ---- Phase 2: character refs ----
-    if(CHARS.length){
-      logLocal('phase 2/6: character reference portraits…','');
-      const cr=await callPhase('/char-refs',sbPayload({imageModel:opts.imageModel,style:opts.style,force:true}));
-      if(cr&&cr.characters){CHARS=cr.characters;try{localStorage.setItem('sb_chars',JSON.stringify(CHARS))}catch(e){}}
-      if(cr&&cr.error)logLocal('char-refs: '+cr.error,'err'); else logLocal('char-refs done','ok');
-    }
-
-    // ---- Phase 3: frame images ----
-    logLocal(`phase 3/6: frame images (${FRAMES.length})…`,'');
+    // ---- Phases 2/3/5 run CONCURRENTLY ----
+    // char-refs, frame images and narration each read the storyboard and write
+    // their own artefacts; none depends on another's output. Running them one
+    // after another was pure waiting, which is what made the pipeline feel like it
+    // crawled. narration only reads the frames the storyboard already produced.
     const frameNumbers=FRAMES.map(f=>f.frame);
-    const im=await callPhase('/images',sbPayload({frames:frameNumbers,imageModel:opts.imageModel,ratio:opts.ratio,style:opts.style,consistency:opts.consistency}));
-    if(im&&im.error)logLocal('images: '+im.error,'err'); else if(im&&im.failed&&im.failed.length)logLocal('images: '+im.failed.length+' failed — continuing','err'); else logLocal('images done','ok');
+    const charRefsP=CHARS.length
+      ? callPhase('/char-refs',sbPayload({imageModel:opts.imageModel,style:opts.style,force:true}))
+          .then(cr=>{if(cr&&cr.characters){CHARS=cr.characters;try{localStorage.setItem('sb_chars',JSON.stringify(CHARS))}catch(e){}}if(cr&&cr.error)logLocal('char-refs: '+cr.error,'err');else logLocal('char-refs done','ok');})
+          .catch(e=>logLocal('char-refs failed: '+e.message,'err'))
+      : Promise.resolve();
+    const imagesP=callPhase('/images',sbPayload({frames:frameNumbers,imageModel:opts.imageModel,ratio:opts.ratio,style:opts.style,consistency:opts.consistency}))
+      .then(im=>{if(im&&im.error)logLocal('images: '+im.error,'err');else if(im&&im.failed&&im.failed.length)logLocal('images: '+im.failed.length+' failed — continuing','err');else logLocal('images done','ok');})
+      .catch(e=>logLocal('images failed: '+e.message,'err'));
+    const narrP=opts.narrationMode==='tts'
+      ? callPhase('/narration',sbPayload({voice:opts.voice,language:opts.language,narrationEngine:opts.narrationEngine,narrVolume:opts.narrVolume,origVolume:opts.origVolume,force:true}))
+          .then(nr=>{if(nr&&nr.error)logLocal('narration: '+nr.error,'err');else logLocal('narration done','ok');})
+          .catch(e=>logLocal('narration failed: '+e.message,'err'))
+      : Promise.resolve();
+    logLocal(`phases 2-5 running in parallel (char-refs${CHARS.length?'':' skipped'}, images ${frameNumbers.length}, narration ${opts.narrationMode==='tts'?'tts':'off'})…`);
+    await Promise.all([charRefsP,imagesP,narrP]);
 
     // ---- Phase 4: videos (one frame per request) ----
+    // Sequential on purpose: each clip needs the previous frame's chain anchor, and
+    // one render per invocation is what fits Vercel's 300s budget.
     const targets=FRAMES.filter(f=>f.animation_prompt).sort((a,b)=>a.frame-b.frame);
     logLocal(`phase 4/6: videos (${targets.length})…`,'');
     let prevChain='';
@@ -846,13 +878,6 @@ async function runAutoVercel(script){
         logLocal(`frame ${f.frame}: video done`,'ok');
       }
       try{localStorage.setItem('sb_frames',JSON.stringify(FRAMES))}catch(e){}
-    }
-
-    // ---- Phase 5: narration ----
-    if(opts.narrationMode==='tts'){
-      logLocal('phase 5/6: narration TTS…','');
-      const nr=await callPhase('/narration',sbPayload({voice:opts.voice,language:opts.language,narrationEngine:opts.narrationEngine,narrVolume:opts.narrVolume,origVolume:opts.origVolume,force:true}));
-      if(nr&&nr.error)logLocal('narration: '+nr.error,'err'); else logLocal('narration done','ok');
     }
 
     // ---- Phase 6: combine ----

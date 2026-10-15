@@ -1473,7 +1473,7 @@ function applyStyle(prompt, styleKey) {
 }
 
 // ---------------- in-memory job state ----------------
-const job = { phase: 'idle', total: 0, done: 0, ok: 0, failed: [], log: [], startedAt: null, lastProgressAt: null, cancelRequested: false };
+const job = { phase: 'idle', total: 0, done: 0, ok: 0, failed: [], log: [], startedAt: null, lastProgressAt: null, cancelRequested: false, cancelling: false };
 function logLine(msg) {
   job.log.push(`[${new Date().toLocaleTimeString()}] ${msg}`);
   if (job.log.length > 500) job.log.shift();
@@ -1481,9 +1481,20 @@ function logLine(msg) {
   // startedAt, so a long-but-healthy run is never mistaken for a frozen one.
   job.lastProgressAt = Date.now();
 }
+// Release a job. `cancelling` records that work may still be unwinding: the
+// phase must NOT claim idle while renders are in flight, because a lying status
+// is what let a second job stack on top of a running one.
+function releaseJob({ cancelling = false } = {}) {
+  job.phase = 'idle';
+  job.cancelling = cancelling;
+  job.sbJobId = null;
+  job.sbResult = null;
+  job.cancelRequested = cancelling ? true : false;
+}
 function setPhase(phase, total = 0) {
   job.phase = phase; job.total = total; job.done = 0; job.ok = 0; job.failed = [];
-  job.startedAt = Date.now(); job.lastProgressAt = Date.now(); job.log = []; job.cancelRequested = false;
+  job.startedAt = Date.now(); job.lastProgressAt = Date.now(); job.log = [];
+  job.cancelRequested = false; job.cancelling = false;
 }
 // A job is considered stuck when it has produced NO LOG OUTPUT for longer than the
 // staleness window. On Vercel a detached background promise can be frozen or
@@ -1502,7 +1513,7 @@ const JOB_STALE_MS = 3 * 60 * 1000;
 const STORYBOARD_JOB_TIMEOUT_MS = 8 * 60 * 1000;
 function reapStaleJob(force = false) {
   if (job.phase === 'idle') return false;
-  if (!job.startedAt) { job.phase = 'idle'; job.sbJobId = null; job.sbResult = null; return true; }
+  if (!job.startedAt) { releaseJob(); return true; }
   // Age of the last actual progress, falling back to startedAt for jobs that
   // predate this field.
   const lastTick = job.lastProgressAt || job.startedAt;
@@ -1517,9 +1528,7 @@ function reapStaleJob(force = false) {
     } else {
       logLine(`reaping stuck "${job.phase}" job (silent for ${Math.round(silentMs / 60000)}m) — marking idle`);
     }
-    job.phase = 'idle';
-    job.sbJobId = null;
-    job.sbResult = null;
+    releaseJob();
     return true;
   }
   return false;
@@ -5046,7 +5055,14 @@ const requestHandler = async (req, res) => {
   if (p.length > 1 && p.endsWith('/')) p = p.slice(0, -1);
   try {
     // --- API ---
-    if (p === '/api/status') { reapStaleJob(); return sendJson(res, 200, job); }
+    if (p === '/api/status') {
+      reapStaleJob();
+      // A cancelled job stays "cancelling" until it goes quiet, so the UI can say
+      // so instead of pretending the run finished. Once nothing has logged for a
+      // while the unwind is over and the flag can drop.
+      if (job.cancelling && job.lastProgressAt && Date.now() - job.lastProgressAt > 15000) job.cancelling = false;
+      return sendJson(res, 200, job);
+    }
     // Narration status for the UI badge: does a voice track exist, and does it
     // match the current storyboard's narration text (sig hash)?
     if (p === '/api/narration-status' && req.method === 'GET') {
@@ -5152,14 +5168,12 @@ const requestHandler = async (req, res) => {
         job.cancelRequested = true;
         const was = job.phase;
         logLine('cancel requested — stopping current task...');
-        // Release the busy flag immediately. Cooperative cancellation alone is not
-        // enough: the loops below only check the flag while they are still running,
-        // and on Vercel the async storyboard job usually is not. Without this the
-        // phase can never return to idle and every later run is blocked by a 409.
-        job.phase = 'idle';
-        job.sbJobId = null;
-        job.sbResult = null;
-        return sendJson(res, 200, { ok: true, cancelled: was, forced: true });
+        // Release the busy flag so a new run is not blocked, but record that work
+        // may still be unwinding. Reporting a plain idle here is what let a second
+        // job stack on top of a still-running one: the UI showed idle while frames
+        // were rendering, so the user clicked again immediately.
+        releaseJob({ cancelling: true });
+        return sendJson(res, 200, { ok: true, cancelled: was, cancelling: true });
       }
       return sendJson(res, 200, { ok: true, cancelled: null });
     }
@@ -5173,6 +5187,7 @@ const requestHandler = async (req, res) => {
       job.sbJobId = null;
       job.sbResult = null;
       job.cancelRequested = false;
+      job.cancelling = false;
       inflJob.phase = 'idle';
       try { await clearStoryboardJob(req.user.id); } catch {}
       logLine('force-clean: all job state cleared');

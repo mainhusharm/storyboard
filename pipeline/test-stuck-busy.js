@@ -20,7 +20,7 @@ while (idx !== -1) {
   idx = src.indexOf(GUARD, idx + GUARD.length);
 }
 check('every storyboard busy guard reaps first (' + guardCount + ' guards, ' + guardReaped + ' preceded by reap)', guardCount === guardReaped && guardCount > 0);
-check('/api/status reaps', /p === '\/api\/status'\) \{ reapStaleJob\(\);/.test(src));
+check('/api/status reaps', /p === '\/api\/status'\) \{\s*\n\s*reapStaleJob\(\);/.test(src));
 check('logLine stamps lastProgressAt (reap measures silence)', /job\.lastProgressAt = Date\.now\(\);/.test(src));
 check('setPhase stamps lastProgressAt', /job\.startedAt = Date\.now\(\); job\.lastProgressAt = Date\.now\(\);/.test(src));
 check('reap uses lastProgressAt, not startedAt', /const lastTick = job\.lastProgressAt \|\| job\.startedAt;/.test(src));
