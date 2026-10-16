@@ -45,6 +45,27 @@ consistency**, generates frame images, animates them via Grok Video / Omni Flash
 - **Seamless Scene Chaining toggle** — when ON (default), each scene's video starts from the last
   frame of the previous scene's video (extracted with ffmpeg and re-hosted to a public URL), so the
   story flows continuously across cuts. Renders scenes sequentially.
+- **📼 Vault — every finished film is archived automatically**. `final_story.mp4` is overwritten by
+  each new combine, so every successful Combine copies the finished film to `vault/film_<ts>.mp4`
+  and indexes it in `vault/index.json` (both gitignored; capped at 100 entries, oldest pruned).
+  `GET /api/vault` lists entries (`file_url` present only when the copy exists on that instance),
+  `POST /api/vault {action:"delete", id}` removes one, and `/vault/<file>` serves the mp4. The
+  archive hook sits AFTER the film is final in all three combine paths: Vercel `/api/combine`
+  (after the film is hosted — the hosted URL is the durable copy across instances), local
+  `/api/combine`, and the run-all pipeline (a final `vault` step AFTER narration, because the
+  narration step rewrites `final_story.mp4`). Failed combines never add entries. The Storyboard
+  SPA's 📼 Vault button plays / downloads / deletes saved films; on Vercel the browser also keeps a
+  localStorage record (`sb_vault`) of every hosted film, merged into the panel so entries survive
+  instance /tmp churn.
+- **AquaDevs image models in Storyboard** — the image-model dropdown offers `aqua:nanobanana-pro`
+  ("Nano Banana Pro — AquaDevs") and `aqua:agnes-image` ("Agnes Image — AquaDevs").
+  `submitTask`/`submitImg2ImgTask` intercept `aqua:` ids before the PaxSenix path and render via
+  `generateAquaImage` (POST /v1/images/generations; ratio maps 1:1→square, 16:9/4:3→landscape,
+  9:16/3:4→portrait; direct models answer with a URL, task models poll — both handled). Per the
+  AquaDevs docs the `image` param accepts a URL **or base64**, so img2img character-consistency
+  anchors pass the reference BYTES inline (no re-host round-trip). The finished bytes come back
+  behind the `logfare-local:` marker, so the whole submit→wait→download ladder, the emergency
+  still chain, and the hosting-on-Vercel behaviour are unchanged.
 - **Vercel: videos render ONE FRAME PER REQUEST** — on Vercel a serverless invocation dies at
   300s, so a whole-board synchronous `/api/videos` always times out. The client detects Vercel via
   `/api/health` and loops frames one-per-request (`runVideosVercel`), passing the previous frame's

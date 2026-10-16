@@ -17,6 +17,8 @@ pipeline/novita_base.txt
 # Generated content (large, regeneratable)
 frames/
 video/
+# Vault: archived finished films (user content — never commit)
+vault/
 
 # Generated JSON state (regeneratable from pipeline)
 storyboard/characters.json

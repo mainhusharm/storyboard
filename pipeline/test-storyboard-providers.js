@@ -16,13 +16,25 @@ const source = fs.readFileSync(serverFile, 'utf8');
 const client = fs.readFileSync(path.join(root, 'web/public/storyboard.html'), 'utf8');
 let imageCalls = 0, submits = 0, imageMode = 'filtered', failUploads = false;
 let paxImages = false, paxImageSubmits = 0;
+let aquaImages = false, aquaCalls = 0;
 let forceCopyFailure = false, forceConcatFailure = false, fallbackCount = 0;
 let statusCode = 200, statusBody = { status: 'RUNNING' };
 let png, clip, submitted;
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 async function upstream(url, options = {}) {
   url = String(url);
-  if (url.endsWith('/images/generations') || url.endsWith('/images/edits')) {
+  // AquaDevs image gateway (direct URL models; the `image` param may be url or base64).
+  // Must be matched BEFORE the Logfare branch — the Aqua URL also ends with
+  // /images/generations.
+  if (aquaImages && url === 'https://api.aquadevs.com/v1/images/generations') {
+    aquaCalls++;
+    let aquaBody = {}; try { aquaBody = JSON.parse(options.body); } catch {}
+    if (aquaBody.image && !/^https?:/i.test(aquaBody.image)) {
+      assert.ok(String(aquaBody.image).startsWith('data:image/'), 'img2img references travel as base64 data URLs');
+    }
+    return json({ result: { url: 'https://cdn.example.test/still.png' } });
+  }
+  if ((!aquaImages || !url.startsWith('https://api.aquadevs.com/')) && (url.endsWith('/images/generations') || url.endsWith('/images/edits'))) {
     imageCalls++;
     if (imageMode === 'filtered') return json({ error: { message: JSON.stringify({
       errors: [{ message: 'AiError: Your output has been flagged.', code: 3030 }], success: false
@@ -76,7 +88,7 @@ function isolatedRequire(name) {
 vm.runInNewContext(source.replace("const ROOT = IS_VERCEL ? '/tmp' : path.resolve(__dirname, '..');", `const ROOT = ${JSON.stringify(tmp)};`), {
   module: mod, exports: mod.exports, require: isolatedRequire, __dirname: path.dirname(serverFile),
   process: { env: { VERCEL: '1', NOVITA_API_KEY: 'fake', NOVITA_BASE_URL: 'https://novita.example.test',
-    LOGFARE_API_KEY: 'fake', SESSION_SECRET: 'offline-test-session-secret' } },
+    LOGFARE_API_KEY: 'fake', AQUA_API_KEY: 'fake', SESSION_SECRET: 'offline-test-session-secret' } },
   Buffer, URL, fetch: upstream, AbortController, AbortSignal, Blob, FormData,
   setTimeout, clearTimeout, setInterval, clearInterval, console
 }, { filename: serverFile });
@@ -211,6 +223,28 @@ async function main() {
   paxImages = false;
   console.log('ok: filter-blocked devotional portraits and frames recover with identity intact');
 
+  // AquaDevs image models in the Storyboard pipeline: the dropdown ids route
+  // frames (t2i AND img2img-anchored) through the Aqua gateway and hand the
+  // finished file back behind the logfare-local marker.
+  aquaImages = true;
+  imageMode = 'server-error'; // Logfare is down — proves the render really used Aqua
+  const aquaChars = [{ id: 'Character A', name: 'Ram', description: 'Adult man in yellow robes.', reference_prompt: 'Portrait of Ram in yellow robes.', reference_image_url: 'https://cdn.example.test/still.png' }];
+  const beforeAqua = aquaCalls;
+  const aquaFrame = { frame: 7, duration_sec: 1, image_prompt: 'A blue ceramic vase on a table', animation_prompt: 'Slow push-in', narration: '', characters_present: ['Character A'] };
+  result = await api('/images', { frames: [7], framesData: [aquaFrame], characters: aquaChars, imageModel: 'aqua:nanobanana-pro', consistency: true });
+  assert.equal(result.body.ok, true, JSON.stringify(result.body));
+  assert.equal(aquaCalls - beforeAqua, 1, 'exactly one Aqua render for the anchored frame');
+  assert.equal(result.body.frames[0].generated_image_url, 'https://cdn.example.test/still.png');
+  assert.ok(fs.existsSync(path.join(tmp, 'frames/frame_07.png')));
+  result = await api('/char-refs', { characters: aquaChars.map(c => ({ ...c, id: 'Character Q', reference_image_url: '' })), imageModel: 'aqua:agnes-image', force: true });
+  assert.equal(result.body.ok, true, JSON.stringify(result.body));
+  assert.ok(result.body.characters[0].reference_image_url.startsWith('https://'));
+  aquaImages = false;
+  const modelsPayload = (await api('/models')).body;
+  assert.equal(modelsPayload.image.includes('aqua:nanobanana-pro'), true, 'dropdown lists aqua:nanobanana-pro');
+  assert.equal(modelsPayload.image.includes('aqua:agnes-image'), true, 'dropdown lists aqua:agnes-image');
+  console.log('ok: AquaDevs image models render storyboard frames (t2i + anchored) and references');
+
   const videoBody = { frames: [2], framesData: [{ ...frame, frame: 2 }], characters: [],
     videoModel: 'wan3.0-video-prime', narrationMode: 'prompt', chainContinuity: false };
   result = await api('/videos', videoBody);
@@ -285,6 +319,23 @@ async function main() {
   assert.equal(result.status, 422);
   assert.equal(result.body.ok, false);
   console.log('ok: real ffmpeg combine, concat fallback, failed publishing, and absent output return truthful results');
+
+  // Vault: only SUCCESSFUL combines are archived (the upload-failed and
+  // concat-failed combines above must not have added entries), entries carry the
+  // hosted URL plus a downloadable local copy, and delete removes both.
+  let vaultList = (await api('/vault')).body.vault;
+  assert.equal(vaultList.length, 1, 'exactly one film archived — failed combines never add entries');
+  assert.equal(vaultList[0].hosted_url, 'https://cdn.example.test/clip.mp4', 'entry carries the hosted final URL for cross-instance retrieval');
+  assert.equal(vaultList[0].duration_sec, 2, 'duration is summed from the combined frames');
+  assert.equal(vaultList[0].frames, 2);
+  assert.ok(vaultList[0].file_url.startsWith('/vault/'), 'the archived file is served for download');
+  assert.ok(fs.existsSync(path.join(tmp, 'vault', vaultList[0].file)), 'the archived copy exists on disk');
+  assert.equal(vaultList[0].title.length > 0, true);
+  result = await api('/vault', { action: 'delete', id: vaultList[0].id });
+  assert.equal(result.body.vault.length, 0, 'delete removes the entry');
+  assert.equal(fs.existsSync(path.join(tmp, 'vault', vaultList[0].file)), false, 'delete removes the file');
+  assert.ok(client.includes('btnVault') && client.includes('sb_vault') && client.includes('addVaultLocal(url)'), 'the SPA records and lists every finished film');
+  console.log('ok: the vault archives successful films and serves/deletes them');
 
   // Execute the real browser poll loop with a virtual clock. A healthy long
   // render must refresh the watchdog, log only transitions, and count request time.

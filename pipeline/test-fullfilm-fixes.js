@@ -68,7 +68,7 @@ check('/api/combine (vercel) still hosts the finished film (remote fix kept)', /
 check('/api/combine (local) threads imageModel', /combineFilm\(frames, body\.ratio \|\| '16:9', body\.narrationMode, \{ narrVol: body\.narrVolume, origVol: body\.origVolume, clipUrls: body\.clipUrls, imageModel: body\.imageModel, narrationUrl: body\.narrationUrl \}\)\.then/.test(src));
 check('auto pipeline combine sends imageModel', /origVolume:opts\.origVolume,clipUrls,imageModel:opts\.imageModel/.test(client));
 check('manual combine button sends imageModel', /origVolume:Number\(\$\('origVolume'\)\.value\),imageModel:\$\('imageModel'\)\.value/.test(src) || /origVolume:Number\(\$\('origVolume'\)\.value\),imageModel:\$\('imageModel'\)\.value[,}]/.test(client));
-check('manual combine button sends clipUrls + narrationUrl (cross-instance audio/clips)', /imageModel:\$\('imageModel'\)\.value,clipUrls,narrationUrl\}/.test(client));
+check('manual combine button sends clipUrls + narrationUrl (cross-instance audio/clips)', /imageModel:\$\('imageModel'\)\.value,clipUrls,narrationUrl,title:/.test(client));
 
 console.log('\n[4] storyboard frame count honours target ÷ clip');
 // The user's exact selection must win: 1 min + 30s Wan clips = 2 videos, not 3.

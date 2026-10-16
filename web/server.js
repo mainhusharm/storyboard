@@ -24,6 +24,7 @@ const ROOT = IS_VERCEL ? '/tmp' : path.resolve(__dirname, '..');
 const PUBLIC = path.join(__dirname, 'public');
 const FRAMES_DIR = path.join(ROOT, 'frames');
 const VIDEO_DIR = path.join(ROOT, 'video');
+const VAULT_DIR = path.join(ROOT, 'vault');
 const STORYBOARD_DIR = path.join(ROOT, 'storyboard');
 const FRAMES_JSON = path.join(STORYBOARD_DIR, 'frames.json');
 const CHARS_JSON = path.join(STORYBOARD_DIR, 'characters.json');
@@ -1823,6 +1824,20 @@ async function generateAquaImage(model, prompt, ratio = '9:16', imageUrl = '') {
     await new Promise(r => setTimeout(r, 3000 * attempt));
   }
   throw lastErr || new Error('aqua image failed');
+ }
+
+// Persist a finished Aqua render (a direct URL or a base64 data: URL) as a local
+// file behind the logfare-local marker, so the submit → wait → download pipeline
+// treats it exactly like a finished Logfare render.
+async function aquaImageToFile(url, outPath) {
+  const u = String(url || '');
+  const dataM = /^data:image\/[\w.+-]+;base64,(.+)$/i.exec(u);
+  if (dataM) { await fsp.writeFile(outPath, Buffer.from(dataM[1], 'base64')); return outPath; }
+  if (!/^https?:/i.test(u)) throw new Error('aqua image returned no usable URL');
+  const r = await fetch(u, { signal: AbortSignal.timeout(120000) });
+  if (!r.ok) throw new Error(`aqua image download failed: HTTP ${r.status}`);
+  await fsp.writeFile(outPath, Buffer.from(await r.arrayBuffer()));
+  return outPath;
 }
 
 // ================================ Novita async jobs ================================
@@ -1977,10 +1992,22 @@ async function submitTask(pathAndQuery, logFn = logLine, outInfo = null) {
         decodeURIComponent(lfModel[1]), qv('prompt', ''), qv('ratio', '1:1'), null);
     } catch (e) { if (outInfo) outInfo.error = e; logFn(`logfare image failed: ${e.message}`); return null; }
   }
+  // AquaDevs image models ("aqua:<id>") — POST /v1/images/generations answers
+  // with a direct image URL (task models poll first, handled inside
+  // generateAquaImage). Fetch the finished bytes and hand them back behind the
+  // logfare-local marker so waitTask/download work unchanged.
+  if (lfModel && isAquaImageModel(decodeURIComponent(lfModel[1]))) {
+    const qv = (k, dflt) => { const m = new RegExp(`[?&]${k}=([^&]*)`).exec(pq); return m ? decodeURIComponent(m[1]) : dflt; };
+    try {
+      const url = await generateAquaImage(decodeURIComponent(lfModel[1]), qv('prompt', ''), qv('ratio', '1:1'), '');
+      const file = path.join(FRAMES_DIR, `aqua_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}.png`);
+      await aquaImageToFile(url, file);
+      return LOGFARE_LOCAL_PREFIX + file;
+    } catch (e) { if (outInfo) outInfo.error = e; logFn(`aqua image failed: ${e.message}`); return null; }
+  }
   // Novita text-to-image ("novita:<id>" model in the query) — not a PaxSenix
   // endpoint; submit through the Novita /v1/submit job API instead.
-  if (lfModel && isNovitaImageModel(decodeURIComponent(lfModel[1]))) {
-    const qv = (k, dflt) => { const m = new RegExp(`[?&]${k}=([^&]*)`).exec(pq); return m ? decodeURIComponent(m[1]) : dflt; };
+  if (lfModel && isNovitaImageModel(decodeURIComponent(lfModel[1]))) {    const qv = (k, dflt) => { const m = new RegExp(`[?&]${k}=([^&]*)`).exec(pq); return m ? decodeURIComponent(m[1]) : dflt; };
     return novitaSubmit({
       model: decodeURIComponent(lfModel[1]).slice('novita:'.length),
       input: { prompt: qv('prompt', '') },
@@ -2068,6 +2095,26 @@ async function submitImg2ImgTask(prompt, refUrls, imageModel = 'seedream-5', rat
         parameters: { size: novitaImageSize(ratio) }
       }, usable.length ? { imageUrls: usable } : {}), logLine);
     } catch (e) { logLine(`novita img2img ${imageModel}: ${e.message}`); return null; }
+  }
+  // AquaDevs img2img: the `image` param accepts a PUBLIC URL or base64 (per the
+  // /v1/images/generations docs), so the reference bytes are passed inline when
+  // available — no re-hosting round-trip. Renders answer like the t2i branch.
+  if (isAquaImageModel(imageModel)) {
+    try {
+      const ref0 = String((refUrls || [])[0] || '');
+      let image = '';
+      if (ref0) {
+        if (isLogfareLocal(ref0) || /^\/frames\//i.test(ref0) || /^https?:/i.test(ref0)) {
+          const buf = await refImageBuffer(ref0);
+          if (buf && buf.length) image = 'data:image/png;base64,' + buf.toString('base64');
+        }
+        if (!image && /^https?:/i.test(ref0)) image = ref0;
+      }
+      const url = await generateAquaImage(imageModel, prompt, ratio, image);
+      const file = path.join(FRAMES_DIR, `aqua_i2i_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}.png`);
+      await aquaImageToFile(url, file);
+      return LOGFARE_LOCAL_PREFIX + file;
+    } catch (e) { if (outInfo) outInfo.error = e; logLine(`aqua img2img ${imageModel}: ${e.message}`); return null; }
   }
   const model = (imageModel && img2ImgEndpoint(imageModel)) ? safeImageModel(imageModel) : 'seedream-5';
   const endpoint = img2ImgEndpoint(model);
@@ -4419,7 +4466,49 @@ function stillImageToVideo(imagePath, targetSec, outputPath) {
 function emergencyImageChain(preferred) {
   const chain = [preferred, 'flux-2-klein-9b', 'nano-banana-pro'].filter(Boolean);
   return chain.filter((m, i) => chain.indexOf(m) === i &&
-    (IMAGE_MODELS.includes(m) || isLogfareImageModel(m) || isNovitaImageModel(m)));
+    (IMAGE_MODELS.includes(m) || isLogfareImageModel(m) || isNovitaImageModel(m) || isAquaImageModel(m)));
+}
+
+// ---- Vault: permanent archive of every finished film ----
+// final_story.mp4 is OVERWRITTEN by every new combine, so each finished film is
+// copied here (vault/film_<timestamp>.mp4) and indexed in vault/index.json the
+// moment it is ready. The user can browse/download/delete entries any time.
+const VAULT_INDEX = path.join(VAULT_DIR, 'index.json');
+const VAULT_MAX_ENTRIES = 100;
+function vaultId() {
+  const d = new Date();
+  const p = n => String(n).padStart(2, '0');
+  return `film_${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}_${Math.random().toString(36).slice(2, 6)}`;
+}
+// Copy the finished film into the vault and index it. NEVER throws — a vault
+// failure must not fail the combine that produced the film.
+async function archiveToVault({ title = '', filePath = '', hostedUrl = '', frames = [], ratio = '16:9' } = {}) {
+  try {
+    if (!filePath || !fs.existsSync(filePath) || !fs.statSync(filePath).size) return null;
+    await fsp.mkdir(VAULT_DIR, { recursive: true });
+    const id = vaultId();
+    const file = `${id}.mp4`;
+    await fsp.copyFile(filePath, path.join(VAULT_DIR, file));
+    const entry = {
+      id, file,
+      title: String(title || '').replace(/\s+/g, ' ').trim().slice(0, 80) || 'Story film',
+      created_at: new Date().toISOString(),
+      frames: Array.isArray(frames) ? frames.length : 0,
+      duration_sec: Array.isArray(frames) ? Math.round(frames.reduce((s, f) => s + (f.duration_sec || 6), 0)) : 0,
+      ratio, hosted_url: hostedUrl || '',
+      size_bytes: fs.statSync(path.join(VAULT_DIR, file)).size
+    };
+    const index = (await readJson(VAULT_INDEX)) || [];
+    index.unshift(entry);
+    // Prune the oldest entries beyond the cap (and their files).
+    while (index.length > VAULT_MAX_ENTRIES) {
+      const old = index.pop();
+      if (old && old.file) { try { fs.unlinkSync(path.join(VAULT_DIR, old.file)); } catch {} }
+    }
+    await writeJson(VAULT_INDEX, index);
+    logLine(`vault: film archived as ${file} (${(entry.size_bytes / 1048576).toFixed(1)} MB, ${index.length} saved)`);
+    return entry;
+  } catch (e) { logLine(`vault: archive failed — ${e.message}`); return null; }
 }
 
 // ================================ FINAL FILM CONCATENATION ================================
@@ -5487,7 +5576,7 @@ const requestHandler = async (req, res) => {
       } catch (e) { return sendJson(res, 200, { hasAudio: false, matchesCurrent: false, withSpeech: 0, error: e.message }); }
     }
     if (p === '/api/health' || p === '/api/ping') return sendJson(res, 200, { ok: true, vercel: IS_VERCEL, path: p, url: rawUrl, hasKey: !!API_KEY, commit: (process.env.VERCEL_GIT_COMMIT_SHA || '').slice(0, 7) || 'local', deployedAt: process.env.VERCEL_DEPLOYMENT_ID ? 'vercel' : 'local', logfare: { key: !!LOGFARE_API_KEY, lastOkAt: logfareStatus.lastOkAt, lastModel: logfareStatus.lastModel, lastError: logfareStatus.lastError }, aqua: { key: !!AQUA_API_KEY, lastOkAt: aquaStatus.lastOkAt, lastModel: aquaStatus.lastModel, lastError: aquaStatus.lastError } });
-    if (p === '/api/models') return sendJson(res, 200, { chat: MODELS, image: IMAGE_MODELS.concat(LOGFARE_IMAGE_MODELS, NOVITA_IMAGE_MODELS.map(m => m.id)), video: VIDEO_MODELS, voices: VOICES, languages: LANGUAGES, narrationModes: NARRATION_MODES, narrationEngines: NARRATION_ENGINES, narrationVoices: { fish: VOICES, mimo: VOICES, logfare: LOGFARE_VOICES }, styles: STYLE_KEYS.map(k => ({ key: k, label: STYLES[k].label })) });
+    if (p === '/api/models') return sendJson(res, 200, { chat: MODELS, image: IMAGE_MODELS.concat(['aqua:nanobanana-pro', 'aqua:agnes-image'], LOGFARE_IMAGE_MODELS, NOVITA_IMAGE_MODELS.map(m => m.id)), video: VIDEO_MODELS, voices: VOICES, languages: LANGUAGES, narrationModes: NARRATION_MODES, narrationEngines: NARRATION_ENGINES, narrationVoices: { fish: VOICES, mimo: VOICES, logfare: LOGFARE_VOICES }, styles: STYLE_KEYS.map(k => ({ key: k, label: STYLES[k].label })) });
 
     // --- CREDITS ---
     if (p === '/api/credits' && req.method === 'GET') {
@@ -5616,6 +5705,28 @@ const requestHandler = async (req, res) => {
       const finalStat = await fsp.stat(path.join(VIDEO_DIR, 'final_story.mp4')).catch(() => null);
       const hasFinal = !!finalStat && finalStat.size > 0;
       return sendJson(res, 200, { characters: chars, frames, hasFinal, finalVersion: finalStat?.mtimeMs || null });
+    }
+
+    // Vault — every finished film, archived automatically after Combine.
+    // GET lists entries (file_url only when the copy exists on THIS instance);
+    // POST {action:'delete', id} removes an entry and its file.
+    if (p === '/api/vault') {
+      if (req.method === 'POST') {
+        const body = await readBody(req).catch(() => ({}));
+        if (body.action === 'delete' && body.id) {
+          const index = (await readJson(VAULT_INDEX)) || [];
+          const idx = index.findIndex(e => e.id === body.id);
+          if (idx >= 0) {
+            const [gone] = index.splice(idx, 1);
+            if (gone.file) { try { fs.unlinkSync(path.join(VAULT_DIR, gone.file)); } catch {} }
+            await writeJson(VAULT_INDEX, index);
+            logLine(`vault: deleted ${gone.id}`);
+          }
+        }
+      }
+      const index = (await readJson(VAULT_INDEX)) || [];
+      const vault = index.map(e => ({ ...e, file_url: e.file && fs.existsSync(path.join(VAULT_DIR, e.file)) ? '/vault/' + e.file : '' }));
+      return sendJson(res, 200, { vault });
     }
 
     if (p === '/api/storyboard' && req.method === 'POST') {
@@ -5816,6 +5927,10 @@ const requestHandler = async (req, res) => {
           const engine = body.narrationEngine || body.engine || DEFAULT_NARRATION_ENGINE;
           steps.push(['narration', () => { setPhase('narration', 1); return generateFullNarration(frames, body.voice || DEFAULT_VOICE, language, engine, { narrVol: body.narrVolume, origVol: body.origVolume, clipUrls: body.clipUrls }).then(() => { job.phase = 'idle'; }); }]);
         }
+        // Vault: archive LAST so the saved copy is the final cut — the narration
+        // step rewrites final_story.mp4 after combine. archiveToVault no-ops when
+        // no finished film exists (a failed combine never adds a vault entry).
+        steps.push(['vault', () => archiveToVault({ title: body.title || script, filePath: path.join(VIDEO_DIR, 'final_story.mp4'), frames, ratio: body.ratio || '16:9' })]);
 
         for (const [name, fn] of steps) {
           if (job.cancelRequested) { logLine('auto pipeline cancelled by user'); break; }
@@ -6065,10 +6180,17 @@ if (p === '/api/combine' && req.method === 'POST') {
             logLine(`final film upload failed: ${e.message}`);
             return sendJson(res, 502, { ok: false, code: 'FINAL_UPLOAD_FAILED', error: 'The film was combined, but its playable link could not be published. Retry Combine to publish it.' });
           }
+          // Vault: archive the finished film before the next combine overwrites
+          // final_story.mp4. On Vercel the hosted URL is the durable copy; the
+          // local file copy lives in this instance's /tmp only.
+          await archiveToVault({ title: body.title, filePath: fp, hostedUrl: finalUrl, frames, ratio: body.ratio || '16:9' });
           return sendJson(res, 200, { ok: true, finalUrl });
         } catch (e) { job.phase = 'idle'; return sendJson(res, 500, { error: String(e.message || e) }); }
       })();
-      combineFilm(frames, body.ratio || '16:9', body.narrationMode, { narrVol: body.narrVolume, origVol: body.origVolume, clipUrls: body.clipUrls, imageModel: body.imageModel, narrationUrl: body.narrationUrl }).then(fp => { if (!fp) logLine('combine: no output'); }).catch(e => { logLine(`combine crash: ${e.message}`); job.phase = 'idle'; });
+      combineFilm(frames, body.ratio || '16:9', body.narrationMode, { narrVol: body.narrVolume, origVol: body.origVolume, clipUrls: body.clipUrls, imageModel: body.imageModel, narrationUrl: body.narrationUrl }).then(async fp => {
+        if (fp) await archiveToVault({ title: body.title, filePath: fp, frames, ratio: body.ratio || '16:9' });
+        else logLine('combine: no output');
+      }).catch(e => { logLine(`combine crash: ${e.message}`); job.phase = 'idle'; });
       return sendJson(res, 202, { started: true });
     }
 
@@ -8306,6 +8428,7 @@ ${infl.description || '(no description - describe a beautiful confident influenc
     let filePath;
     if (p.startsWith('/frames/')) filePath = path.join(FRAMES_DIR, decodeURIComponent(p.slice('/frames/'.length)));
     else if (p.startsWith('/video/')) filePath = path.join(VIDEO_DIR, decodeURIComponent(p.slice('/video/'.length)));
+    else if (p.startsWith('/vault/')) filePath = path.join(VAULT_DIR, decodeURIComponent(p.slice('/vault/'.length)));
     else if (p === '/' || p === '/home') filePath = path.join(PUBLIC, 'home.html');
     else if (p === '/login' || p === '/signup') filePath = path.join(PUBLIC, 'login.html');
     else if (p === '/storyboard' || p === '/index') filePath = path.join(PUBLIC, 'storyboard.html');

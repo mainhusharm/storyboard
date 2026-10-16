@@ -297,6 +297,7 @@ The Director AI will:
         <button id="btnNarration" class="violet-btn">🔊 Narration</button>
         <button id="btnCombine" class="cta" style="margin:0;background:linear-gradient(135deg,var(--teal),#1a9e8f)">🎞 Combine Film</button>
       </div>
+      <button id="btnVault" style="margin-top:7px;width:100%">📼 Vault — every finished film, saved</button>
       <div id="narrStatus" style="margin-top:6px;font-size:11px;line-height:1.4"></div>
       <div class="stat">
         <div class="box"><b id="stChars">0</b><span>Chars</span></div>
@@ -402,7 +403,55 @@ function rememberFinalFilm(url){
   if(!/^https?:\/\//i.test(String(url||'')))throw new Error('Combine did not return a playable film URL. Please retry Combine.');
   FINAL_FILM={url,board:finalBoardKey()};
   try{localStorage.setItem('sb_final_url',url);localStorage.setItem('sb_final_board',FINAL_FILM.board)}catch(e){}
+  addVaultLocal(url);
   renderFinalFilm();
+}
+// ---- Vault: every finished film, archived automatically ----
+// Server entries come from /api/vault (vault/index.json). On Vercel each
+// instance has its own /tmp, so the browser ALSO keeps a localStorage record of
+// every hosted film — the panel merges both and nothing is lost.
+function vaultTitle(){const t=($('script').value||'').replace(/\s+/g,' ').trim().slice(0,80);return t||'Story film'}
+function loadVaultLocal(){try{return JSON.parse(localStorage.getItem('sb_vault')||'[]')}catch(e){return[]}}
+function saveVaultLocal(v){try{localStorage.setItem('sb_vault',JSON.stringify(v.slice(0,100)))}catch(e){}}
+function addVaultLocal(url){
+  if(!/^https?:\/\//i.test(String(url||'')))return;
+  const v=loadVaultLocal();
+  if(v.some(x=>x.url===url))return;
+  v.unshift({id:'cl_'+Date.now().toString(36),url,created_at:new Date().toISOString(),title:vaultTitle()});
+  saveVaultLocal(v);
+}
+async function openVault(){
+  let serverEntries=[];
+  try{const r=await api('/vault');serverEntries=(r&&r.vault)||[]}catch(e){}
+  const localEntries=loadVaultLocal().filter(l=>!serverEntries.some(s=>s.hosted_url===l.url));
+  const rows=[...serverEntries,...localEntries];
+  $('mimg').style.backgroundImage='none';
+  $('mbody').innerHTML=`<h3>📼 Vault — saved films</h3>
+    <p class="cdesc">${rows.length?'Every finished film is archived here automatically after Combine.':'No films saved yet — they appear here automatically after Combine.'}</p>
+    <div id="vaultList">${rows.map(e=>{
+      const url=e.hosted_url||e.url||e.file_url||'';
+      const dur=e.duration_sec?`${Math.floor(e.duration_sec/60)}:${String(e.duration_sec%60).padStart(2,'0')}`:'';
+      const size=e.size_bytes?`${(e.size_bytes/1048576).toFixed(1)} MB`:'';
+      const when=new Date(e.created_at||Date.now()).toLocaleString();
+      return `<div class="sect" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <div style="flex:1;min-width:170px"><b>${esc(e.title||'Story film')}</b><br><span class="cdesc">${esc(when)}${dur?' · '+dur:''}${size?' · '+size:''}${e.frames?' · '+e.frames+' scenes':''}</span></div>
+        <a href="${esc(url)}" download target="_blank" rel="noopener" style="text-decoration:none"><button>⬇ Save</button></a>
+        <button onclick="playVaultFilm('${esc(url)}')">▶ Play</button>
+        <button onclick="deleteVaultFilm('${esc(e.id)}')">🗑</button>
+      </div>`;}).join('')||''}</div>
+    <div id="vaultPlayer" style="margin-top:10px"></div>
+    <div style="margin-top:10px"><button onclick="$('overlay').classList.remove('open')">Close</button></div>`;
+  $('overlay').classList.add('open');
+}
+function playVaultFilm(url){
+  const p=$('vaultPlayer');if(!p)return;
+  p.innerHTML=url?`<video src="${esc(url)}" controls autoplay style="width:100%;max-height:50vh;background:#000;border-radius:8px"></video>`:'';
+}
+async function deleteVaultFilm(id){
+  if(!confirm('Delete this film from the vault?'))return;
+  saveVaultLocal(loadVaultLocal().filter(x=>x.id!==id));
+  try{await api('/vault',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'delete',id})})}catch(e){}
+  openVault();
 }
 function resetStoryboardAssets(){
   FINAL_FILM=null;
@@ -567,7 +616,8 @@ async function init(){
     const lbl=LOGFARE_LABELS[x]||AQUA_LABELS[x]||x;
     return `<option value="${x}">${lbl}</option>`;
   }).join('');
-  $('imageModel').innerHTML=m.image.map(x=>`<option>${x}</option>`).join('');
+  const IMG_MODEL_LABELS={'aqua:nanobanana-pro':'Nano Banana Pro — AquaDevs','aqua:agnes-image':'Agnes Image — AquaDevs'};
+  $('imageModel').innerHTML=m.image.map(x=>`<option value="${x}">${IMG_MODEL_LABELS[x]||x}</option>`).join('');
   $('videoModel').innerHTML=(m.video||[{id:'grok-video',label:'Grok Video — 6s'},{id:'omni-flash',label:'Omni Flash — 8s'},{id:'veo-3.1',label:'Veo 3.1 — 8s'}]).map(v=>`<option value="${v.id}">${v.label}</option>`).join('');
   const fillVoices=()=>{const per=(m.narrationVoices||{})[$('narrationEngine').value];const list=(per&&per.length)?per:(m.voices||[{id:'female',label:'Female narrator'},{id:'male',label:'Male narrator'}]);$('voice').innerHTML=list.map(v=>`<option value="${v.id}">${v.label}</option>`).join('');};
   $('language').innerHTML=(m.languages||[{id:'en',label:'English'},{id:'hi',label:'Hindi'}]).map(l=>`<option value="${l.id}">${l.label}</option>`).join('');
@@ -1062,7 +1112,7 @@ async function runAutoVercel(script){
     // ---- Phase 6: combine ----
     LOCAL_PHASE='COMBINING';
     logLocal('phase 6/6: combining final film…','');
-    const cb=await callPhase('/combine',sbPayload({ratio:opts.ratio,narrationMode:opts.narrationMode,narrVolume:opts.narrVolume,origVolume:opts.origVolume,clipUrls,imageModel:opts.imageModel,narrationUrl:narrUrl||localStorage.getItem('sb_narr_url')||''}));
+    const cb=await callPhase('/combine',sbPayload({ratio:opts.ratio,narrationMode:opts.narrationMode,narrVolume:opts.narrVolume,origVolume:opts.origVolume,clipUrls,imageModel:opts.imageModel,narrationUrl:narrUrl||localStorage.getItem('sb_narr_url')||'',title:(($('script').value||'').replace(/\s+/g,' ').trim().slice(0,80)||'Story film')}));
     if(!cb||cb.error||cb.ok===false)throw new Error((cb&&cb.error)||'Combine failed');
     rememberFinalFilm(cb.finalUrl);
     LOCAL_RESULT='complete';
@@ -1194,10 +1244,11 @@ $('btnCombine').onclick=async()=>{
   const clipUrls=loadClipUrls();
   for(const f of FRAMES) if(f.clip_url&&!clipUrls[String(f.frame)]) clipUrls[String(f.frame)]=f.clip_url;
   let narrationUrl='';try{narrationUrl=localStorage.getItem('sb_narr_url')||''}catch(e){}
-  const r=await postJob('/combine',sbPayload({ratio:$('ratio').value,narrationMode:$('narrationMode').value,narrVolume:Number($('narrVolume').value),origVolume:Number($('origVolume').value),imageModel:$('imageModel').value,clipUrls,narrationUrl}));
+  const r=await postJob('/combine',sbPayload({ratio:$('ratio').value,narrationMode:$('narrationMode').value,narrVolume:Number($('narrVolume').value),origVolume:Number($('origVolume').value),imageModel:$('imageModel').value,clipUrls,narrationUrl,title:(($('script').value||'').replace(/\s+/g,' ').trim().slice(0,80)||'Story film')}));
   if(!r||r.error||r.ok===false||r.started)return;
   try{rememberFinalFilm(r.finalUrl);logLocal('🎬 FINAL FILM READY','ok')}catch(e){alert(e.message)}
 };
+$('btnVault').onclick=openVault;
 async function regenFrame(n,edited=false){const r=await postJob('/images',sbPayload({frames:[n],imageModel:$('imageModel').value,ratio:$('ratio').value,style:$('style').value,consistency:$('consistency').checked,...(edited?{framesData:FRAMES}:{})}));await acceptImageResults(r)}
 async function saveFramePrompt(n){
   if(SUBMITTING)return;
