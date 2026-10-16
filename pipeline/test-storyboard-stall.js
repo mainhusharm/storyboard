@@ -28,6 +28,14 @@ check('top-up frames are renumbered', /frame: frames\.length \+ i \+ 1/.test(src
 check('top-up respects the time budget', /phase 2 short by \$\{missing\}/.test(src));
 check('top-up failure is non-fatal (keeps what we have)', /keeping \$\{frames\.length\} frame\(s\)/.test(src));
 check('FRAMES_JSON written after the top-up', /top-up added|frames = frames\.concat/.test(src));
+// A single re-ask on the SAME model was not enough: it often answers short again
+// (and on Vercel the lone attempt was skipped once the budget ran low), so a
+// 1 min / 30s board ended up with 1 frame instead of 2. The top-up must now LOOP
+// until the promised count is met, walking the whole model chain.
+check('top-up loops until frameCount is met', /for \(let attempt = 0; frames\.length < frameCount/.test(src));
+check('top-up walks the full model chain', /topupModels = \[frameModel, \.\.\.modelsToTry\]/.test(src));
+check('top-up never overshoots the requested count', /\.slice\(0, missing\)/.test(src));
+check('top-up budget guard runs every attempt', /if \(outOfTime\(\) \|\| !timeForOneMoreCall\(\)\)[\s\S]{0,120}break/.test(src));
 
 console.log('\n[3] client keeps polling instead of dying');
 // The client must not treat a transient poll failure as fatal.

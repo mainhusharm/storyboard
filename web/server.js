@@ -3035,19 +3035,31 @@ async function generateStoryboard(script, model, targetDuration = 120, look = ''
 
   logLine(`phase 2 done: ${frames.length} frames (model: ${frameModel})`);
   // Some models (notably claude-haiku-5-5) silently return fewer frames than asked
-  // for — 1 frame for a 3-frame target truncates the film to a third of its
-  // intended runtime. Re-ask once for the shortfall before accepting it.
-  if (frames.length < frameCount && !outOfTime() && timeForOneMoreCall()) {
+  // for — 1 frame for a 2-frame target truncates the film to half its intended
+  // runtime (a 1 min target with 30s Wan 3.0 clips MUST end up as 2 rendered
+  // videos, never 1). Keep re-asking for the shortfall until the board has the
+  // promised frameCount: first on the model that came up short, then across the
+  // REST of the model chain — a short model usually repeats itself while the next
+  // model fills the gap. One single re-ask was not enough (the same model often
+  // answers short again) and on Vercel it was skipped entirely once the time
+  // budget ran low, which is exactly how a 2-shot board ended up with 1 frame.
+  const topupModels = [frameModel, ...modelsToTry].filter((m, i, a) => m && a.indexOf(m) === i);
+  for (let attempt = 0; frames.length < frameCount && attempt < topupModels.length + 1; attempt++) {
+    if (outOfTime() || !timeForOneMoreCall()) {
+      logLine(`phase 2 returned ${frames.length}/${frameCount} frames — no time/budget for a top-up re-ask`);
+      break;
+    }
     const missing = frameCount - frames.length;
-    logLine(`phase 2 short by ${missing} frame(s) — re-asking ${frameModel} for the remainder`);
+    const topupModel = topupModels[attempt % topupModels.length];
+    logLine(`phase 2 short by ${missing} frame(s) — re-asking ${topupModel} for the remainder`);
     try {
       const cont = [
         ...frameMsgs,
-        { role: 'assistant', content: 'Here is the first frame.' },
+        { role: 'assistant', content: frames.length === 1 ? 'Here is the first frame.' : `Here are the first ${frames.length} frames.` },
         { role: 'user', content: `You returned only ${frames.length} of the ${frameCount} required frames. Continue the SAME story from exactly where it stopped and return ONLY a JSON object with a "frames" key containing the remaining ${missing} frame(s). Do not repeat the frames you already wrote. Each needs at least "image_prompt" and "summary".` }
       ];
-      const extraRaw = await chatCompletion(frameModel, cont);
-      const extraParsed = await parseOrSalvage(extraRaw, `frames topup (${frameModel})`).catch(() => null);
+      const extraRaw = await chatCompletion(topupModel, cont);
+      const extraParsed = await parseOrSalvage(extraRaw, `frames topup (${topupModel})`).catch(() => null);
       let extra = Array.isArray(extraParsed?.frames) ? extraParsed.frames : [];
       if (!extra.length && Array.isArray(extraParsed)) extra = extraParsed;
       const shaped = extra.map((f, i) => ({
@@ -3062,16 +3074,17 @@ async function generateStoryboard(script, model, targetDuration = 120, look = ''
         animation_prompt: f.animation_prompt || 'slow cinematic push-in', sound_design: f.sound_design || '',
         transition: f.transition || 'cut', duration_sec: f.duration_sec || secPerFrame,
         importance: f.importance || 'medium'
-      })).filter(f => f.image_prompt);
+      })).filter(f => f.image_prompt).slice(0, missing); // never overshoot the requested count
       if (shaped.length) {
         frames = frames.concat(shaped);
         logLine(`phase 2 top-up added ${shaped.length} frame(s) — now ${frames.length}/${frameCount}`);
       } else {
-        logLine(`phase 2 top-up returned nothing — keeping ${frames.length} frame(s)`);
+        logLine(`phase 2 top-up returned nothing — still ${frames.length}/${frameCount} frames`);
       }
-    } catch (e) { logLine(`phase 2 top-up failed: ${e.message} — keeping ${frames.length} frame(s)`); }
-  } else if (frames.length < frameCount) {
-    logLine(`phase 2 returned ${frames.length}/${frameCount} frames — no time/budget for a top-up re-ask`);
+    } catch (e) { logLine(`phase 2 top-up failed: ${e.message} — still ${frames.length}/${frameCount} frames`); }
+  }
+  if (frames.length < frameCount) {
+    logLine(`phase 2 keeping ${frames.length} frame(s) of ${frameCount} — models and top-ups exhausted`);
   }
   await writeJson(FRAMES_JSON, frames);
   return { characters, frames };
