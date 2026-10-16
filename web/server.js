@@ -3134,34 +3134,73 @@ async function generateCharRefs(characters, imageModel = 'seedream-5', style = '
     return { c, prompt: enh };
   }));
 
-  // Submit all tasks in parallel (no delays)
-  logLine(`submitting ${enhanced.length} ref tasks in parallel...`);
-  const submitted = await Promise.all(enhanced.map(async ({ c, prompt }) => {
-    if (job.cancelRequested) return null;
-    const q = `${imageEndpoint(imageModel)}?prompt=${encodeURIComponent(prompt)}&model=${encodeURIComponent(imageModel)}&ratio=1:1`;
-    const task = await submitTask(q);
-    if (!task) { job.failed.push(c.id); job.done++; logLine(`${c.id}: SUBMIT FAILED`); return null; }
-    logLine(`${c.id}: submitted ref portrait (enhanced)`);
-    return { c, task };
-  }));
-
-  // Wait for all renders in parallel.
+  // Per-character PROMPT-REPAIR LADDER (mirrors renderFrameImage for frames).
+  // Logfare's content filter rejects some ref prompts outright (code 3030 "Your
+  // output has been flagged") and the old single-shot submit then dropped the
+  // character's whole ref on the first variant ("SUBMIT FAILED") — the film lost
+  // that face everywhere. Retry with sanitized wording, an LLM rewrite, and
+  // finally a plain essentials portrait, so ANY safe variant of the prompt still
+  // anchors the character.
   // The per-task wait must fit INSIDE the request budget. waitTask defaults to a
   // 25-minute deadline, so a single stuck provider kept this promise alive far
   // past Vercel's 300s function kill — the client got no response at all and the
   // pipeline looked frozen. On Vercel each render is budgeted a slice of the
   // remaining time; locally there is no such ceiling so the long deadline stands.
-  const results = submitted.filter(Boolean);
   const budgetMs = IS_VERCEL ? 240000 : Infinity;
   const perTaskMin = IS_VERCEL ? Math.max(1, Math.floor(budgetMs / 60000)) : 25;
-  logLine(`waiting for ${results.length} ref renders in parallel (${IS_VERCEL ? perTaskMin + 'm each' : '25m each'})...`);
-  await Promise.all(results.map(async ({ c, task }) => {
-    if (job.cancelRequested) return;
-    const url = await waitTask(task, perTaskMin);
-    if (job.cancelRequested) { logLine('cancelled'); return; }
-    if (url && await download(url, charRefFile(c.id))) { c.reference_image_url = url; job.ok++; logLine(`${c.id}: REF DONE`); }
-    else { job.failed.push(c.id); logLine(`${c.id}: REF FAILED`); }
+  const renderCharRef = async (c, prompt) => {
+    const out = charRefFile(c.id);
+    const refAttempt = async (label, p) => {
+      const q = `${imageEndpoint(imageModel)}?prompt=${encodeURIComponent(p)}&model=${encodeURIComponent(imageModel)}&ratio=1:1`;
+      const task = await submitTask(q);
+      if (!task) { logLine(`${c.id}: ref SUBMIT FAILED (${label})`); return false; }
+      logLine(`${c.id}: submitted ref portrait (${label})`);
+      const url = await waitTask(task, perTaskMin);
+      if (job.cancelRequested) return 'cancel';
+      if (url && await download(url, out)) {
+        c.reference_image_url = url;
+        job.ok++;
+        logLine(`${c.id}: REF DONE (${label})`);
+        return true;
+      }
+      logLine(`${c.id}: ref RENDER FAILED (${label}) — repairing prompt and retrying`);
+      return false;
+    };
+    // 1) enhanced prompt (original)
+    let r = await refAttempt('enhanced', prompt);
+    if (r === true) { job.done++; return; }
+    if (r === 'cancel') return;
+    // 2) sanitized prompt — strip risky wording locally, keep everything else
+    const sanitized = sanitizeImagePrompt(prompt);
+    if (sanitized !== prompt) {
+      r = await refAttempt('sanitized prompt', sanitized);
+      if (r === true) { job.done++; return; }
+      if (r === 'cancel') return;
+    }
+    // 3) LLM rewrite of the same portrait (local only — the extra call + poll can
+    // blow Vercel's 300s function budget; the cheap local variants still run)
+    if (!IS_VERCEL && !job.cancelRequested) {
+      const repaired = await repairImagePrompt(c.id, prompt, imageModel);
+      if (repaired && repaired !== prompt && repaired !== sanitized) {
+        r = await refAttempt('LLM-repaired prompt', repaired);
+        if (r === true) { job.done++; return; }
+        if (r === 'cancel') return;
+      }
+    }
+    // 4) essentials-only portrait — a clean character portrait beats no anchor
+    const essentials = `character portrait of ${c.name || c.id}, waist-up 3/4 view, neutral background, soft directional key light, 85mm portrait lens`;
+    r = await refAttempt('essentials fallback', essentials);
+    if (r === 'cancel') return;
+    if (r !== true) { job.failed.push(c.id); logLine(`${c.id}: REF FAILED — every prompt variant was rejected`); }
     job.done++;
+  };
+
+  // All characters render in parallel — the ladder runs submit→wait→retry inside
+  // each character's own task, so one flagged prompt never blocks the others.
+  logLine(`rendering ${enhanced.length} ref portraits in parallel (prompt-repair ladder active)...`);
+  await Promise.all(enhanced.map(async ({ c, prompt }) => {
+    if (job.cancelRequested) return;
+    await renderCharRef(c, prompt);
   }));
 
   await writeJson(CHARS_JSON, characters);
@@ -6658,8 +6697,15 @@ Return ONLY a JSON object:
       try {
         const body = await readBody(req);
         const { slug = '', name = '', tagline = '', idea = '', totalScenes = 8, duration = 15, sceneLength = 8, ratio = '9:16', model = 'logfare:auto', references = [], trendThumbnail = '', source = '' } = body || {};
-        const effectName = String(name || slug).trim();
-        if (!effectName) return sendJson(res, 400, { error: 'effect name or slug required' });
+        // A trend name/slug is OPTIONAL: the studio also runs from the user's own
+        // scene description (the idea box) with no trend selected. Deriving the
+        // effect name from the idea (its first line) means "generate prompt" no
+        // longer 400s with "effect name or slug required" on an idea-only run —
+        // and the idea reaches the planner, which otherwise only ever saw the name.
+        const effectName = String(name || slug).trim()
+          || String(idea || '').trim().split('\n')[0].slice(0, 120)
+          || String(tagline || '').trim().slice(0, 120);
+        if (!effectName) return sendJson(res, 400, { error: 'effect name or slug required — describe your scene in the idea box or pick a trend first' });
         if (!(await requireCredits(req, res, CREDIT_COSTS.flashloopScript, 'generate script'))) return;
         const selectedModel = isFlashloopPromptModel(model) ? model : 'logfare:auto';
         const refs = Array.isArray(references) ? references.filter(r => r && String(r.name || '').trim()) : [];
@@ -6697,8 +6743,15 @@ Return ONLY a JSON object:
       try {
         const body = await readBody(req);
         const { slug = '', name = '', tagline = '', idea = '', sceneIndex = 1, totalScenes = 1, prevEnd = '', sceneBeat = '', prevBeat = '', sceneTitle = '', duration = 15, sceneLength = 8, ratio = '9:16', model = 'logfare:auto', references = [], trendThumbnail = '', source = '' } = body || {};
-        const effectName = String(name || slug).trim();
-        if (!effectName) return sendJson(res, 400, { error: 'effect name or slug required' });
+        // A trend name/slug is OPTIONAL: the studio also runs from the user's own
+        // scene description (the idea box) with no trend selected. Deriving the
+        // effect name from the idea (its first line) means "generate prompt" no
+        // longer 400s with "effect name or slug required" on an idea-only run —
+        // and the idea reaches the planner, which otherwise only ever saw the name.
+        const effectName = String(name || slug).trim()
+          || String(idea || '').trim().split('\n')[0].slice(0, 120)
+          || String(tagline || '').trim().slice(0, 120);
+        if (!effectName) return sendJson(res, 400, { error: 'effect name or slug required — describe your scene in the idea box or pick a trend first' });
         // The whole script costs flashloopScript credits; a chunked run charges once.
         if (Number(sceneIndex) <= 1 && !(await requireCredits(req, res, CREDIT_COSTS.flashloopScript, 'generate script'))) return;
         const selectedModel = isFlashloopPromptModel(model) ? model : 'logfare:auto';
@@ -6734,8 +6787,15 @@ Return ONLY a JSON object:
       try {
         const body = await readBody(req);
 const { slug = '', name = '', tagline = '', idea = '', duration, sceneDuration, sceneLength = 8, ratio = '9:16', model = 'gpt-5.5', references = [], trendThumbnail = '', source = '' } = body || {};
-        const effectName = String(name || slug).trim();
-        if (!effectName) return sendJson(res, 400, { error: 'effect name or slug required' });
+        // A trend name/slug is OPTIONAL: the studio also runs from the user's own
+        // scene description (the idea box) with no trend selected. Deriving the
+        // effect name from the idea (its first line) means "generate prompt" no
+        // longer 400s with "effect name or slug required" on an idea-only run —
+        // and the idea reaches the planner, which otherwise only ever saw the name.
+        const effectName = String(name || slug).trim()
+          || String(idea || '').trim().split('\n')[0].slice(0, 120)
+          || String(tagline || '').trim().slice(0, 120);
+        if (!effectName) return sendJson(res, 400, { error: 'effect name or slug required — describe your scene in the idea box or pick a trend first' });
         const selectedModel = isFlashloopPromptModel(model) ? model : 'logfare:auto';
         const refs = Array.isArray(references) ? references.filter(r => r && String(r.name || '').trim()) : [];
         // Flashloop formats are visual STYLES; SJinn trends are viral CONCEPTS.
