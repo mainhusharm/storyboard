@@ -184,7 +184,7 @@ check('videos endpoint returns the clip URL', /return sendJson\(res, 200, \{ ok:
 check('frame records its clip_url', /frames\[0\]\.clip_url = clipUrl/.test(src));
 check('partial renders do not clobber frames.json', /if \(!isPartial\) await writeJson\(FRAMES_JSON, frames\)/.test(src));
 check('client collects clip URLs per frame', /clipUrls\[f\.frame\]=j\.clipUrl\|\|j\.frame\.clip_url/.test(client));
-check('client passes clipUrls to combine', /clipUrls[,\}]\S*\}\)\);\s*\n\s*if\(cb&&cb\.error\)/.test(client));
+check('client passes clipUrls to combine', /const cb=await callPhase\('\/combine',sbPayload\(\{[^}]*clipUrls[,}]/.test(client));
 check('client warns when no clip URLs came back', /no clip URLs returned/.test(client));
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');

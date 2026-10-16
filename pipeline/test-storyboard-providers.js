@@ -14,7 +14,8 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'storyboard-providers-'));
 const serverFile = path.join(root, 'web/server.js');
 const source = fs.readFileSync(serverFile, 'utf8');
 const client = fs.readFileSync(path.join(root, 'web/public/storyboard.html'), 'utf8');
-let imageCalls = 0, submits = 0, imageMode = 'filtered';
+let imageCalls = 0, submits = 0, imageMode = 'filtered', failUploads = false;
+let forceCopyFailure = false, forceConcatFailure = false, fallbackCount = 0;
 let statusCode = 200, statusBody = { status: 'RUNNING' };
 let png, clip, submitted;
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
@@ -34,15 +35,35 @@ async function upstream(url, options = {}) {
   if (url.includes('/v1/status/')) return json(statusBody, statusCode);
   if (url === 'https://cdn.example.test/clip.mp4') return new Response(clip);
   if (url === 'https://catbox.moe/user/api.php') {
+    if (failUploads) return new Response('upload unavailable', { status: 503 });
     const file = options.body.get('fileToUpload');
     return new Response('https://cdn.example.test/' + (file.type.startsWith('video/') ? 'clip.mp4' : 'still.png'));
   }
+  if (url === 'https://uguu.se/upload' && failUploads) return json({ success: false }, 503);
   throw new Error('Unexpected upstream request: ' + url);
 }
 
 const mod = { exports: {} };
+const serverRequire = createRequire(serverFile);
+function isolatedRequire(name) {
+  if (name !== 'child_process') return serverRequire(name);
+  const childProcess = serverRequire(name);
+  return { ...childProcess, execFile(file, args, opts, callback) {
+    if (args.includes('concat')) {
+      if (forceConcatFailure || (forceCopyFailure && args.includes('copy'))) {
+        forceCopyFailure = false;
+        return setImmediate(() => callback(new Error('simulated concat failure')));
+      }
+      if (!args.includes('copy')) {
+        fallbackCount++;
+        assert.ok(fs.existsSync(path.join(tmp, 'video/concat_list.txt')), 'fallback still needs the concat manifest');
+      }
+    }
+    return childProcess.execFile(file, args, opts, callback);
+  } };
+}
 vm.runInNewContext(source.replace("const ROOT = IS_VERCEL ? '/tmp' : path.resolve(__dirname, '..');", `const ROOT = ${JSON.stringify(tmp)};`), {
-  module: mod, exports: mod.exports, require: createRequire(serverFile), __dirname: path.dirname(serverFile),
+  module: mod, exports: mod.exports, require: isolatedRequire, __dirname: path.dirname(serverFile),
   process: { env: { VERCEL: '1', NOVITA_API_KEY: 'fake', NOVITA_BASE_URL: 'https://novita.example.test',
     LOGFARE_API_KEY: 'fake', SESSION_SECRET: 'offline-test-session-secret' } },
   Buffer, URL, fetch: upstream, AbortController, AbortSignal, Blob, FormData,
@@ -135,6 +156,33 @@ async function main() {
   assert.equal(submits, 1);
   console.log('ok: authentication failure and missing completed asset stop polling without resubmission');
 
+  const combineBody = { framesData: [{ ...frame, frame: 3, clip_url: 'https://cdn.example.test/clip.mp4' },
+    { ...frame, frame: 4, clip_url: 'https://cdn.example.test/clip.mp4' }], narrationMode: 'prompt' };
+  forceCopyFailure = true;
+  result = await api('/combine', combineBody);
+  assert.equal(result.body.ok, true, JSON.stringify(result.body));
+  assert.equal(result.body.finalUrl, 'https://cdn.example.test/clip.mp4');
+  assert.equal(fallbackCount, 1, 'copy failure must successfully re-encode using the retained manifest');
+  assert.ok(fs.statSync(path.join(tmp, 'video/final_story.mp4')).size > 0);
+  assert.equal(fs.existsSync(path.join(tmp, 'video/concat_list.txt')), false, 'manifest is cleaned up after both attempts');
+  failUploads = true;
+  result = await api('/combine', combineBody);
+  assert.equal(result.status, 502);
+  assert.equal(result.body.ok, false);
+  assert.equal(result.body.code, 'FINAL_UPLOAD_FAILED');
+  assert.equal(result.body.finalUrl, undefined, 'publishing failures never return an empty success URL');
+  failUploads = false;
+  forceConcatFailure = true;
+  result = await api('/combine', combineBody);
+  assert.equal(result.status, 422);
+  assert.equal(result.body.ok, false, 'failed concat is never reported as a finished film');
+  assert.equal(fs.existsSync(path.join(tmp, 'video/final_story.mp4')), false);
+  forceConcatFailure = false;
+  result = await api('/combine', { framesData: [], narrationMode: 'prompt' });
+  assert.equal(result.status, 422);
+  assert.equal(result.body.ok, false);
+  console.log('ok: real ffmpeg combine, concat fallback, failed publishing, and absent output return truthful results');
+
   // Execute the real browser poll loop with a virtual clock. A healthy long
   // render must refresh the watchdog, log only transitions, and count request time.
   let now = 0, calls = 0;
@@ -162,6 +210,7 @@ async function main() {
       CHARS: [], FRAMES: [], IS_VERCEL_CLIENT: true, USER_CANCELLED: false,
       $: id => ({ value: values[id] || '', checked: true, style: {}, load() {} }),
       localStorage: { setItem: (k, v) => storage.set(k, v), getItem: k => storage.get(k) },
+      resetStoryboardAssets() { storage.clear(); }, rememberFinalFilm: url => assert.ok(url),
       logLocal: msg => logs.push(msg), poll() {}, refresh() {}, refreshCredits() {}, withTimeout: b => b,
       api: async () => ({ ok: true, characters: [{ id: 'hero' }], frames: [frame] }),
       callPhase: async (route, body) => {

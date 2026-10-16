@@ -1651,20 +1651,25 @@ async function uploadToImageHost(filePath, logFn = inflLogLine) {
 // mime — a clip must keep its .mp4 extension/mime so the combine step can
 // fetch it and the browser can play it (serverless instances don't share /tmp,
 // so the clip has to survive outside the instance that rendered it).
-async function uploadVideoClip(filePath, logFn = logLine, mime = 'video/mp4', fileName = 'clip.mp4') {
+async function uploadVideoClip(filePath, logFn = logLine, mime = 'video/mp4', fileName = 'clip.mp4', opts = {}) {
+  const uploadTimeout = () => {
+    const remaining = opts.deadline ? opts.deadline - Date.now() : 180000;
+    if (remaining < 1000) throw new Error('clip upload exceeded the request time budget');
+    return Math.min(180000, remaining);
+  };
   const buf = await fsp.readFile(filePath);
   try {
     const form = new FormData();
     form.append('reqtype', 'fileupload');
     form.append('fileToUpload', new Blob([buf], { type: mime }), fileName);
-    const res = await fetch('https://catbox.moe/user/api.php', { method: 'POST', body: form, signal: AbortSignal.timeout(180000) });
+    const res = await fetch('https://catbox.moe/user/api.php', { method: 'POST', body: form, signal: AbortSignal.timeout(uploadTimeout()) });
     const text = await res.text();
     if (res.ok && text && text.startsWith('https://')) { logFn(`clip uploaded to catbox: ${text}`); return text.trim(); }
   } catch (e) { logFn(`catbox clip upload failed: ${e.message}`); }
   try {
     const form = new FormData();
     form.append('files[]', new Blob([buf], { type: mime }), fileName);
-    const res = await fetch('https://uguu.se/upload', { method: 'POST', body: form, signal: AbortSignal.timeout(180000) });
+    const res = await fetch('https://uguu.se/upload', { method: 'POST', body: form, signal: AbortSignal.timeout(uploadTimeout()) });
     const j = await res.json().catch(() => ({}));
     if (j.files && j.files[0] && j.files[0].url) { logFn(`clip uploaded to uguu: ${j.files[0].url}`); return j.files[0].url; }
   } catch (e) { logFn(`uguu clip upload failed: ${e.message}`); }
@@ -4473,30 +4478,30 @@ async function combineFilm(frames, ratio = '16:9', narrationMode = 'tts', opts =
       '-c', 'copy', '-movflags', '+faststart',
       finalPath
     ], { cwd: VIDEO_DIR, timeout: 120000 }, async (err) => {
-      try { fs.unlinkSync(listPath); } catch {}
-      const outExists = fs.existsSync(finalPath) && fs.statSync(finalPath).size > 10000;
+      const outExists = !err && fs.existsSync(finalPath) && fs.statSync(finalPath).size > 0 && await probeDuration(finalPath) > 0;
       if (outExists) {
         const stats = await fsp.stat(finalPath).catch(() => null);
         const dur = await probeDuration(finalPath);
         logLine(`final film: ${stats ? (stats.size/1048576).toFixed(1)+'MB' : 'created'} — ${normClips.length} clips — ${dur.toFixed(1)}s`);
         job.done = 1; job.ok = 1;
-      } else if (err) {
-        logLine(`concat copy failed, trying re-encode: ${err.message.slice(0,80)}`);
+      } else {
+        logLine(`concat copy failed, trying re-encode: ${err ? err.message.slice(0,80) : 'output was not a playable video'}`);
         // Fallback: re-encode concat
         execFile(ffmpegBin(), ['-y','-f','concat','-safe','0','-i',listPath,
           '-c:v','libx264','-crf','20','-preset','ultrafast',
           '-c:a','aac','-b:a','128k','-movflags','+faststart', finalPath],
           { cwd: VIDEO_DIR, timeout: 120000 }, async (e2) => {
-            if (e2) { logLine(`final film failed: ${e2.message.slice(0,120)}`); job.failed.push('final'); }
+            const valid = !e2 && fs.existsSync(finalPath) && fs.statSync(finalPath).size > 0 && await probeDuration(finalPath) > 0;
+            if (!valid) { logLine(`final film failed: ${e2 ? e2.message.slice(0,120) : 'output was not a playable video'}`); job.failed.push('final'); try { fs.unlinkSync(finalPath); } catch {} }
             else { const s = await fsp.stat(finalPath).catch(()=>null); logLine(`final film created (re-encode mode): ${s?(s.size/1048576).toFixed(1)+'MB':''} — ${normClips.length} clips`); }
             job.done = 1; job.ok = job.failed.length ? 0 : 1;
-            resolve(fs.existsSync(finalPath) ? finalPath : null);
+            resolve(valid ? finalPath : null);
           });
         return;
       }
       resolve(finalPath);
     });
-  });
+  }).finally(() => { try { fs.unlinkSync(listPath); } catch {} });
 
   // Re-apply previously generated narration so re-combines never wipe the voice
   // track. On Vercel the narration was assembled on ANOTHER instance, so the
@@ -5488,8 +5493,9 @@ const requestHandler = async (req, res) => {
       const frames = await readJson(FRAMES_JSON) || [];
       const chars = await readJson(CHARS_JSON) || [];
       for (const f of frames) { f.hasImage = fs.existsSync(frameFile(f.frame)); f.hasVideo = fs.existsSync(videoFile(f.frame)); }
-      const hasFinal = fs.existsSync(path.join(VIDEO_DIR, 'final_story.mp4'));
-      return sendJson(res, 200, { characters: chars, frames, hasFinal });
+      const finalStat = await fsp.stat(path.join(VIDEO_DIR, 'final_story.mp4')).catch(() => null);
+      const hasFinal = !!finalStat && finalStat.size > 0;
+      return sendJson(res, 200, { characters: chars, frames, hasFinal, finalVersion: finalStat?.mtimeMs || null });
     }
 
     if (p === '/api/storyboard' && req.method === 'POST') {
@@ -5916,18 +5922,26 @@ if (p === '/api/combine' && req.method === 'POST') {
       const body = await readBody(req).catch(() => ({}));
       let { frames } = await storyDataFrom(body);
       if (IS_VERCEL) return (async () => {
+        const combineDeadline = Date.now() + 270000;
         try {
           const fp = await combineFilm(frames, body.ratio || '16:9', body.narrationMode, { narrVol: body.narrVolume, origVol: body.origVolume, clipUrls: body.clipUrls, imageModel: body.imageModel, narrationUrl: body.narrationUrl });
           job.phase = 'idle';
+          if (!fp || !fs.existsSync(fp) || !fs.statSync(fp).size) {
+            return sendJson(res, 422, { ok: false, error: 'No final film was created. Finish rendering the scene clips or images, then retry Combine.' });
+          }
           // Publish the finished film and return its URL. The file lives only in
           // THIS instance's /tmp, so the browser's request for /video/final_story.mp4
           // usually lands elsewhere and 404s — the player then shows nothing. The
           // Flashloop combine already solved this by hosting the film; the
           // storyboard plays the local path. Return a hosted URL instead.
-          let finalUrl = '';
+          let finalUrl;
           try {
-            if (fp && fs.existsSync(fp)) { finalUrl = await uploadVideoClip(fp); logLine(`final film hosted: ${finalUrl}`); }
-          } catch (e) { logLine(`final film upload failed: ${e.message} — falling back to the local path`); }
+            finalUrl = await uploadVideoClip(fp, logLine, 'video/mp4', 'final_story.mp4', { deadline: combineDeadline });
+            logLine(`final film hosted: ${finalUrl}`);
+          } catch (e) {
+            logLine(`final film upload failed: ${e.message}`);
+            return sendJson(res, 502, { ok: false, code: 'FINAL_UPLOAD_FAILED', error: 'The film was combined, but its playable link could not be published. Retry Combine to publish it.' });
+          }
           return sendJson(res, 200, { ok: true, finalUrl });
         } catch (e) { job.phase = 'idle'; return sendJson(res, 500, { error: String(e.message || e) }); }
       })();

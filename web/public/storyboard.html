@@ -334,10 +334,12 @@ The Director AI will:
     <div id="finalSection" class="final-section" style="display:none">
       <h2>FINAL <b>FILM</b></h2>
       <div class="final-player">
-        <video id="finalVideo" controls></video>
+        <video id="finalVideo" controls preload="metadata"></video>
+        <p id="finalStatus" role="status" style="display:none"></p>
         <div class="meta">
           <span class="badge hl">COMBINED STORY FILM</span>
           <span class="badge" id="finalMeta"></span>
+          <a id="finalDownload" class="badge" target="_blank" rel="noopener">Open film</a>
         </div>
       </div>
     </div>
@@ -391,6 +393,48 @@ const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&g
 const pad=n=>String(n).padStart(2,'0');
 let FRAMES=[],CHARS=[];
 let IS_VERCEL_CLIENT=false; // set from /api/health — Vercel renders videos one frame per request
+let FINAL_FILM=null;
+function finalBoardKey(){
+  return JSON.stringify(FRAMES.map(f=>[f.frame,f.image_prompt,f.animation_prompt,f.narration,f.dialogue,f.duration_sec]));
+}
+function rememberFinalFilm(url){
+  if(!/^https?:\/\//i.test(String(url||'')))throw new Error('Combine did not return a playable film URL. Please retry Combine.');
+  FINAL_FILM={url,board:finalBoardKey()};
+  try{localStorage.setItem('sb_final_url',url);localStorage.setItem('sb_final_board',FINAL_FILM.board)}catch(e){}
+  renderFinalFilm();
+}
+function resetStoryboardAssets(){
+  FINAL_FILM=null;
+  for(const key of ['sb_final_url','sb_final_board','sb_clip_urls','sb_narr_url']){
+    try{localStorage.removeItem(key)}catch(e){}
+  }
+  renderFinalFilm();
+}
+function renderFinalFilm(data={}){
+  const board=finalBoardKey();
+  if(!FINAL_FILM){
+    try{
+      const url=localStorage.getItem('sb_final_url'),savedBoard=localStorage.getItem('sb_final_board');
+      // Retain hosted films saved by the earlier client; new films are scoped to
+      // their storyboard so starting a new story never shows an old final cut.
+      if(/^https?:\/\//i.test(url||'')&&(!savedBoard||savedBoard===board))FINAL_FILM={url,board};
+    }catch(e){}
+  }
+  const localUrl='/video/final_story.mp4'+(data.finalVersion?'?v='+data.finalVersion:'');
+  const src=FINAL_FILM?.board===board?FINAL_FILM.url:(!IS_VERCEL_CLIENT&&data.hasFinal?localUrl:'');
+  const video=$('finalVideo');
+  $('finalSection').style.display=src?'':'none';
+  if(!src){
+    if(video.getAttribute('src')){video.pause();video.removeAttribute('src');video.load();}
+    return;
+  }
+  $('finalDownload').href=src;
+  if(video.getAttribute('src')!==src){
+    $('finalStatus').style.display='none';
+    $('finalMeta').textContent='Loading film…';
+    video.src=src;video.load();
+  }
+}
 // Client-side log buffer: on Vercel the server's in-memory job log is per-instance
 // and can vanish between calls, so per-frame runs log locally instead.
 let LOCAL_LOG=[];
@@ -467,6 +511,17 @@ async function refreshNarrStatus(){
 }
 
 async function init(){
+  $('finalVideo').onloadedmetadata=()=>{
+    const seconds=Math.floor($('finalVideo').duration);
+    $('finalMeta').textContent=Number.isFinite(seconds)?`${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,'0')}`:'Ready';
+    $('finalStatus').style.display='none';
+  };
+  $('finalVideo').onerror=()=>{
+    if(!$('finalVideo').getAttribute('src'))return;
+    $('finalMeta').textContent='Playback failed';
+    $('finalStatus').textContent='The film link could not be loaded. Try Open film, or Combine again to create a fresh link.';
+    $('finalStatus').style.display='';
+  };
   try{const h=await api('/health');IS_VERCEL_CLIENT=!!h.vercel}catch(e){}
   const m=await api('/models');
   $('chatModel').innerHTML=m.chat.map(x=>{
@@ -529,7 +584,6 @@ async function refresh(d){
   if(chars.length||frames.length){try{localStorage.setItem('sb_chars',JSON.stringify(chars));localStorage.setItem('sb_frames',JSON.stringify(frames))}catch(e){}}
   CHARS=chars.map(c=>({...c,hasRef:c.hasRef||(/^https?:/.test(c.reference_image_url||'')&&!c.reference_error)}));
   FRAMES=frames.map(f=>({...f,hasImage:!f.image_error&&(f.hasImage||/^https?:/.test(f.generated_image_url||'')),hasVideo:f.hasVideo||!!f.clip_url}));
-  const hasFinal=!!d.hasFinal;
   // stats
   const refsC=CHARS.filter(c=>c.hasRef).length;
   const imgsC=FRAMES.filter(f=>f.hasImage).length;
@@ -557,17 +611,7 @@ async function refresh(d){
         <div class="cbtn"><button onclick="regenChar('${esc(c.id)}')">↻ Re-render ref</button></div>
       </div>`).join('');
   } else { $('charSection').style.display='none'; }
-  // final film
-  if(hasFinal){
-    $('finalSection').style.display='';
-    // Prefer a hosted URL. The mp4 lives only in the /tmp of the instance that ran
-    // combine, so /video/final_story.mp4 usually 404s on any other instance and the
-    // player shows nothing. Refresh always returns hasFinal from whatever instance
-    // answered, so the hosted URL is persisted from the combine response.
-    let src=null;
-    try{ src=localStorage.getItem('sb_final_url'); }catch(e){}
-    $('finalVideo').src=(src||'/video/final_story.mp4')+(src?'':'?v='+Date.now());
-  } else { $('finalSection').style.display='none'; }
+  renderFinalFilm(d);
   // frames
   if(!FRAMES.length){$('frames').innerHTML='<div class="empty"><div class="big">🎬</div><h3>NO STORYBOARD YET</h3><p>Paste a script and hit <b>Generate Storyboard</b>.</p></div>';return;}
   const vt=Date.now();
@@ -759,6 +803,7 @@ $('btnStoryboard').onclick=async()=>{
   LOCAL_BUSY=true;poll();
   try{
     await api('/clean-outputs',{method:'POST'});
+    resetStoryboardAssets();
     // Vercel kills functions at 300s — abort the fetch at 290s so the user gets
     // a clear error instead of an endless hang when the storyboard stalls.
     const r=await api('/storyboard',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({script,model:$('chatModel').value,duration:Number($('duration').value),look:$('look').value,language:$('language').value,style:$('style').value,clipDuration:Number($('clipDuration').value)}),signal:IS_VERCEL_CLIENT?AbortSignal.timeout(290000):undefined});
@@ -845,6 +890,7 @@ async function runAutoVercel(script){
 
     if(sbSubmit.error)throw new Error(sbSubmit.error);
     if(sbSubmit.ok&&sbSubmit.frames){
+      resetStoryboardAssets();
       CHARS=sbSubmit.characters||[];FRAMES=sbSubmit.frames||[];OFFLINE_BOARD=true;
       try{localStorage.setItem('sb_chars',JSON.stringify(CHARS));localStorage.setItem('sb_frames',JSON.stringify(FRAMES))}catch(e){}
       logLocal(`storyboard ready: ${CHARS.length} characters, ${FRAMES.length} frames`,'ok');
@@ -957,7 +1003,8 @@ async function runAutoVercel(script){
           await new Promise(res=>setTimeout(res,10000));
         }
       }
-      if(j&&j.error)logLocal(`frame ${f.frame}: ${String(j.error).replace(/^frame \d+: /,'')}`,'err');
+      if(!j||j.error||j.ok===false)throw new Error(`Frame ${f.frame}: ${(j&&j.error)||'video render failed'}`);
+      if(!j.frame||!(j.clipUrl||j.frame.clip_url))throw new Error(`Frame ${f.frame}: the clip has no hosted URL. Retry Videos before combining.`);
       else if(j&&j.frame){
         FRAMES=FRAMES.map(x=>x.frame===f.frame?{...x,...j.frame}:x);
         if(j.frame.chain_image_url)prevChain=j.frame.chain_image_url;
@@ -972,16 +1019,9 @@ async function runAutoVercel(script){
     // ---- Phase 6: combine ----
     logLocal('phase 6/6: combining final film…','');
     const cb=await callPhase('/combine',sbPayload({ratio:opts.ratio,narrationMode:opts.narrationMode,narrVolume:opts.narrVolume,origVolume:opts.origVolume,clipUrls,imageModel:opts.imageModel,narrationUrl:narrUrl||localStorage.getItem('sb_narr_url')||''}));
-    if(cb&&cb.error)logLocal('combine: '+cb.error,'err');
-    else {
-      if(cb&&cb.finalUrl){
-        try{localStorage.setItem('sb_final_url',cb.finalUrl)}catch(e){}
-        $('finalSection').style.display='';
-        $('finalVideo').src=cb.finalUrl;
-        $('finalVideo').load();
-      }
-      logLocal('🎬 FINAL FILM READY','ok');
-    }
+    if(!cb||cb.error||cb.ok===false)throw new Error((cb&&cb.error)||'Combine failed');
+    rememberFinalFilm(cb.finalUrl);
+    logLocal('🎬 FINAL FILM READY','ok');
   }catch(e){logLocal('pipeline failed: '+e.message,'err');logLocal('⚠ stopped — the console above has the details. Click 🔧 Force Clean, then run again.','err')}
   finally{SUBMITTING=false;LOCAL_BUSY=false;LOCAL_PHASE='';poll();refresh();refreshCredits()}
 }
@@ -1104,7 +1144,9 @@ $('btnCombine').onclick=async()=>{
   const clipUrls=loadClipUrls();
   for(const f of FRAMES) if(f.clip_url&&!clipUrls[String(f.frame)]) clipUrls[String(f.frame)]=f.clip_url;
   let narrationUrl='';try{narrationUrl=localStorage.getItem('sb_narr_url')||''}catch(e){}
-  await postJob('/combine',sbPayload({ratio:$('ratio').value,narrationMode:$('narrationMode').value,narrVolume:Number($('narrVolume').value),origVolume:Number($('origVolume').value),imageModel:$('imageModel').value,clipUrls,narrationUrl}));
+  const r=await postJob('/combine',sbPayload({ratio:$('ratio').value,narrationMode:$('narrationMode').value,narrVolume:Number($('narrVolume').value),origVolume:Number($('origVolume').value),imageModel:$('imageModel').value,clipUrls,narrationUrl}));
+  if(!r||r.error||r.ok===false||r.started)return;
+  try{rememberFinalFilm(r.finalUrl);logLocal('🎬 FINAL FILM READY','ok')}catch(e){alert(e.message)}
 };
 async function regenFrame(n,edited=false){const r=await postJob('/images',sbPayload({frames:[n],imageModel:$('imageModel').value,ratio:$('ratio').value,style:$('style').value,consistency:$('consistency').checked,...(edited?{framesData:FRAMES}:{})}));await acceptImageResults(r)}
 async function saveFramePrompt(n){

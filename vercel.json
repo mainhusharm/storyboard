@@ -2,6 +2,10 @@
   "version": 2,
   "buildCommand": "npm run build",
   "outputDirectory": "public",
+  "headers": [
+    { "source": "/storyboard", "headers": [{ "key": "Cache-Control", "value": "no-store, max-age=0" }] },
+    { "source": "/storyboard.html", "headers": [{ "key": "Cache-Control", "value": "no-store, max-age=0" }] }
+  ],
   "rewrites": [
     { "source": "/", "destination": "/home.html" },
     { "source": "/login", "destination": "/login.html" },
