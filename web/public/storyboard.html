@@ -529,7 +529,13 @@ async function refreshCredits(){
 // Narration status badge — whether the current storyboard has a matching voice track
 async function refreshNarrStatus(){
   try{
-    const s=await api('/narration-status');
+    // An instance's local audio may belong to another run. Only the hosted URL
+    // returned to this browser is usable across Vercel instances.
+    let s;
+    if(IS_VERCEL_CLIENT){
+      let url='';try{url=localStorage.getItem('sb_narr_url')||''}catch(e){}
+      s={hasAudio:!!url,matchesCurrent:!!url,withSpeech:FRAMES.filter(f=>f.narration||f.dialogue).length};
+    }else{s=await api('/narration-status');}
     const el=$('narrStatus'); if(!el)return;
     if(s.hasAudio&&s.matchesCurrent) el.innerHTML='<span style="color:var(--teal);font-weight:600">✓ Narration ready — voice track applies on Combine</span>';
     else if(s.hasAudio) el.innerHTML='<span style="color:var(--amber)">⚠ Narration exists but doesn\'t match the current storyboard — click 🔊 Narration</span>';
@@ -588,14 +594,16 @@ async function init(){
 }
 
 async function refresh(d){
-  if(!d){try{d=await api('/frames')}catch(e){d={}}}
+  if(!d){
+    if(IS_VERCEL_CLIENT){
+      // /tmp belongs to an instance, not this browser's current storyboard.
+      // Only inline generation results may replace this board on Vercel.
+      d={characters:CHARS,frames:FRAMES};
+    }else{try{d=await api('/frames')}catch(e){d={}}}
+  }
   let chars=d.characters||[],frames=d.frames||[];
   if(IS_VERCEL_CLIENT){
     OFFLINE_BOARD=true;
-    frames=frames.map(f=>{
-      const saved=FRAMES.find(x=>x.frame===f.frame&&x.image_prompt===f.image_prompt);
-      return saved?{...saved,...f,generated_image_url:saved.generated_image_url||f.generated_image_url,clip_url:saved.clip_url||f.clip_url}:f;
-    });
   }
   // Vercel: /tmp files can vanish on an instance switch — fall back to the last
   // storyboard we saved locally so the UI never shows an empty board after a reload.
@@ -928,6 +936,7 @@ async function runAutoVercel(script){
       CHARS=sbSubmit.characters||[];FRAMES=sbSubmit.frames||[];OFFLINE_BOARD=true;
       try{localStorage.setItem('sb_chars',JSON.stringify(CHARS));localStorage.setItem('sb_frames',JSON.stringify(FRAMES))}catch(e){}
       logLocal(`storyboard ready: ${CHARS.length} characters, ${FRAMES.length} frames`,'ok');
+      logLocal('locked characters: '+CHARS.map(c=>`${c.name||c.id} (${c.id})`).join(', '),'ok');
       await refresh({characters:CHARS,frames:FRAMES});
     }else if(sbSubmit.pending&&sbSubmit.jobId){
       // Async path (Vercel) — poll for completion. Each poll may land on a
@@ -1214,6 +1223,7 @@ function openCharacterRef(index){
   $('mbody').innerHTML=`<h3>${esc(c.name||c.id)} — Reference portrait</h3>
     <div class="sect"><b>Locked character description</b><p>${esc(c.description)}</p></div>
     ${c.reference_error?`<p style="color:#f87171">${esc(c.reference_error.message)}</p>`:''}
+    ${c.reference_error?.submitted_prompt?`<details class="sect"><summary>Full prompt from the failed request — ${esc(c.reference_error.model)}</summary><p style="white-space:pre-wrap">${esc(c.reference_error.submitted_prompt)}</p></details>`:''}
     <div class="sect"><b>Reference prompt</b><p>Describe a standalone portrait with the locked appearance and wardrobe. Scene action belongs in the frame prompts.</p>
     <textarea id="characterRefPrompt" rows="8" style="width:100%;margin:8px 0">${esc(c.reference_prompt)}</textarea>
     <button onclick="saveCharacterRef(${index})">Save prompt &amp; re-render this character</button></div>`;

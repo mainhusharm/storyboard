@@ -1716,11 +1716,11 @@ async function readJson(f) { try { return JSON.parse(await fsp.readFile(f, 'utf8
 async function writeJson(f, d) { await fsp.mkdir(path.dirname(f), { recursive: true }); await fsp.writeFile(f, JSON.stringify(d, null, 2)); }
 
 // Hydrate characters/frames from the request body when supplied (the client keeps a
-// copy for Vercel, where /tmp files may not survive an instance switch), falling back
-// to disk. Body data is persisted so later phases on the same instance find it.
+// copy for Vercel, where /tmp can contain a DIFFERENT run). Disk fallback is local
+// only. A serverless request must carry its own board, never borrow an older one.
 async function storyDataFrom(body = {}) {
-  let chars = Array.isArray(body.characters) ? body.characters : (await readJson(CHARS_JSON) || []);
-  let frames = Array.isArray(body.framesData) ? body.framesData : (await readJson(FRAMES_JSON) || []);
+  let chars = Array.isArray(body.characters) ? body.characters : (IS_VERCEL ? [] : await readJson(CHARS_JSON) || []);
+  let frames = Array.isArray(body.framesData) ? body.framesData : (IS_VERCEL ? [] : await readJson(FRAMES_JSON) || []);
   if (Array.isArray(body.characters)) await writeJson(CHARS_JSON, body.characters);
   if (Array.isArray(body.framesData)) await writeJson(FRAMES_JSON, body.framesData);
   return { chars, frames };
@@ -2513,7 +2513,7 @@ function logfareImageError(j, httpStatus) {
     (j?.errors && JSON.stringify(j.errors)) || j?.message || `HTTP ${httpStatus}: no image returned`);
   const filtered = /"code"\s*:\s*3030\b|output has been flagged|content[_ -]?(?:filter|policy)|safety (?:filter|system)/i.test(detail);
   const err = new Error(filtered
-    ? 'Logfare content filter rejected this image (3030). Edit the scene/image prompt or reference image before retrying.'
+    ? 'Logfare image generation was blocked by its content filter (3030). The response does not explain why. Review the full submitted prompt before retrying.'
     : detail.slice(0, 400));
   err.code = filtered ? 'IMAGE_CONTENT_FILTERED' : 'IMAGE_PROVIDER_ERROR';
   err.permanent = filtered || (httpStatus >= 400 && httpStatus < 500 && httpStatus !== 408 && httpStatus !== 429);
@@ -3167,7 +3167,7 @@ async function generateCharRefs(characters, imageModel = 'seedream-5', style = '
       const q = `${imageEndpoint(imageModel)}?prompt=${encodeURIComponent(p)}&model=${encodeURIComponent(imageModel)}&ratio=1:1`;
       const info = {};
       const task = await submitTask(q, logLine, info);
-      if (info.error?.permanent) throw info.error;
+      if (info.error?.permanent) { info.error.submittedPrompt = p; throw info.error; }
       if (!task) { logLine(`${c.id}: ref SUBMIT FAILED (${label})`); return false; }
       logLine(`${c.id}: submitted ref portrait (${label})`);
       const url = await waitTask(task, perTaskMin);
@@ -3221,7 +3221,8 @@ async function generateCharRefs(characters, imageModel = 'seedream-5', style = '
     if (job.cancelRequested) return;
     try { await renderCharRef(c, prompt); }
     catch (e) {
-      c.reference_error = { code: e.code || 'IMAGE_PROVIDER_ERROR', message: e.message, retryable: !e.permanent };
+      c.reference_error = { code: e.code || 'IMAGE_PROVIDER_ERROR', message: e.message, retryable: !e.permanent,
+        submitted_prompt: e.submittedPrompt || prompt, model: imageModel };
       job.failed.push(c.id); job.done++;
       logLine(`${c.id}: REF FAILED — ${e.message}`);
     }
@@ -5462,12 +5463,14 @@ const requestHandler = async (req, res) => {
     }
 
     if (p === '/api/characters') {
+      if (IS_VERCEL) return sendJson(res, 200, { characters: [], clientBoard: true });
       const chars = await readJson(CHARS_JSON) || [];
       for (const c of chars) { c.hasRef = fs.existsSync(charRefFile(c.id)); }
       return sendJson(res, 200, { characters: chars });
     }
 
     if (p === '/api/frames') {
+      if (IS_VERCEL) return sendJson(res, 200, { characters: [], frames: [], hasFinal: false, clientBoard: true });
       const frames = await readJson(FRAMES_JSON) || [];
       const chars = await readJson(CHARS_JSON) || [];
       for (const f of frames) { f.hasImage = fs.existsSync(frameFile(f.frame)); f.hasVideo = fs.existsSync(videoFile(f.frame)); }
@@ -5491,8 +5494,8 @@ const requestHandler = async (req, res) => {
       const totalDur = frames.reduce((s, f) => s + (f.duration_sec || 0), 0);
       logLine(`storyboard ready: ${characters.length} characters, ${frames.length} frames (${totalDur}s total)`);
       job.phase = 'idle';
-      // Vercel: also persist to /tmp so /api/frames can serve status; client also
-      // gets the payload inline (surviving instance switches).
+      // Return this run's board inline. The browser owns the copy used across
+      // Vercel instances; unscoped /tmp files never hydrate another request.
       return sendJson(res, 200, { ok: true, characters, frames });
     } catch (e) {
       job.phase = 'idle';

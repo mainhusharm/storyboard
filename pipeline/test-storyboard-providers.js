@@ -104,6 +104,15 @@ async function main() {
     return { status: res.status, body: await res.json() };
   }
   assert.equal((await api('/auth/signup', { email: 'offline@example.test', password: 'secret123', name: 'Offline' })).status, 200);
+  fs.writeFileSync(path.join(tmp, 'storyboard/characters.json'), JSON.stringify([{ id: 'Old A', name: 'Unrelated older man' }]));
+  fs.writeFileSync(path.join(tmp, 'storyboard/frames.json'), JSON.stringify([{ frame: 99, animation_prompt: 'Old story' }]));
+  assert.equal((await api('/frames')).body.frames.length, 0, 'serverless GET must not return another run from /tmp');
+  assert.equal((await api('/characters')).body.characters.length, 0);
+  assert.equal((await api('/char-refs', { force: true, imageModel: 'flux-2-klein-9b' })).status, 400);
+  assert.equal((await api('/videos', { frames: [99], videoModel: 'wan3.0-video-prime' })).status, 400);
+  assert.equal(imageCalls, 0);
+  assert.equal(submits, 0, 'a missing inline board never generates assets for a stale disk board');
+  console.log('ok: stale serverless files cannot replace the browser board or supply missing generation inputs');
   const frame = { frame: 1, duration_sec: 1, image_prompt: 'A blue ceramic vase on a table', animation_prompt: 'Slow camera push-in', narration: 'A quiet morning.' };
   let result = await api('/images', { frames: [1], framesData: [frame], characters: [], imageModel: 'flux-2-klein-9b' });
   assert.equal(result.body.ok, false);
@@ -128,6 +137,8 @@ async function main() {
   result = await api('/char-refs', { characters, imageModel: 'flux-2-klein-9b', force: true });
   assert.equal(result.body.ok, false);
   assert.equal(result.body.errors.length, 2);
+  assert.equal(result.body.errors[0].model, 'flux-2-klein-9b');
+  assert.ok(result.body.errors[0].submitted_prompt.includes(characters[0].reference_prompt), 'diagnostics retain the full styled request prompt, not a truncated card description');
   assert.equal(imageCalls-beforeRefs, 2, 'a rejected reference is submitted once');
   assert.equal(result.body.characters.length, 2);
   imageMode = 'success';
