@@ -2846,7 +2846,7 @@ OUTPUT FORMAT — a single JSON object:
 
 RULES:
 - description: 100-200 words, hyper-detailed. Include face, hair, eyes, skin, build, clothing, accessories
-- reference_prompt: a detailed portrait prompt for generating a character reference image (waist-up, neutral background)
+- reference_prompt: a standalone portrait for identifying the character (waist-up, neutral background, relaxed pose). Describe the same face, hair, clothing and distinguishing features as description. Keep story events, confrontations, injuries, dialogue and scene action out of this portrait; those belong in frame prompts.
 - id format: "Character A", "Character B", etc.`;
 
 function buildFramesPrompt(frameCount, secPerFrame) {
@@ -3134,38 +3134,13 @@ async function generateStoryboard(script, model, targetDuration = 120, look = ''
 
 // ================================ IMAGE GENERATION ================================
 
-async function generateCharRefs(characters, imageModel = 'seedream-5', style = 'cinematic') {
-  setPhase('char-refs', characters.length);
-  logLine(`generating character reference images for ${characters.length} character(s) — model: ${imageModel} — style: ${STYLES[style]?.label || 'Cinematic'}`);
-  for (const c of characters) {
-    const out = charRefFile(c.id);
-    if (fs.existsSync(out)) { logLine(`${c.id}: ref exists, skip`); job.done++; job.ok++; continue; }
-    const styledRefPrompt = applyStyle(c.reference_prompt, style);
-    logLine(`${c.id}: enhancing ref prompt...`);
-    const enhancedRef = await enhancePrompt(styledRefPrompt);
-    const q = `${imageEndpoint(imageModel)}?prompt=${encodeURIComponent(enhancedRef)}&model=${encodeURIComponent(imageModel)}&ratio=1:1`;
-    const task = await submitTask(q);
-    if (!task) { job.failed.push(c.id); job.done++; logLine(`${c.id}: SUBMIT FAILED`); continue; }
-    logLine(`${c.id}: submitted ref portrait (enhanced)`);
-    const url = await waitTask(task, IS_VERCEL ? 4 : 25);
-    if (url && await download(url, out)) { c.reference_image_url = url; job.ok++; logLine(`${c.id}: REF DONE`); }
-    else { job.failed.push(c.id); logLine(`${c.id}: REF FAILED`); }
-    job.done++;
-    await new Promise(r => setTimeout(r, 700));
-  }
-  await writeJson(CHARS_JSON, characters);
-  logLine(`char-refs finished: ${job.ok} ok, ${job.failed.length} failed`);
-  job.phase = 'idle';
-}
-
-// ================================ IMAGE GENERATION ================================
-
-async function generateCharRefs(characters, imageModel = 'seedream-5', style = 'cinematic') {
-  setPhase('char-refs', characters.length);
-  logLine(`generating character reference images for ${characters.length} character(s) — model: ${imageModel} — style: ${STYLES[style]?.label || 'Cinematic'}`);
+async function generateCharRefs(characters, imageModel = 'seedream-5', style = 'cinematic', opts = {}) {
+  const targets = Array.isArray(opts.only) ? characters.filter(c => opts.only.includes(c.id)) : characters;
+  setPhase('char-refs', targets.length);
+  logLine(`generating character reference images for ${targets.length} character(s) — model: ${imageModel} — style: ${STYLES[style]?.label || 'Cinematic'}`);
   
-  const work = characters.filter(c => !fs.existsSync(charRefFile(c.id)));
-  for (const c of characters.filter(c => fs.existsSync(charRefFile(c.id)))) { job.done++; job.ok++; }
+  const work = targets.filter(c => !fs.existsSync(charRefFile(c.id)));
+  for (const c of targets.filter(c => fs.existsSync(charRefFile(c.id)))) { job.done++; job.ok++; }
   if (work.length === 0) { logLine('all char refs exist, skipping'); job.phase = 'idle'; return; }
 
   // Enhance all prompts in parallel
@@ -3232,7 +3207,10 @@ async function generateCharRefs(characters, imageModel = 'seedream-5', style = '
     const essentials = `character portrait of ${c.name || c.id}, waist-up 3/4 view, neutral background, soft directional key light, 85mm portrait lens`;
     r = await refAttempt('essentials fallback', essentials);
     if (r === 'cancel') return;
-    if (r !== true) { job.failed.push(c.id); logLine(`${c.id}: REF FAILED — every prompt variant was rejected`); }
+    if (r !== true) {
+      c.reference_error ||= { code: 'REFERENCE_RENDER_FAILED', message: 'Character reference render failed after all attempts.', retryable: true };
+      job.failed.push(c.id); logLine(`${c.id}: REF FAILED — all render attempts failed`);
+    }
     job.done++;
   };
 
@@ -5717,22 +5695,25 @@ const requestHandler = async (req, res) => {
       const body = await readBody(req).catch(() => ({}));
       let { chars } = await storyDataFrom(body);
       if (!chars.length) return sendJson(res, 400, { error: 'no characters — generate storyboard first' });
+      const requestedIds = Array.isArray(body.force) ? body.force.map(String) : null;
+      const targets = requestedIds ? chars.filter(c => requestedIds.includes(c.id)) : chars;
+      if (!targets.length) return sendJson(res, 400, { error: 'no matching characters' });
       if (body.force === true) { for (const c of chars) { try { fs.unlinkSync(charRefFile(c.id)); } catch {} } }
       else if (Array.isArray(body.force)) { for (const id of body.force) { try { fs.unlinkSync(charRefFile(id)); } catch {} } }
       if (IS_VERCEL) return (async () => {
         try {
-          await generateCharRefs(chars, body.imageModel || IMAGE_MODELS[0], body.style || 'cinematic');
+          await generateCharRefs(chars, body.imageModel || IMAGE_MODELS[0], body.style || 'cinematic', { only: requestedIds });
           job.phase = 'idle';
           // Return refreshed characters (incl. reference_image_url) so the client keeps
           // its copy in sync even though /api/status is per-instance on Vercel.
-          const failed = chars.filter(c => c.reference_error || !fs.existsSync(charRefFile(c.id))).map(c => c.id);
-          const errors = chars.filter(c => c.reference_error).map(c => ({ character: c.id, ...c.reference_error }));
+          const failed = targets.filter(c => c.reference_error || !fs.existsSync(charRefFile(c.id))).map(c => c.id);
+          const errors = targets.filter(c => c.reference_error).map(c => ({ character: c.id, ...c.reference_error }));
           return sendJson(res, 200, { ok: !failed.length, failed, errors, characters: chars,
             ...(failed.length ? { error: errors.map(e => `${e.character}: ${e.message}`).join('; ') || `Character references failed: ${failed.join(', ')}` } : {}) });
         } catch (e) { job.phase = 'idle'; return sendJson(res, 500, { error: String(e.message || e) }); }
       })();
-      generateCharRefs(chars, body.imageModel || IMAGE_MODELS[0], body.style || 'cinematic').catch(e => { logLine(`char-refs crash: ${e.message}`); job.phase = 'idle'; });
-      return sendJson(res, 202, { started: true, count: chars.length });
+      generateCharRefs(chars, body.imageModel || IMAGE_MODELS[0], body.style || 'cinematic', { only: requestedIds }).catch(e => { logLine(`char-refs crash: ${e.message}`); job.phase = 'idle'; });
+      return sendJson(res, 202, { started: true, count: targets.length });
     }
 
     if (p === '/api/images' && req.method === 'POST') {

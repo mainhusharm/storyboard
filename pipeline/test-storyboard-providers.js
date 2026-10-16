@@ -119,6 +119,33 @@ async function main() {
   assert.ok(fs.existsSync(path.join(tmp, 'frames/frame_01.png')));
   console.log('ok: successful Flux still is hosted and returned inline, clearing the previous error');
 
+  const characters = [
+    { id: 'Character A', name: 'Ram', description: 'Adult man wearing traditional yellow clothing.', reference_prompt: 'Standalone illustrated portrait of Ram, relaxed pose, yellow clothing.' },
+    { id: 'Character B', name: 'Hanuman', description: 'Hanuman wearing traditional clothing.', reference_prompt: 'Standalone illustrated portrait of Hanuman, relaxed pose, plain background.' }
+  ];
+  imageMode = 'filtered';
+  let beforeRefs = imageCalls;
+  result = await api('/char-refs', { characters, imageModel: 'flux-2-klein-9b', force: true });
+  assert.equal(result.body.ok, false);
+  assert.equal(result.body.errors.length, 2);
+  assert.equal(imageCalls-beforeRefs, 2, 'a rejected reference is submitted once');
+  assert.equal(result.body.characters.length, 2);
+  imageMode = 'success';
+  beforeRefs = imageCalls;
+  result = await api('/char-refs', { characters: result.body.characters, imageModel: 'flux-2-klein-9b', force: ['Character A'] });
+  assert.equal(result.body.ok, true, JSON.stringify(result.body));
+  assert.equal(imageCalls-beforeRefs, 1, 'retrying A must not resubmit rejected B');
+  assert.equal(result.body.characters.length, 2, 'partial retries must preserve every profile');
+  assert.equal(result.body.characters[1].reference_error.code, 'IMAGE_CONTENT_FILTERED');
+  const aTime = fs.statSync(path.join(tmp, 'frames/char_Character_A_ref.png')).mtimeMs;
+  beforeRefs = imageCalls;
+  result = await api('/char-refs', { characters: result.body.characters, imageModel: 'flux-2-klein-9b', force: ['Character B'] });
+  assert.equal(result.body.ok, true);
+  assert.equal(imageCalls-beforeRefs, 1);
+  assert.equal(fs.statSync(path.join(tmp, 'frames/char_Character_A_ref.png')).mtimeMs, aTime, 'the completed reference is untouched');
+  assert.equal(result.body.characters.every(c => !c.reference_error && c.reference_image_url.startsWith('https://')), true);
+  console.log('ok: rejected references recover one character at a time, preserving completed portraits and all profiles');
+
   const videoBody = { frames: [2], framesData: [{ ...frame, frame: 2 }], characters: [],
     videoModel: 'wan3.0-video-prime', narrationMode: 'prompt', chainContinuity: false };
   result = await api('/videos', videoBody);
@@ -273,6 +300,29 @@ async function main() {
     assert.equal(pickers.narrationMode.options[0].disabled, false);
   }
   console.log('ok: selecting any Wan model keeps Prompt Vocalized enabled and selected');
+
+  const editedPrompt = 'Standalone illustrated portrait, relaxed pose, yellow traditional clothing, neutral background.';
+  const controls = { imageModel: { value: 'flux-2-klein-9b' }, style: { value: 'anime' },
+    characterRefPrompt: { value: editedPrompt }, mimg: { style: {} }, mbody: {}, overlay: { classList: { add() {} } } };
+  let refRequest;
+  const referenceUI = {
+    CHARS: characters.map(c=>({...c})), SUBMITTING: false,
+    $: id => controls[id], esc: s=>String(s||''), sbPayload: b=>b,
+    localStorage: { setItem() {} },
+    postJob: async (route, body) => { refRequest={route,body};return {ok:true,characters:body.characters}; },
+    acceptCharacterResults: async r=>{referenceUI.CHARS=r.characters;}
+  };
+  vm.createContext(referenceUI);
+  vm.runInContext(client.slice(client.indexOf('async function regenChar('), client.lastIndexOf('\ninit();')), referenceUI);
+  await referenceUI.saveCharacterRef(0);
+  assert.equal(refRequest.route, '/char-refs');
+  assert.equal(refRequest.body.imageModel, 'flux-2-klein-9b', 'reference retries use the selected provider');
+  assert.equal(refRequest.body.style, 'anime');
+  assert.equal(JSON.stringify(refRequest.body.force), JSON.stringify(['Character A']));
+  assert.equal(refRequest.body.characters[0].reference_prompt, editedPrompt);
+  assert.equal(refRequest.body.characters[0].description, characters[0].description, 'editing the portrait prompt keeps the locked identity');
+  assert.equal(refRequest.body.characters[1].reference_prompt, characters[1].reference_prompt);
+  console.log('ok: the reference editor saves the exact user prompt and selected model without changing other profiles');
 }
 
 main().then(() => console.log('all provider regressions passed')).catch(e => {

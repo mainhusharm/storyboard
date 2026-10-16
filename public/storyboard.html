@@ -317,6 +317,7 @@ The Director AI will:
     <!-- CHARACTER PROFILES -->
     <div id="charSection" style="display:none">
       <div class="chars-head"><h2>CHARACTER <b>PROFILES</b></h2><span class="count" id="charcount2"></span></div>
+      <button id="btnRetryRefs" style="display:none;margin-bottom:12px" onclick="retryFailedCharacterRefs()">Retry failed references</button>
       <div id="charGrid" class="char-grid"></div>
     </div>
 
@@ -600,7 +601,7 @@ async function refresh(d){
   // storyboard we saved locally so the UI never shows an empty board after a reload.
   if(!chars.length&&!frames.length){try{chars=JSON.parse(localStorage.getItem('sb_chars')||'[]');frames=JSON.parse(localStorage.getItem('sb_frames')||'[]');OFFLINE_BOARD=true}catch(e){}}
   if(chars.length||frames.length){try{localStorage.setItem('sb_chars',JSON.stringify(chars));localStorage.setItem('sb_frames',JSON.stringify(frames))}catch(e){}}
-  CHARS=chars.map(c=>({...c,hasRef:c.hasRef||(/^https?:/.test(c.reference_image_url||'')&&!c.reference_error)}));
+  CHARS=chars.map(c=>({...c,hasRef:!c.reference_error&&(c.hasRef||/^https?:/.test(c.reference_image_url||''))}));
   FRAMES=frames.map(f=>({...f,hasImage:!f.image_error&&(f.hasImage||/^https?:/.test(f.generated_image_url||'')),hasVideo:f.hasVideo||!!f.clip_url}));
   // stats
   const refsC=CHARS.filter(c=>c.hasRef).length;
@@ -618,7 +619,8 @@ async function refresh(d){
     $('charSection').style.display='';
     $('charcount2').textContent=`${CHARS.length} locked profiles`;
     const v=Date.now();
-    $('charGrid').innerHTML=CHARS.map(c=>`
+    $('btnRetryRefs').style.display=CHARS.some(c=>c.reference_error)?'':'none';
+    $('charGrid').innerHTML=CHARS.map((c,index)=>`
       <div class="char-card">
         <div class="cimg ${c.hasRef?'hasimg':''}" ${c.hasRef?`style="background-image:url('${esc(/^https?:/.test(c.reference_image_url||'')?c.reference_image_url:`/frames/char_${(c.id||'').replace(/\s+/g,'_')}_ref.png?v=${v}`)}')"`:''}>
           ${c.hasRef?'':'<span>awaiting render</span>'}
@@ -626,7 +628,8 @@ async function refresh(d){
         <div class="cname">${esc(c.name||c.id)}</div>
         <div class="cage">${c.age?c.age+' years old ':''}${esc(c.id)}</div>
         <div class="cdesc">${esc(c.description).slice(0,180)}…</div>
-        <div class="cbtn"><button onclick="regenChar('${esc(c.id)}')">↻ Re-render ref</button></div>
+        ${c.reference_error?`<p class="cdesc" style="color:#f87171">${esc(c.reference_error.message)}</p>`:''}
+        <div class="cbtn"><button onclick="openCharacterRef(${index})">Edit reference prompt</button><button onclick="regenChar(CHARS[${index}].id)">↻ Re-render ref</button></div>
       </div>`).join('');
   } else { $('charSection').style.display='none'; }
   renderFinalFilm(d);
@@ -709,6 +712,15 @@ let LOCAL_BUSY=false;
 // server's authoritative disk files are never overwritten with a stale copy.
 let OFFLINE_BOARD=false;
 function sbPayload(extra){const b={...extra};if(OFFLINE_BOARD||IS_VERCEL_CLIENT){if(CHARS.length)b.characters=CHARS;if(FRAMES.length)b.framesData=FRAMES;}return b;}
+async function acceptCharacterResults(result){
+  if(!result)return;
+  if(Array.isArray(result.characters)){
+    CHARS=result.characters;
+    try{localStorage.setItem('sb_chars',JSON.stringify(CHARS))}catch(e){}
+    await refresh({characters:CHARS,frames:FRAMES});
+  }
+  for(const err of result.errors||[])logLocal(`${err.character}: ${err.message}`,'err');
+}
 async function acceptImageResults(result){
   if(!result)return;
   if(Array.isArray(result.frames)){
@@ -962,7 +974,7 @@ async function runAutoVercel(script){
     if(CHARS.length&&opts.consistency){
       LOCAL_PHASE='CHARACTER REFERENCES';logLocal('phase 2/6: character references…');
       const cr=await callPhase('/char-refs',sbPayload({imageModel:opts.imageModel,style:opts.style,force:true}));
-      if(cr&&cr.characters){CHARS=cr.characters;try{localStorage.setItem('sb_chars',JSON.stringify(CHARS))}catch(e){}}
+      await acceptCharacterResults(cr);
       if(!cr||cr.error||cr.ok===false)throw new Error((cr&&cr.error)||'Character references failed. Edit the reference prompt and retry.');
       logLocal('character references done','ok');
     }
@@ -1053,7 +1065,7 @@ async function runAutoVercel(script){
   }
   finally{SUBMITTING=false;LOCAL_BUSY=false;LOCAL_PHASE='';poll();refresh();refreshCredits()}
 }
-$('btnCharRefs').onclick=async()=>{const r=await postJob('/char-refs',sbPayload({imageModel:$('imageModel').value,style:$('style').value,force:true}));if(r&&r.characters){CHARS=r.characters;try{localStorage.setItem('sb_chars',JSON.stringify(CHARS))}catch(e){}}};
+$('btnCharRefs').onclick=async()=>{const r=await postJob('/char-refs',sbPayload({imageModel:$('imageModel').value,style:$('style').value,force:true}));await acceptCharacterResults(r)};
 $('btnImages').onclick=async()=>{
   const frameNumbers=FRAMES.map(f=>f.frame);
   if(!frameNumbers.length) return alert('Generate a storyboard first.');
@@ -1187,7 +1199,34 @@ async function saveFramePrompt(n){
   try{localStorage.setItem('sb_frames',JSON.stringify(FRAMES))}catch(e){}
   await regenFrame(n,true);openModal(n);
 }
-async function regenChar(id){const r=await api('/char-refs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sbPayload({force:[id]}))});if(r.characters){CHARS=r.characters;try{localStorage.setItem('sb_chars',JSON.stringify(CHARS))}catch(e){}}}
+async function regenChar(id,edited=false){
+  const r=await postJob('/char-refs',sbPayload({force:[id],imageModel:$('imageModel').value,style:$('style').value,...(edited?{characters:CHARS}:{})}));
+  await acceptCharacterResults(r);return r;
+}
+async function retryFailedCharacterRefs(){
+  const ids=CHARS.filter(c=>c.reference_error).map(c=>c.id);if(!ids.length)return;
+  const r=await postJob('/char-refs',sbPayload({force:ids,imageModel:$('imageModel').value,style:$('style').value}));
+  await acceptCharacterResults(r);
+}
+function openCharacterRef(index){
+  const c=CHARS[index];if(!c)return;
+  $('mimg').style.backgroundImage=/^https?:/.test(c.reference_image_url||'')?`url('${c.reference_image_url}')`:'none';
+  $('mbody').innerHTML=`<h3>${esc(c.name||c.id)} — Reference portrait</h3>
+    <div class="sect"><b>Locked character description</b><p>${esc(c.description)}</p></div>
+    ${c.reference_error?`<p style="color:#f87171">${esc(c.reference_error.message)}</p>`:''}
+    <div class="sect"><b>Reference prompt</b><p>Describe a standalone portrait with the locked appearance and wardrobe. Scene action belongs in the frame prompts.</p>
+    <textarea id="characterRefPrompt" rows="8" style="width:100%;margin:8px 0">${esc(c.reference_prompt)}</textarea>
+    <button onclick="saveCharacterRef(${index})">Save prompt &amp; re-render this character</button></div>`;
+  $('overlay').classList.add('open');
+}
+async function saveCharacterRef(index){
+  if(SUBMITTING)return;
+  const c=CHARS[index],prompt=$('characterRefPrompt').value.trim();if(!c)return;
+  if(!prompt)return alert('Enter a reference portrait prompt first.');
+  c.reference_prompt=prompt;
+  try{localStorage.setItem('sb_chars',JSON.stringify(CHARS))}catch(e){}
+  await regenChar(c.id,true);openCharacterRef(CHARS.findIndex(x=>x.id===c.id));
+}
 
 init();
 </script>
