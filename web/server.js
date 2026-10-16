@@ -2164,16 +2164,18 @@ async function download(fileUrl, outPath) {
 }
 
 // ---------------- streaming chat ----------------
-async function chatCompletion(model, messages, maxTokens = 16384, temperature = 0.7) {
+async function chatCompletion(model, messages, maxTokens = 16384, temperature = 0.7, options = {}) {
   // A "logfare:<model>" pick routes through the Logfare gateway chain (pinned
   // model → logfare/auto → gemma-4-26b → PaxSenix), the SAME path the SJinn /
   // Flashloop studio uses. Sending the raw id to PaxSenix would just 400.
   if (String(model || '').startsWith('logfare:')) {
+    if (options.timeoutMs) return chatWithLogfare(String(model).slice(8).replace(/^auto$/, 'logfare/auto'), messages, maxTokens, temperature, options);
     return chatWithLogfareFallback(model, messages, maxTokens, temperature);
   }
   // An "aqua:<model>" pick routes to AquaDevs (the same gateway the Aqua image
   // models and MIMO TTS already use). Sending the raw id to PaxSenix would 400.
   if (isAquaChatModel(model)) {
+    if (options.timeoutMs) return chatWithAqua(model, messages, maxTokens, temperature, options);
     return chatWithAquaFallback(model, messages, maxTokens, temperature);
   }
   // Use non-streaming mode — streaming was causing ECONNRESET on local
@@ -2198,7 +2200,7 @@ async function chatCompletion(model, messages, maxTokens = 16384, temperature = 
   // was being aborted at 75s and lost its answer, so the phase fell through to the
   // dead fallbacks. 150s leaves room for a real answer while still failing over
   // fast on a hard 403/503 (those return in well under a second).
-  const timer = setTimeout(() => ac.abort(), IS_VERCEL ? 150000 : 180000);
+  const timer = setTimeout(() => ac.abort(), options.timeoutMs || (IS_VERCEL ? 150000 : 180000));
   let raw = '';
   try {
     const res = await fetch(`${API}/v1/chat/completions`, {
@@ -2239,7 +2241,7 @@ async function chatCompletion(model, messages, maxTokens = 16384, temperature = 
 // verified from a browser without reading server logs).
 const logfareStatus = { key: !!LOGFARE_API_KEY, lastOkAt: 0, lastModel: '', lastError: '' };
 
-async function chatWithLogfare(model, messages, maxTokens = 16000, temperature = 0.7) {
+async function chatWithLogfare(model, messages, maxTokens = 16000, temperature = 0.7, options = {}) {
   if (!LOGFARE_API_KEY) {
     logfareStatus.lastError = 'no Logfare key (set env LOGFARE_API_KEY on Vercel, or pipeline/logfare_apikey.txt locally)';
     throw new Error('no Logfare key (env LOGFARE_API_KEY or pipeline/logfare_apikey.txt)');
@@ -2248,7 +2250,7 @@ async function chatWithLogfare(model, messages, maxTokens = 16000, temperature =
   // trend templates and script generation to generic fallbacks.
   let res = null;
   let lastAttemptErr = null;
-  for (let attempt = 1; attempt <= 3; attempt++) {
+  for (let attempt = 1; attempt <= (options.timeoutMs ? 1 : 3); attempt++) {
     try {
       res = await fetch(`${LOGFARE_API}/chat/completions`, {
         method: 'POST',
@@ -2256,7 +2258,7 @@ async function chatWithLogfare(model, messages, maxTokens = 16000, temperature =
         // A random seed makes each request a distinct sample, so clicking Generate
         // twice can never return the same script (Logfare accepts seed).
         body: JSON.stringify({ model, messages, max_tokens: maxTokens, temperature, seed: Math.floor(Math.random() * 2147483647) }),
-        signal: AbortSignal.timeout(250000)
+        signal: AbortSignal.timeout(options.timeoutMs || 250000)
       });
       if (res.status !== 429 && res.status < 500) break;
       lastAttemptErr = new Error(`HTTP ${res.status}`);
@@ -2264,7 +2266,7 @@ async function chatWithLogfare(model, messages, maxTokens = 16000, temperature =
       // model - fall over to the next one in the chain right away.
       if (res.status >= 500) { logLine(`logfare ${model}: upstream ${res.status} - failing over`); break; }
     } catch (e) { lastAttemptErr = e; }
-    if (attempt < 3) {
+    if (!options.timeoutMs && attempt < 3) {
       logLine(`logfare ${model}: ${lastAttemptErr.message} - retry in ${attempt * 3}s`);
       await new Promise(r => setTimeout(r, attempt * 3000));
     }
@@ -2344,21 +2346,21 @@ async function chatWithLogfareFallback(model, messages, maxTokens = 16000, tempe
 // OpenAI-compatible, same base + key as the Aqua IMAGE models and the MIMO TTS
 // engine, so an "aqua:<id>" pick costs no new configuration. Only invoked when the
 // user explicitly selects an Aqua model (it is a third-party gateway).
-async function chatWithAqua(model, messages, maxTokens = 16000, temperature = 0.7) {
+async function chatWithAqua(model, messages, maxTokens = 16000, temperature = 0.7, options = {}) {
   if (!AQUA_API_KEY) {
     aquaStatus.lastError = 'no AquaDevs key (env AQUA_API_KEY on Vercel, or pipeline/aqua_apikey.txt locally)';
     throw new Error(aquaStatus.lastError);
   }
   const id = String(model).replace(/^aqua:/, '');
   let res = null, lastErr = null;
-  for (let attempt = 1; attempt <= 3; attempt++) {
+  for (let attempt = 1; attempt <= (options.timeoutMs ? 1 : 3); attempt++) {
     let challenge = false;
     try {
       res = await fetch(`${AQUA_API}/v1/chat/completions`, {
         method: 'POST',
         headers: aquaHeaders(),
         body: JSON.stringify({ model: id, messages, max_tokens: maxTokens, temperature }),
-        signal: AbortSignal.timeout(250000)
+        signal: AbortSignal.timeout(options.timeoutMs || 250000)
       });
       // Cloudflare's managed challenge answers a datacenter IP with a 403 and an
       // HTML "Just a moment..." page instead of JSON. It is a TRANSIENT block, not
@@ -2374,7 +2376,7 @@ async function chatWithAqua(model, messages, maxTokens = 16000, temperature = 0.
       lastErr = new Error(`HTTP ${res.status}${challenge ? ' (Cloudflare challenge)' : ''}`);
       if (!challenge && res.status >= 500) { logLine(`aqua ${id}: upstream ${res.status} - failing over`); break; }
     } catch (e) { lastErr = e; }
-    if (attempt < 3) {
+    if (!options.timeoutMs && attempt < 3) {
       logLine(`aqua ${id}: ${lastErr && lastErr.message} - retry in ${attempt * 8}s`);
       await new Promise(r => setTimeout(r, attempt * 8000));
     }
@@ -2967,24 +2969,19 @@ async function generateStoryboard(script, model, targetDuration = 120, look = ''
   // hiccup ended the run. These three were verified to return a parseable
   // {"frames":[...]} object, and all are fast enough for the per-call budget.
   const modelsToTry = [model, 'gemini-3.8-flash', 'deepseek-v4-flash', 'claude-haiku-5-5'].filter((m, i, a) => m && a.indexOf(m) === i);
-  // Vercel deadline: the whole storyboard (2 phases × retries) must fit inside
-  // the 300s function budget with margin. Once past the deadline, stop trying
-  // new models and fail fast instead of letting Vercel kill the function
-  // mid-phase (the request then hangs with no response — "stuck at storyboard").
-  // Budget discipline: each LLM call is capped at ~100s on Vercel, so a new model
-  // attempt is only STARTED when a full call still fits before the deadline —
-  // otherwise the function gets killed mid-call at 300s with no response (the
-  // "stuck at phase 1" hang).
-  // EXTENDED: 270s total budget (was 230s) + 80s per-call reserve (was 105s) —
-  // aggressive failover on 503/timeout means a model that's down costs <20s instead
-  // of burning 100s, so we can afford more total time and fit 3+ model attempts.
-  // Vercel kills a function at 300s, so the deadline sits just under it and the
-  // reserve must exceed the 150s per-call cap — otherwise the guard thinks there
-  // is room for another attempt while the call itself would be cut off.
+  // Share the request budget across both phases. A fixed 155s reserve used
+  // to skip ALL frame calls after a slow character response (>115s).
   const sbDeadline = IS_VERCEL ? Date.now() + 270000 : Infinity;
-  const CALL_RESERVE_MS = 155000; // per-call cap (150s) + response margin
   const outOfTime = () => Date.now() > sbDeadline;
-  const timeForOneMoreCall = () => Date.now() + CALL_RESERVE_MS < sbDeadline;
+  const timeForOneMoreCall = () => Date.now() + 10000 < sbDeadline;
+  const storyboardChat = (m, messages, tokens = 16384) => {
+    const remaining = sbDeadline - Date.now();
+    const timeoutMs = IS_VERCEL ? Math.min(90000, remaining - 5000) : 180000;
+    if (timeoutMs < 5000) throw new Error('Storyboard request time budget exhausted');
+    logLine(`storyboard: requesting ${m} (${Math.round(timeoutMs / 1000)}s call budget)`);
+    return chatCompletion(m, messages, tokens, 0.7, { timeoutMs });
+  };
+  let lastStoryboardError = '';
   const lookBlock = look && look.trim()
     ? `\n\nDIRECTOR'S CREATIVE DIRECTION (MANDATORY — the entire film must match this look):\n${look.trim()}`
     : '';
@@ -3020,7 +3017,7 @@ async function generateStoryboard(script, model, targetDuration = 120, look = ''
     if (job.cancelRequested) { logLine('storyboard cancelled by user'); return { characters: [], frames: [] }; }
     if (outOfTime() || !timeForOneMoreCall()) { logLine('storyboard: time budget exhausted during characters — aborting model chain'); break; }
     try {
-      let rawContent = await chatCompletion(m, charMsgs);
+      let rawContent = await storyboardChat(m, charMsgs);
       if (!rawContent) { logLine(`${m}: empty response, next`); continue; }
       let parsed = await parseOrSalvage(rawContent, `characters (${m})`);
       let found = Array.isArray(parsed?.characters) ? parsed.characters : [];
@@ -3031,13 +3028,14 @@ async function generateStoryboard(script, model, targetDuration = 120, look = ''
       if (!found.length && !IS_VERCEL && !outOfTime()) {
         logLine(`${m}: characters JSON unusable — re-asking with strict JSON-only instruction`);
         const strictMsgs = [...charMsgs, { role: 'user', content: 'Your previous response was NOT valid JSON. Return ONLY the raw JSON object now — no markdown fences, no explanations, no text before or after. Start with { and end with }.' }];
-        rawContent = await chatCompletion(m, strictMsgs);
+        rawContent = await storyboardChat(m, strictMsgs);
         parsed = await parseOrSalvage(rawContent, `characters retry (${m})`);
         found = Array.isArray(parsed?.characters) ? parsed.characters : [];
       }
       if (found.length) { characters = found; charModel = m; break; }
       logLine(`${m}: no valid characters JSON, next`);
     } catch (e) {
+      lastStoryboardError = `${m}: ${e.message}`;
       logLine(`${m}: ${e.message}, next`);
     }
   }
@@ -3067,6 +3065,7 @@ async function generateStoryboard(script, model, targetDuration = 120, look = ''
 
   // ---- PHASE 2: Generate frames ----
   logLine(`phase 2: generating ${frameCount} frames...`);
+  lastStoryboardError = '';
   const charSummary = characters.map(c => `[${c.id}] ${c.name}: ${c.description}`).join('\n');
   const frameMsgs = [
     { role: 'system', content: buildFramesPrompt(frameCount, secPerFrame) + langSystem + styleSystem },
@@ -3077,8 +3076,8 @@ async function generateStoryboard(script, model, targetDuration = 120, look = ''
     if (job.cancelRequested) { logLine('storyboard cancelled by user'); return { characters: [], frames: [] }; }
     if (outOfTime() || !timeForOneMoreCall()) { logLine('storyboard: time budget exhausted during frames — aborting model chain'); break; }
     try {
-      let rawContent = await chatCompletion(m, frameMsgs);
-      if (!rawContent) { logLine(`${m}: empty response, next`); continue; }
+      let rawContent = await storyboardChat(m, frameMsgs);
+      if (!rawContent) { lastStoryboardError = `${m}: empty response`; logLine(`${m}: empty response, next`); continue; }
       let parsed = await parseOrSalvage(rawContent, `frames (${m})`);
       let found = Array.isArray(parsed?.frames) ? parsed.frames : [];
       if (!found.length && Array.isArray(parsed)) found = parsed;
@@ -3087,19 +3086,21 @@ async function generateStoryboard(script, model, targetDuration = 120, look = ''
       if (!found.length && !IS_VERCEL && !outOfTime()) {
         logLine(`${m}: frames JSON unusable — re-asking with strict JSON-only instruction`);
         const strictMsgs = [...frameMsgs, { role: 'user', content: 'Your previous response was NOT valid JSON. Return ONLY the raw JSON object now — no markdown fences, no explanations, no text before or after. Start with { and end with }.' }];
-        rawContent = await chatCompletion(m, strictMsgs);
+        rawContent = await storyboardChat(m, strictMsgs);
         parsed = await parseOrSalvage(rawContent, `frames retry (${m})`);
         found = Array.isArray(parsed?.frames) ? parsed.frames : [];
         if (!found.length && Array.isArray(parsed)) found = parsed;
       }
       found = found.filter(f => f.image_prompt || f.prompt);
       if (found.length) { frames = found; frameModel = m; break; }
+      lastStoryboardError = `${m}: response contained no usable frame prompts`;
       logLine(`${m}: no valid frames JSON, next`);
     } catch (e) {
+      lastStoryboardError = `${m}: ${e.message}`;
       logLine(`${m}: ${e.message}, next`);
     }
   }
-  if (!frames.length) throw new Error('all models failed for frames');
+  if (!frames.length) throw new Error(`Storyboard frame generation failed${!timeForOneMoreCall() ? ': request time budget exhausted' : ''}${lastStoryboardError ? `; ${lastStoryboardError}` : ''}`);
 
   frames = frames.map((f, i) => ({
     frame: i + 1, scene: f.scene || 1, timestamp: f.timestamp || '00:00',
@@ -3139,7 +3140,7 @@ async function generateStoryboard(script, model, targetDuration = 120, look = ''
         { role: 'assistant', content: frames.length === 1 ? 'Here is the first frame.' : `Here are the first ${frames.length} frames.` },
         { role: 'user', content: `You returned only ${frames.length} of the ${frameCount} required frames. Continue the SAME story from exactly where it stopped and return ONLY a JSON object with a "frames" key containing the remaining ${missing} frame(s). Do not repeat the frames you already wrote. Each needs at least "image_prompt" and "summary".` }
       ];
-      const extraRaw = await chatCompletion(topupModel, cont);
+      const extraRaw = await storyboardChat(topupModel, cont);
       const extraParsed = await parseOrSalvage(extraRaw, `frames topup (${topupModel})`).catch(() => null);
       let extra = Array.isArray(extraParsed?.frames) ? extraParsed.frames : [];
       if (!extra.length && Array.isArray(extraParsed)) extra = extraParsed;
