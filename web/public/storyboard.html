@@ -483,6 +483,13 @@ async function init(){
   const fillVoices=()=>{const per=(m.narrationVoices||{})[$('narrationEngine').value];const list=(per&&per.length)?per:(m.voices||[{id:'female',label:'Female narrator'},{id:'male',label:'Male narrator'}]);$('voice').innerHTML=list.map(v=>`<option value="${v.id}">${v.label}</option>`).join('');};
   $('language').innerHTML=(m.languages||[{id:'en',label:'English'},{id:'hi',label:'Hindi'}]).map(l=>`<option value="${l.id}">${l.label}</option>`).join('');
   $('narrationMode').innerHTML=(m.narrationModes||[{id:'tts',label:'TTS Voice'},{id:'prompt',label:'Prompt Vocalized'}]).map(n=>`<option value="${n.id}">${n.label}</option>`).join('');
+  const syncNarrationMode=()=>{
+    const silent=$('videoModel').value.startsWith('wan');
+    const prompt=Array.from($('narrationMode').options).find(o=>o.value==='prompt');
+    if(prompt)prompt.disabled=silent;
+    if(silent&&$('narrationMode').value==='prompt')$('narrationMode').value='tts';
+    $('narrationMode').title=silent?'Wan clips use TTS Voice for narration.':'';
+  };
   $('narrationEngine').innerHTML=(m.narrationEngines||[{id:'fish',label:'Fish Audio — s2.1-pro-free (default)'},{id:'mimo',label:'MIMO — high quality voices (fallback option)'}]).map(e=>`<option value="${e.id}">${e.label}</option>`).join('');
   $('narrationEngine').onchange=()=>{fillVoices();};
   fillVoices(); // engine-specific voices: Fish/MIMO narrators, Logfare Aura-2 speakers
@@ -492,12 +499,14 @@ async function init(){
   // Sync clip duration with the video model (Grok: 6s, Omni Flash / Veo 3.1: 8s,
   // Wan 3.0 models: 30s — the long-shot default — other Novita models: 5s)
   $('videoModel').onchange=()=>{
+    syncNarrationMode();
     const v=$('videoModel').value;
     $('clipDuration').value = v==='grok-video' ? '6'
       : (v==='omni-flash'||v==='veo-3.1') ? '8'
       : v.startsWith('wan3.0') ? '30'
       : v.startsWith('wan') ? '5' : '8';
   };
+  syncNarrationMode();
   $('script').oninput=()=>$('charcount').textContent=$('script').value.length+' chars';
   await refresh();
   poll();setInterval(poll,2500);
@@ -507,11 +516,19 @@ async function init(){
 async function refresh(d){
   if(!d){try{d=await api('/frames')}catch(e){d={}}}
   let chars=d.characters||[],frames=d.frames||[];
+  if(IS_VERCEL_CLIENT){
+    OFFLINE_BOARD=true;
+    frames=frames.map(f=>{
+      const saved=FRAMES.find(x=>x.frame===f.frame&&x.image_prompt===f.image_prompt);
+      return saved?{...saved,...f,generated_image_url:saved.generated_image_url||f.generated_image_url,clip_url:saved.clip_url||f.clip_url}:f;
+    });
+  }
   // Vercel: /tmp files can vanish on an instance switch — fall back to the last
   // storyboard we saved locally so the UI never shows an empty board after a reload.
   if(!chars.length&&!frames.length){try{chars=JSON.parse(localStorage.getItem('sb_chars')||'[]');frames=JSON.parse(localStorage.getItem('sb_frames')||'[]');OFFLINE_BOARD=true}catch(e){}}
   if(chars.length||frames.length){try{localStorage.setItem('sb_chars',JSON.stringify(chars));localStorage.setItem('sb_frames',JSON.stringify(frames))}catch(e){}}
-  CHARS=chars;FRAMES=frames;
+  CHARS=chars.map(c=>({...c,hasRef:c.hasRef||(/^https?:/.test(c.reference_image_url||'')&&!c.reference_error)}));
+  FRAMES=frames.map(f=>({...f,hasImage:!f.image_error&&(f.hasImage||/^https?:/.test(f.generated_image_url||'')),hasVideo:f.hasVideo||!!f.clip_url}));
   const hasFinal=!!d.hasFinal;
   // stats
   const refsC=CHARS.filter(c=>c.hasRef).length;
@@ -531,7 +548,7 @@ async function refresh(d){
     const v=Date.now();
     $('charGrid').innerHTML=CHARS.map(c=>`
       <div class="char-card">
-        <div class="cimg ${c.hasRef?'hasimg':''}" ${c.hasRef?`style="background-image:url('/frames/char_${(c.id||'').replace(/\s+/g,'_')}_ref.png?v=${v}')"`:''}>
+        <div class="cimg ${c.hasRef?'hasimg':''}" ${c.hasRef?`style="background-image:url('${esc(/^https?:/.test(c.reference_image_url||'')?c.reference_image_url:`/frames/char_${(c.id||'').replace(/\s+/g,'_')}_ref.png?v=${v}`)}')"`:''}>
           ${c.hasRef?'':'<span>awaiting render</span>'}
         </div>
         <div class="cname">${esc(c.name||c.id)}</div>
@@ -555,13 +572,13 @@ async function refresh(d){
   if(!FRAMES.length){$('frames').innerHTML='<div class="empty"><div class="big">🎬</div><h3>NO STORYBOARD YET</h3><p>Paste a script and hit <b>Generate Storyboard</b>.</p></div>';return;}
   const vt=Date.now();
   $('frames').innerHTML=FRAMES.map(f=>{
-    const img=`/frames/frame_${pad(f.frame)}.png?v=${vt}`,vid=`/video/frame_${pad(f.frame)}.mp4?v=${vt}`;
+    const img=/^https?:/.test(f.generated_image_url||'')?f.generated_image_url:`/frames/frame_${pad(f.frame)}.png?v=${vt}`,vid=f.clip_url||`/video/frame_${pad(f.frame)}.mp4?v=${vt}`;
     const charNames=(f.characters_present||[]).map(id=>{const c=CHARS.find(x=>x.id===id);return c?c.name||c.id:id});
     return `
     <div class="card">
       <div class="thumb ${f.hasImage?'hasimg':''}">
-        ${f.hasVideo?`<video src="${vid}" poster="${img}" muted loop autoplay playsinline></video>`:f.hasImage?`<img src="${img}" loading="lazy" alt="frame ${f.frame}">`:''}
-        ${!f.hasImage?'<div class="await"><span class="ico">🎞</span>awaiting render</div>':'<div class="fade"></div>'}
+        ${f.hasVideo?`<video src="${esc(vid)}" poster="${esc(img)}" muted loop autoplay playsinline></video>`:f.hasImage?`<img src="${esc(img)}" loading="lazy" alt="frame ${f.frame}">`:''}
+        ${!f.hasImage?`<div class="await"><span class="ico">🎞</span>${f.image_error?esc(f.image_error.message):'awaiting render'}</div>`:'<div class="fade"></div>'}
         <span class="chip num">SHOT ${pad(f.frame)}</span>
         <span class="chip imp ${esc(f.importance)}">${esc(f.importance)}</span>
         ${f.hasVideo?'<span class="chip vid">▶ VIDEO</span>':''}
@@ -594,7 +611,7 @@ async function refresh(d){
 function openModal(n){
   const f=FRAMES.find(x=>x.frame===n);if(!f)return;
   const v=Date.now();
-  $('mimg').style.backgroundImage=f.hasImage?`url('/frames/frame_${pad(n)}.png?v=${v}')`:'none';
+  $('mimg').style.backgroundImage=f.hasImage?`url('${/^https?:/.test(f.generated_image_url||'')?f.generated_image_url:`/frames/frame_${pad(n)}.png?v=${v}`}')`:'none';
   const chars=(f.characters_present||[]).map(id=>{const c=CHARS.find(x=>x.id===id);return c?`${c.name} (${c.id})`:id}).join(' · ');
   $('mbody').innerHTML=`
     <h3>SHOT ${pad(n)} — SCENE ${f.scene}</h3>
@@ -609,7 +626,11 @@ function openModal(n){
     ${f.narration?`<div class="sect"><b>Narration</b><p>${esc(f.narration)}</p></div>`:''}
     ${f.dialogue?`<div class="sect"><b>Dialogue</b><p>${esc(f.dialogue)}</p></div>`:''}
     <div class="sect"><b>Characters in shot</b><p>${esc(chars)||'none'}</p></div>
-    <div class="sect"><b>Image prompt</b><p>${esc(f.image_prompt)}</p></div>
+    <div class="sect"><b>Image prompt</b>
+      ${f.image_error?`<p style="color:var(--red)">${esc(f.image_error.message)}</p>`:''}
+      <textarea id="frameImagePrompt" rows="6" style="width:100%;margin:8px 0">${esc(f.image_prompt)}</textarea>
+      <button onclick="saveFramePrompt(${n})">Save prompt &amp; re-render</button>
+    </div>
     <div class="sect"><b>Negative prompt</b><p>${esc(f.negative_prompt)}</p></div>
     <div class="sect"><b>Animation / camera move</b><p>${esc(f.animation_prompt)}</p></div>
     <div class="sect"><b>Sound design</b><p>${esc(f.sound_design)}</p></div>
@@ -625,7 +646,17 @@ let LOCAL_BUSY=false;
 // then carry characters/framesData along; on localhost this stays false so the
 // server's authoritative disk files are never overwritten with a stale copy.
 let OFFLINE_BOARD=false;
-function sbPayload(extra){const b={...extra};if(OFFLINE_BOARD){if(CHARS.length)b.characters=CHARS;if(FRAMES.length)b.framesData=FRAMES;}return b;}
+function sbPayload(extra){const b={...extra};if(OFFLINE_BOARD||IS_VERCEL_CLIENT){if(CHARS.length)b.characters=CHARS;if(FRAMES.length)b.framesData=FRAMES;}return b;}
+async function acceptImageResults(result){
+  if(!result)return;
+  if(Array.isArray(result.frames)){
+    const updated=new Map(result.frames.map(f=>[f.frame,f]));
+    FRAMES=FRAMES.map(f=>updated.get(f.frame)||f);
+    try{localStorage.setItem('sb_frames',JSON.stringify(FRAMES))}catch(e){}
+    await refresh({characters:CHARS,frames:FRAMES});
+  }
+  for(const err of result.errors||[])logLocal(`frame ${err.frame}: ${err.message}`,'err');
+}
 async function poll(){
   let s={phase:'idle',done:0,total:0,log:[]};
   try{s=await api('/status')}catch(e){}
@@ -857,28 +888,29 @@ async function runAutoVercel(script){
       throw new Error('unexpected storyboard response');
     }
 
-    // ---- Phases 2/3/5 run CONCURRENTLY ----
-    // char-refs, frame images and narration each read the storyboard and write
-    // their own artefacts; none depends on another's output. Running them one
-    // after another was pure waiting, which is what made the pipeline feel like it
-    // crawled. narration only reads the frames the storyboard already produced.
+    // References must finish before images, and each phase shares the server's
+    // job state. Serialize them and carry hosted assets to the next request.
     const frameNumbers=FRAMES.map(f=>f.frame);
-    const charRefsP=CHARS.length
-      ? callPhase('/char-refs',sbPayload({imageModel:opts.imageModel,style:opts.style,force:true}))
-          .then(cr=>{if(cr&&cr.characters){CHARS=cr.characters;try{localStorage.setItem('sb_chars',JSON.stringify(CHARS))}catch(e){}}if(cr&&cr.error)logLocal('char-refs: '+cr.error,'err');else logLocal('char-refs done','ok');})
-          .catch(e=>logLocal('char-refs failed: '+e.message,'err'))
-      : Promise.resolve();
-    const imagesP=callPhase('/images',sbPayload({frames:frameNumbers,imageModel:opts.imageModel,ratio:opts.ratio,style:opts.style,consistency:opts.consistency}))
-      .then(im=>{if(im&&im.error)logLocal('images: '+im.error,'err');else if(im&&im.failed&&im.failed.length)logLocal('images: '+im.failed.length+' failed — continuing','err');else logLocal('images done','ok');})
-      .catch(e=>logLocal('images failed: '+e.message,'err'));
+    if(CHARS.length&&opts.consistency){
+      LOCAL_PHASE='CHARACTER REFERENCES';logLocal('phase 2/6: character references…');
+      const cr=await callPhase('/char-refs',sbPayload({imageModel:opts.imageModel,style:opts.style,force:true}));
+      if(cr&&cr.characters){CHARS=cr.characters;try{localStorage.setItem('sb_chars',JSON.stringify(CHARS))}catch(e){}}
+      if(!cr||cr.error||cr.ok===false)throw new Error((cr&&cr.error)||'Character references failed. Edit the reference prompt and retry.');
+      logLocal('character references done','ok');
+    }
+    LOCAL_PHASE='IMAGES';logLocal(`phase 3/6: images (${frameNumbers.length})…`);
+    const im=await callPhase('/images',sbPayload({frames:frameNumbers,imageModel:opts.imageModel,ratio:opts.ratio,style:opts.style,consistency:opts.consistency}));
+    await acceptImageResults(im);
+    if(!im||im.error||im.ok===false||im.failed?.length)throw new Error((im&&im.error)||`Images failed for frame(s) ${(im&&im.failed||[]).join(', ')}. Check the frame errors before starting videos.`);
+    logLocal('images done','ok');
     let narrUrl='';
-    const narrP=opts.narrationMode==='tts'
-      ? callPhase('/narration',sbPayload({voice:opts.voice,language:opts.language,narrationEngine:opts.narrationEngine,narrVolume:opts.narrVolume,origVolume:opts.origVolume,force:true}))
-          .then(nr=>{if(nr&&nr.narrationUrl){narrUrl=nr.narrationUrl;try{localStorage.setItem('sb_narr_url',narrUrl)}catch(e){}}if(nr&&nr.error)logLocal('narration: '+nr.error,'err');else logLocal('narration done','ok');})
-          .catch(e=>logLocal('narration failed: '+e.message,'err'))
-      : Promise.resolve();
-    logLocal(`phases 2-5 running in parallel (char-refs${CHARS.length?'':' skipped'}, images ${frameNumbers.length}, narration ${opts.narrationMode==='tts'?'tts':'off'})…`);
-    await Promise.all([charRefsP,imagesP,narrP]);
+    if(opts.narrationMode==='tts'){
+      LOCAL_PHASE='NARRATION';logLocal('narration: generating voice track…');
+      const nr=await callPhase('/narration',sbPayload({voice:opts.voice,language:opts.language,narrationEngine:opts.narrationEngine,narrVolume:opts.narrVolume,origVolume:opts.origVolume,force:true}));
+      if(!nr||nr.error||nr.ok===false)throw new Error((nr&&nr.error)||'Narration failed');
+      if(nr.narrationUrl){narrUrl=nr.narrationUrl;try{localStorage.setItem('sb_narr_url',narrUrl)}catch(e){}}
+      logLocal('narration done','ok');
+    }
 
     // ---- Phase 4: videos (one frame per request) ----
     // Sequential on purpose: each clip needs the previous frame's chain anchor, and
@@ -957,7 +989,8 @@ $('btnCharRefs').onclick=async()=>{const r=await postJob('/char-refs',sbPayload(
 $('btnImages').onclick=async()=>{
   const frameNumbers=FRAMES.map(f=>f.frame);
   if(!frameNumbers.length) return alert('Generate a storyboard first.');
-  await postJob('/images',sbPayload({frames:frameNumbers,imageModel:$('imageModel').value,ratio:$('ratio').value,style:$('style').value,consistency:$('consistency').checked}));
+  const r=await postJob('/images',sbPayload({frames:frameNumbers,imageModel:$('imageModel').value,ratio:$('ratio').value,style:$('style').value,consistency:$('consistency').checked}));
+  await acceptImageResults(r);
 };
 // Hosted clip URLs per frame (rendered on instances whose /tmp we can't see).
 function loadClipUrls(){try{return JSON.parse(localStorage.getItem('sb_clip_urls')||'{}')}catch(e){return{}}}
@@ -972,23 +1005,28 @@ function saveClipUrl(frameNum,clipUrl){
 // "pending" always means keep waiting, never a failure.
 async function pollVideoTask(frameNum, task, body, idx, total){
   const pollBody=sbPayload({...body, pollTask:task});
-  let waited=0, consecutiveErrors=0;
-  while(waited<2700000){ // 45-min ceiling for one scene
+  const started=Date.now();
+  let waited=0, consecutiveErrors=0,lastStatus='';
+  while(Date.now()-started<2700000){ // 45-min wall-clock ceiling for one scene
     LOCAL_PHASE=`VIDEOS ${idx}/${total} · rendering in background ${Math.round(waited/60000)}m`;
     await new Promise(r=>setTimeout(r,15000));
-    waited+=15000;
+    waited=Date.now()-started;
     if(USER_CANCELLED)throw new Error('cancelled');
     let j=null;
-    try{ j=await callPhase('/videos',pollBody,{attempts:4}); consecutiveErrors=0; }
+    try{ j=await callPhase('/videos',pollBody,{attempts:1,timeoutMs:90000}); consecutiveErrors=0; }
     catch(e){
       consecutiveErrors++;
       if(consecutiveErrors>=6)return {error:'polling failed repeatedly: '+e.message};
       continue; // transient — the render is still alive server-side
     }
-    if(j&&j.pending)continue;           // still rendering — keep waiting
+    if(j&&j.pending){
+      LOCAL_LAST_ACTIVITY=Date.now(); // healthy polls keep long Wan renders alive in the watchdog
+      if(j.status&&j.status!==lastStatus){lastStatus=j.status;logLocal(`frame ${frameNum}: ${lastStatus.toLowerCase()}`);}
+      continue;
+    }
     return j||{error:'no response'};    // settled (done or hard failure)
   }
-  return {error:'render still running after 45 min — try this scene again'};
+  return {error:`render still running after 45 min (task ${task}). Check this task before submitting another paid render.`};
 }
 // On Vercel, render videos ONE FRAME PER REQUEST — a serverless invocation dies at
 // 300s, and a full board (especially with seamless chaining) can take 20-60 min, so
@@ -1005,7 +1043,7 @@ async function runVideosVercel(){
   const targets=FRAMES.filter(f=>f.animation_prompt).sort((a,b)=>a.frame-b.frame);
   if(!targets.length)return alert('No frames with animation prompts yet.');
   const chained=$('chainContinuity').checked;
-  SUBMITTING=true;LOCAL_BUSY=true;LOCAL_LOG=[];LOCAL_PHASE=`VIDEOS 1/${targets.length}`;poll();
+  SUBMITTING=true;LOCAL_BUSY=true;USER_CANCELLED=false;LOCAL_LOG=[];LOCAL_PHASE=`VIDEOS 1/${targets.length}`;poll();
   logLocal(`video phase (Vercel): ${targets.length} frame(s) — ${$('videoModel').value} — ${chained?'seamless chaining':'parallel'}`,'');
   let prevChain='',failedVideos=[];
   const clipUrls=loadClipUrls();
@@ -1068,7 +1106,16 @@ $('btnCombine').onclick=async()=>{
   let narrationUrl='';try{narrationUrl=localStorage.getItem('sb_narr_url')||''}catch(e){}
   await postJob('/combine',sbPayload({ratio:$('ratio').value,narrationMode:$('narrationMode').value,narrVolume:Number($('narrVolume').value),origVolume:Number($('origVolume').value),imageModel:$('imageModel').value,clipUrls,narrationUrl}));
 };
-async function regenFrame(n){await api('/images',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sbPayload({frames:[n],imageModel:$('imageModel').value,ratio:$('ratio').value,style:$('style').value,consistency:$('consistency').checked}))})}
+async function regenFrame(n,edited=false){const r=await postJob('/images',sbPayload({frames:[n],imageModel:$('imageModel').value,ratio:$('ratio').value,style:$('style').value,consistency:$('consistency').checked,...(edited?{framesData:FRAMES}:{})}));await acceptImageResults(r)}
+async function saveFramePrompt(n){
+  if(SUBMITTING)return;
+  const prompt=$('frameImagePrompt').value.trim();
+  if(!prompt)return alert('Enter an image prompt first.');
+  const frame=FRAMES.find(f=>f.frame===n);if(!frame)return;
+  frame.image_prompt=prompt;
+  try{localStorage.setItem('sb_frames',JSON.stringify(FRAMES))}catch(e){}
+  await regenFrame(n,true);openModal(n);
+}
 async function regenChar(id){const r=await api('/char-refs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sbPayload({force:[id]}))});if(r.characters){CHARS=r.characters;try{localStorage.setItem('sb_chars',JSON.stringify(CHARS))}catch(e){}}}
 
 init();

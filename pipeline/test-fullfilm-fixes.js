@@ -83,9 +83,9 @@ check('poll of a live task answers pending again', /return sendJson\(res, 202, \
 check('completion still saves the chain anchor', /chain anchor saved → next scene starts from its last frame/.test(src));
 check('completion still hosts the clip for combine', /clipUrl = await uploadVideoClip\(videoFile\(f\.frame\)\)/.test(src));
 check('wan3.0 start frame passed via imageUrls', /\.\.\.\(useImg \? \{ imageUrls: \[anchor\] \} : \{\}\)/.test(src));
-check('client polls pending renders (45-min ceiling)', /while\(waited<2700000\)/.test(client));
-check('client polls every 15s', /setTimeout\(r,15000\)\);\s*\r?\n\s*waited\+=15000;/.test(client));
-check('client treats pending as keep-waiting, not failure', /if\(!j\|\|!j\.pending\)break;/.test(client) || /if\(j&&j\.pending\)continue;/.test(client));
+check('client polls pending renders (45-min wall-clock ceiling)', /while\(Date\.now\(\)-started<2700000\)/.test(client));
+check('client polls every 15s', /setTimeout\(r,15000\)\)/.test(client));
+check('client treats pending as keep-waiting, not failure', /if\(j&&j\.pending\)\{[\s\S]*?continue;/.test(client));
 check('client cancel still stops the poll loop', /if\(USER_CANCELLED\)throw new Error\('cancelled'\);/.test(client));
 check('sync path kept for PaxSenix models', /PaxSenix models \(grok \/ omni-flash \/ veo\) render inside the 300s budget/.test(src));
 
@@ -94,7 +94,7 @@ console.log('\n[6] prompt-vocalized mode: narration rides inside the video promp
 // only ever embedded in the local /api/run-all pipeline — the manual Videos
 // button and the client-driven auto pipeline rendered plain animation_prompts,
 // so the video model never heard the narration and the clips had no vocals.
-check('/api/videos embeds narration in prompt mode', /if \(body\.narrationMode === 'prompt'\) \{[\s\S]{0,400}?frames = vocalizeAnimationPrompts\(frames\)/.test(src));
+check('/api/videos embeds narration once for audio-capable models', /if \(!body\.pollTask && body\.narrationMode === 'prompt' && !isNovitaVideoModel\(body\.videoModel\)\) \{[\s\S]{0,400}?frames = vocalizeAnimationPrompts\(frames\)/.test(src));
 check('/api/run-all uses the same helper', /videoFrames = vocalizeAnimationPrompts\(frames\)/.test(src));
 check('no leftover inline embedding in run-all', !/clone\.animation_prompt = `\$\{clone\.animation_prompt\} The character narrates aloud/.test(src));
 check('client auto pipeline sends narrationMode with /videos', /chainContinuity:opts\.chainContinuity,narrationMode:opts\.narrationMode/.test(client));

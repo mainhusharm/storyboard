@@ -102,9 +102,9 @@ check('client stops retrying after a user cancel', /if \(USER_CANCELLED\) throw 
 check('UI shows CANCELLING instead of idle', /CANCELLING…/.test(client));
 check('cancel button hides while cancelling', /busy&&!cancelling/.test(client));
 
-console.log('\n[9] independent phases run concurrently');
-check('char-refs, images and narration start together', /await Promise\.all\(\[charRefsP,imagesP,narrP\]\)/.test(client));
-check('parallel batch is announced', /running in parallel/.test(client));
+console.log('\n[9] dependent phases run in order');
+check('references finish before frame images start', /const cr=await callPhase\('\/char-refs'[\s\S]*?const im=await callPhase\('\/images'/.test(client));
+check('image failures stop the automatic pipeline', /if\(!im\|\|im\.error\|\|im\.ok===false\|\|im\.failed\?\.length\)throw new Error/.test(client));
 check('videos stay sequential for the chain anchor', /chainAnchor=prevChain/.test(client));
 check('videos still one frame per request', /callPhase\('\/videos',body\)/.test(client));
 

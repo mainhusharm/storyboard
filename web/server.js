@@ -1885,6 +1885,30 @@ function novitaResultUrl(j) {
   return m ? m[0] : null;
 }
 
+// Both polling paths must interpret the same result. In particular, HTTP errors
+// and a completed job with no asset are not healthy pending renders.
+function novitaPollResult(j, httpStatus = 200) {
+  const detail = String(j?.error?.message || j?.error || j?.message || '').slice(0, 300);
+  if (httpStatus >= 400) {
+    const retryable = httpStatus === 408 || httpStatus === 429 || httpStatus >= 500;
+    return { status: retryable ? 'PENDING' : 'FAILED', failed: !retryable,
+      error: `Novita status HTTP ${httpStatus}${detail ? ': ' + detail : ''}`, payload: j };
+  }
+  const statuses = [j?.status, j?.output?.task_status, j?.output?.status]
+    .filter(v => typeof v === 'string').map(v => v.trim().toUpperCase());
+  const failed = statuses.find(s => /^(FAILED|FAILURE|ERROR|CANCELLED|CANCELED|EXPIRED)$/.test(s));
+  if (failed) return { status: failed, failed: true, error: detail || `Novita task ${failed.toLowerCase()}`, payload: j };
+  const success = statuses.find(s => /^(SUCCEEDED|SUCCESS|DONE|COMPLETED)$/.test(s));
+  if (success) {
+    const url = novitaResultUrl(j);
+    return url ? { status: success, url } : {
+      status: success, failed: true, error: 'Novita task completed without a media URL', payload: j
+    };
+  }
+  if (!statuses.length) return { status: 'FAILED', failed: true, error: detail || 'Novita status response has no task status', payload: j };
+  return { status: statuses[0], ...(detail ? { error: detail } : {}) };
+}
+
 // Poll a submitted job (free). Resolves with the finished asset URL or null.
 async function novitaWait(marker, maxMin = 25, logFn = logLine, outInfo = null) {
   const taskId = String(marker).slice(NOVITA_TASK_PREFIX.length);
@@ -1895,22 +1919,16 @@ async function novitaWait(marker, maxMin = 25, logFn = logLine, outInfo = null) 
     if (storyboardCancelRequested(logFn)) { logFn('novita task cancelled by user'); if (outInfo) outInfo.cancelled = true; return null; }
     try {
       const res = await novitaFetch('/v1/status/' + encodeURIComponent(taskId), {}, 60000);
-      const j = await res.json().catch(() => ({}));
+      const j = await res.json();
       networkErrors = 0;
-      const status = String(j.status || lastStatus).toUpperCase();
-      if (status === 'SUCCEEDED' || status === 'SUCCESS' || status === 'DONE') {
-        const url = novitaResultUrl(j);
-        if (url) return url;
-        logFn(`novita task succeeded but no media URL in output: ${JSON.stringify(j.output || {}).slice(0, 300)}`);
-        if (outInfo) outInfo.failed = true;
-        return null;
-      }
-      if (/FAIL|ERROR|CANCEL/.test(status)) {
-        logFn(`novita task failed: ${JSON.stringify(j).slice(0, 300)}`);
+      const result = novitaPollResult(j, res.status);
+      if (result.url) return result.url;
+      if (result.failed) {
+        logFn(`novita task failed: ${result.error}`);
         if (outInfo) { outInfo.failed = true; outInfo.payload = j; }
         return null;
       }
-      lastStatus = status;
+      lastStatus = result.status;
     } catch (e) {
       networkErrors++;
       logFn(`novita poll network error ${networkErrors}/6 (${lastStatus}: ${e.message})`);
@@ -1928,18 +1946,18 @@ async function novitaWait(marker, maxMin = 25, logFn = logLine, outInfo = null) 
 // blocking like novitaWait does. Transient network errors report PENDING — the
 // client simply polls again; a genuinely dead task surfaces a FAIL status.
 async function novitaPollOnce(marker) {
+  if (!String(marker || '').startsWith(NOVITA_TASK_PREFIX) || !String(marker).slice(NOVITA_TASK_PREFIX.length).trim()) {
+    return { status: 'FAILED', failed: true, error: 'Invalid Novita task ID' };
+  }
   const taskId = String(marker).slice(NOVITA_TASK_PREFIX.length);
   try {
     const res = await novitaFetch('/v1/status/' + encodeURIComponent(taskId), {}, 60000);
     const j = await res.json().catch(() => ({}));
-    const status = String(j.status || 'PENDING').toUpperCase();
-    if (status === 'SUCCEEDED' || status === 'SUCCESS' || status === 'DONE') return { status, url: novitaResultUrl(j) };
-    if (/FAIL|ERROR|CANCEL/.test(status)) return { status, failed: true, payload: j };
-    return { status };
+    return novitaPollResult(j, res.status);
   } catch (e) { logLine(`novita poll network error (${e.message}) — client will poll again`); return { status: 'PENDING' }; }
 }
 
-async function submitTask(pathAndQuery, logFn = logLine) {
+async function submitTask(pathAndQuery, logFn = logLine, outInfo = null) {
   // Dead model guard: PaxSenix removed the base `nano-banana` model (400s every
   // time). Rewrite any `model=nano-banana` param to the live `nano-banana-pro`
   // centrally, so every t2i call site is covered without touching each one.
@@ -1952,7 +1970,7 @@ async function submitTask(pathAndQuery, logFn = logLine) {
     try {
       return LOGFARE_LOCAL_PREFIX + await generateLogfareImage(
         decodeURIComponent(lfModel[1]), qv('prompt', ''), qv('ratio', '1:1'), null);
-    } catch (e) { logFn(`logfare image failed: ${e.message}`); return null; }
+    } catch (e) { if (outInfo) outInfo.error = e; logFn(`logfare image failed: ${e.message}`); return null; }
   }
   // Novita text-to-image ("novita:<id>" model in the query) — not a PaxSenix
   // endpoint; submit through the Novita /v1/submit job API instead.
@@ -2018,13 +2036,13 @@ async function refImageBuffer(url) {
 }
 
 // img2img with reference image(s) — anchors character identity
-async function submitImg2ImgTask(prompt, refUrls, imageModel = 'seedream-5', ratio = '16:9') {
+async function submitImg2ImgTask(prompt, refUrls, imageModel = 'seedream-5', ratio = '16:9', outInfo = null) {
   // Logfare img2img = multipart images/edits with the reference image BYTES.
   if (isLogfareImageModel(imageModel)) {
     try {
       const refBuf = await refImageBuffer((refUrls || [])[0]);
       return LOGFARE_LOCAL_PREFIX + await generateLogfareImage(imageModel, prompt, ratio, refBuf);
-    } catch (e) { logLine(`logfare img2img ${imageModel}: ${e.message}`); return null; }
+    } catch (e) { if (outInfo) outInfo.error = e; logLine(`logfare img2img ${imageModel}: ${e.message}`); return null; }
   }
   // Novita img2img: reference URLs go in the TOP-LEVEL imageUrls array (docs).
   // References must be public http(s) URLs the generation service can fetch, so
@@ -2483,11 +2501,25 @@ function cropToRatio(inPath, ratio, outPath) {
 // Render ONE image through Logfare → local PNG cropped to `ratio`. A `refBuf`
 // switches to the images/edits (img2img) endpoint, which needs the reference
 // image BYTES as multipart — Logfare hands back base64, never a URL.
+function logfareImageError(j, httpStatus) {
+  // Gateways can wrap the upstream {errors:[{code:3030,...}]} as a JSON
+  // string in error.message. Keep it when deciding whether a retry is useful.
+  const detail = String(j?.error?.message || (j?.error && JSON.stringify(j.error)) ||
+    (j?.errors && JSON.stringify(j.errors)) || j?.message || `HTTP ${httpStatus}: no image returned`);
+  const filtered = /"code"\s*:\s*3030\b|output has been flagged|content[_ -]?(?:filter|policy)|safety (?:filter|system)/i.test(detail);
+  const err = new Error(filtered
+    ? 'Logfare content filter rejected this image (3030). Edit the scene/image prompt or reference image before retrying.'
+    : detail.slice(0, 400));
+  err.code = filtered ? 'IMAGE_CONTENT_FILTERED' : 'IMAGE_PROVIDER_ERROR';
+  err.permanent = filtered || (httpStatus >= 400 && httpStatus < 500 && httpStatus !== 408 && httpStatus !== 429);
+  return err;
+}
+
 async function generateLogfareImage(model, prompt, ratio = '1:1', refBuf = null) {
   if (!isLogfareImageModel(model)) throw new Error('unknown Logfare image model: ' + model);
   if (!LOGFARE_API_KEY) throw new Error('no Logfare key (env LOGFARE_API_KEY or pipeline/logfare_apikey.txt)');
   const raw = path.join(FRAMES_DIR, `lf_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}.jpg`);
-  let b64 = '';
+  let b64 = '', lastError = null;
   for (let attempt = 1; attempt <= 2 && !b64; attempt++) {
     try {
       let res;
@@ -2511,6 +2543,7 @@ async function generateLogfareImage(model, prompt, ratio = '1:1', refBuf = null)
         });
       }
       const j = await res.json().catch(() => ({}));
+      if (!res.ok || j.success === false || j.error || j.errors?.length) throw logfareImageError(j, res.status);
       b64 = String((j && j.data && j.data[0] && j.data[0].b64_json) || '');
       // Some models (nano-banana-2) return a hosted URL instead of base64.
       const hostedUrl = String((j && j.data && j.data[0] && (j.data[0].url || j.data[0].image_url)) || '');
@@ -2521,14 +2554,18 @@ async function generateLogfareImage(model, prompt, ratio = '1:1', refBuf = null)
         } catch (e) { logLine('logfare image ' + model + ': url download failed ' + e.message); }
       }
       if (!res.ok || !b64) {
-        const msg = (j && j.error && (j.error.message || JSON.stringify(j.error))) || `HTTP ${res.status}`;
-        logLine(`logfare image ${model} attempt ${attempt}: ${msg}`);
+        lastError = logfareImageError(j, res.status);
+        logLine(`logfare image ${model} attempt ${attempt}: ${lastError.message}`);
         b64 = '';
       }
-    } catch (e) { logLine(`logfare image ${model} attempt ${attempt}: ${e.message}`); }
+    } catch (e) {
+      if (e.permanent) throw e;
+      lastError = e;
+      logLine(`logfare image ${model} attempt ${attempt}: ${e.message}`);
+    }
     if (!b64 && attempt < 2) await new Promise(r => setTimeout(r, 3000));
   }
-  if (!b64) throw new Error(`logfare ${model}: no image returned`);
+  if (!b64) throw lastError || new Error(`logfare ${model}: no image returned`);
   await fsp.writeFile(raw, Buffer.from(b64, 'base64'));
   const out = raw.replace(/\.jpg$/, '.png');
   await cropToRatio(raw, ratio, out);
@@ -3135,12 +3172,8 @@ async function generateCharRefs(characters, imageModel = 'seedream-5', style = '
   }));
 
   // Per-character PROMPT-REPAIR LADDER (mirrors renderFrameImage for frames).
-  // Logfare's content filter rejects some ref prompts outright (code 3030 "Your
-  // output has been flagged") and the old single-shot submit then dropped the
-  // character's whole ref on the first variant ("SUBMIT FAILED") — the film lost
-  // that face everywhere. Retry with sanitized wording, an LLM rewrite, and
-  // finally a plain essentials portrait, so ANY safe variant of the prompt still
-  // anchors the character.
+  // Transient render failures use the repair ladder. A permanent provider
+  // rejection stops here and asks for an edited reference prompt.
   // The per-task wait must fit INSIDE the request budget. waitTask defaults to a
   // 25-minute deadline, so a single stuck provider kept this promise alive far
   // past Vercel's 300s function kill — the client got no response at all and the
@@ -3152,13 +3185,16 @@ async function generateCharRefs(characters, imageModel = 'seedream-5', style = '
     const out = charRefFile(c.id);
     const refAttempt = async (label, p) => {
       const q = `${imageEndpoint(imageModel)}?prompt=${encodeURIComponent(p)}&model=${encodeURIComponent(imageModel)}&ratio=1:1`;
-      const task = await submitTask(q);
+      const info = {};
+      const task = await submitTask(q, logLine, info);
+      if (info.error?.permanent) throw info.error;
       if (!task) { logLine(`${c.id}: ref SUBMIT FAILED (${label})`); return false; }
       logLine(`${c.id}: submitted ref portrait (${label})`);
       const url = await waitTask(task, perTaskMin);
       if (job.cancelRequested) return 'cancel';
       if (url && await download(url, out)) {
-        c.reference_image_url = url;
+        c.reference_image_url = IS_VERCEL && isLogfareLocal(url) ? await uploadToImageHost(out, logLine) : url;
+        delete c.reference_error;
         job.ok++;
         logLine(`${c.id}: REF DONE (${label})`);
         return true;
@@ -3200,7 +3236,12 @@ async function generateCharRefs(characters, imageModel = 'seedream-5', style = '
   logLine(`rendering ${enhanced.length} ref portraits in parallel (prompt-repair ladder active)...`);
   await Promise.all(enhanced.map(async ({ c, prompt }) => {
     if (job.cancelRequested) return;
-    await renderCharRef(c, prompt);
+    try { await renderCharRef(c, prompt); }
+    catch (e) {
+      c.reference_error = { code: e.code || 'IMAGE_PROVIDER_ERROR', message: e.message, retryable: !e.permanent };
+      job.failed.push(c.id); job.done++;
+      logLine(`${c.id}: REF FAILED — ${e.message}`);
+    }
   }));
 
   await writeJson(CHARS_JSON, characters);
@@ -3266,6 +3307,7 @@ async function generateImages(frames, imageModel, ratio, style, consistency = tr
   // essentials-only prompt. Character-consistency refs are kept when possible and
   // dropped as a last resort (a face that matches the movie beats no frame at all).
   const renderFrameImage = async (f, prompt) => {
+    delete f.image_error;
     // On Vercel the whole board's images render inside ONE 300s invocation, so the
     // retry ladder is time-capped (~150s per frame) — past that, jump straight to
     // the essentials fallback instead of burning the function budget.
@@ -3274,16 +3316,19 @@ async function generateImages(frames, imageModel, ratio, style, consistency = tr
     const refsFor = () => (f.characters_present || []).map(id => refById.get(id)).filter(Boolean).slice(0, 3);
     const imgAttempt = async (label, p, useRef) => {
       let task = null;
+      const info = {};
       if (useRef) {
         const refs = refsFor();
         if (refs.length) {
           const anchorPrompt = `${p} — IMPORTANT: keep the exact same faces, hair, skin tone and wardrobe as the reference portrait(s). Do not change character identity.`;
-          task = await submitImg2ImgTask(anchorPrompt, refs, imageModel, ratio);
+          task = await submitImg2ImgTask(anchorPrompt, refs, imageModel, ratio, info);
+          if (info.error?.permanent) throw info.error;
         }
       }
       if (!task) {
         const q = `${imageEndpoint(imageModel)}?prompt=${encodeURIComponent(p)}&model=${encodeURIComponent(imageModel)}&ratio=${encodeURIComponent(ratio)}`;
-        task = await submitTask(q);
+        task = await submitTask(q, logLine, info);
+        if (info.error?.permanent) throw info.error;
       }
       if (!task) { logLine(`frame ${f.frame}: image SUBMIT FAILED (${label})`); return false; }
       logLine(`frame ${f.frame}: image submitted (${label}${useRef && refsFor().length ? ', img2img anchored' : ', t2i'})`);
@@ -3293,8 +3338,13 @@ async function generateImages(frames, imageModel, ratio, style, consistency = tr
       const url = await waitTask(task, IS_VERCEL ? 4 : 25);
       if (job.cancelRequested) return 'cancel';
       if (url && await download(url, frameFile(f.frame))) {
-        f.generated_image_url = url;
-        urlMap.set(f.frame, url);
+        // Logfare returns a local marker, which cannot survive a Vercel cold
+        // start. Publish the still and send it back to the browser for handoff.
+        let storedUrl = url;
+        if (IS_VERCEL && isLogfareLocal(url)) storedUrl = await uploadToImageHost(frameFile(f.frame), logLine);
+        f.generated_image_url = storedUrl;
+        delete f.image_error;
+        urlMap.set(f.frame, storedUrl);
         job.ok++;
         logLine(`frame ${f.frame}: IMAGE DONE (${label})`);
         return true;
@@ -3342,15 +3392,28 @@ async function generateImages(frames, imageModel, ratio, style, consistency = tr
   await Promise.all(enhanced.map(async ({ f, prompt }) => {
     if (job.cancelRequested) return;
     if (Date.now() > phaseDeadline) { logLine(`frame ${f.frame}: image phase out of budget — skipping`); job.failed.push(f.frame); job.done++; return; }
-    const ok = await renderFrameImage(f, prompt);
-    if (!ok && !job.cancelRequested) { job.failed.push(f.frame); logLine(`frame ${f.frame}: IMAGE FAILED (all attempts)`); }
+    let ok = false;
+    try { ok = await renderFrameImage(f, prompt); }
+    catch (e) {
+      f.image_error = { code: e.code || 'IMAGE_PROVIDER_ERROR', message: e.message, retryable: !e.permanent };
+      logLine(`frame ${f.frame}: IMAGE FAILED — ${e.message}`);
+    }
+    if (!ok && !job.cancelRequested) {
+      f.image_error ||= { code: 'IMAGE_RENDER_FAILED', message: 'Image render failed after all attempts.', retryable: true };
+      job.failed.push(f.frame);
+      logLine(`frame ${f.frame}: IMAGE FAILED (${f.image_error.code})`);
+    }
     job.done++;
   }));
 
   // Save image URLs to frames.json
-  if (urlMap.size > 0) {
+  if (urlMap.size > 0 || frames.some(f => f.image_error)) {
     const allFrames = await readJson(FRAMES_JSON) || frames;
-    for (const af of allFrames) { if (urlMap.has(af.frame)) af.generated_image_url = urlMap.get(af.frame); }
+    for (const af of allFrames) {
+      if (urlMap.has(af.frame)) { af.generated_image_url = urlMap.get(af.frame); delete af.image_error; }
+      const result = frames.find(f => f.frame === af.frame);
+      if (result?.image_error) af.image_error = result.image_error;
+    }
     await writeJson(FRAMES_JSON, allFrames);
   }
   logLine(`images finished: ${job.ok} ok, ${job.failed.length} failed`);
@@ -5656,7 +5719,10 @@ const requestHandler = async (req, res) => {
           job.phase = 'idle';
           // Return refreshed characters (incl. reference_image_url) so the client keeps
           // its copy in sync even though /api/status is per-instance on Vercel.
-          return sendJson(res, 200, { ok: true, characters: (await readJson(CHARS_JSON)) || chars });
+          const failed = chars.filter(c => c.reference_error || !fs.existsSync(charRefFile(c.id))).map(c => c.id);
+          const errors = chars.filter(c => c.reference_error).map(c => ({ character: c.id, ...c.reference_error }));
+          return sendJson(res, 200, { ok: !failed.length, failed, errors, characters: chars,
+            ...(failed.length ? { error: errors.map(e => `${e.character}: ${e.message}`).join('; ') || `Character references failed: ${failed.join(', ')}` } : {}) });
         } catch (e) { job.phase = 'idle'; return sendJson(res, 500, { error: String(e.message || e) }); }
       })();
       generateCharRefs(chars, body.imageModel || IMAGE_MODELS[0], body.style || 'cinematic').catch(e => { logLine(`char-refs crash: ${e.message}`); job.phase = 'idle'; });
@@ -5683,9 +5749,9 @@ const requestHandler = async (req, res) => {
         job.phase = 'idle';
         // Truth-check: only claim success for frames whose PNG actually landed on
         // disk — report the rest as `failed` so the client retries them.
-        const failed = frames.map(f => f.frame).filter(n => !fs.existsSync(frameFile(n)));
-        if (failed.length) return sendJson(res, 200, { ok: false, failed });
-        return sendJson(res, 200, { ok: true });
+        const failed = frames.filter(f => f.image_error || !fs.existsSync(frameFile(f.frame))).map(f => f.frame);
+        const errors = frames.filter(f => f.image_error).map(f => ({ frame: f.frame, ...f.image_error }));
+        return { ok: !failed.length, failed, errors, frames };
       });
       generateImages(frames, body.imageModel || IMAGE_MODELS[0], body.ratio || '16:9', body.style || 'cinematic', body.consistency !== false, chars).catch(e => { logLine(`images crash: ${e.message}`); job.phase = 'idle'; });
       return sendJson(res, 202, { started: true, count: frames.length });
@@ -5717,13 +5783,13 @@ const requestHandler = async (req, res) => {
       // Videos button and the client-driven auto pipeline both land here (the old
       // code only embedded it in the local /api/run-all pipeline, so those paths
       // rendered silent clips and the combined film had no vocals at all).
-      if (body.narrationMode === 'prompt') {
+      if (!body.pollTask && body.narrationMode === 'prompt' && !isNovitaVideoModel(body.videoModel)) {
         const before = frames.length;
         frames = vocalizeAnimationPrompts(frames);
         const voiced = frames.filter(f => /narrates aloud/i.test(String(f.animation_prompt || ''))).length;
-        logLine(`prompt-vocalized mode: narration/dialogue embedded in ${voiced}/${before} video prompt(s) — the video model must generate audio (veo-3.1 / omni-flash do; wan models render silent clips)`);
+        logLine(`prompt-vocalized mode: narration/dialogue embedded in ${voiced}/${before} video prompt(s)`);
       }
-      if (body.force) { for (const f of frames) { if (f.animation_prompt) { try { fs.unlinkSync(videoFile(f.frame)); } catch {} } } }
+      if (!body.pollTask && body.force) { for (const f of frames) { if (f.animation_prompt) { try { fs.unlinkSync(videoFile(f.frame)); } catch {} } } }
       // Credit gate on the SUBMIT only — polling an already-charged task must
       // never charge twice (mirrors the Flashloop two-phase route).
       const vidCost = Math.max(1, Math.round(frames.reduce((s, f) => s + (f.duration_sec || 6), 0) * CREDIT_COSTS.videosPerSec));
@@ -5750,7 +5816,7 @@ const requestHandler = async (req, res) => {
               // ---- phase 2: finish a task submitted earlier ----
               if (body.pollTask) {
                 const st = await novitaPollOnce(body.pollTask);
-                if (st.failed) return sendJson(res, 500, { error: `${vidModel} render failed (${st.status})` });
+                if (st.failed) return sendJson(res, 200, { ok: false, failed: [f.frame], error: st.error || `${vidModel} render failed (${st.status})` });
                 if (!st.url) return sendJson(res, 202, { pending: true, task: body.pollTask, status: st.status });
                 if (!(await download(st.url, videoFile(f.frame)))) return sendJson(res, 500, { error: 'clip download failed' });
               } else {
@@ -8140,13 +8206,13 @@ module.exports.__internal = {
   // Logfare async-job models (wan3.0 video + qwen/wanx image).
   NOVITA_VIDEO_MODELS, NOVITA_IMAGE_MODELS, NOVITA_TASK_PREFIX,
   isNovitaVideoModel, isNovitaI2VModel, isNovitaImageModel, novitaAcceptsImage,
-  novitaDurationFor, novitaImageSize, novitaSubmit, novitaWait, novitaResultUrl, novitaPollOnce,
+  novitaDurationFor, novitaImageSize, novitaSubmit, novitaWait, novitaResultUrl, novitaPollOnce, novitaPollResult,
   uploadVideoClip,
   // LLM routing (chatCompletion honours "logfare:<model>" ids).
   chatCompletion, chatWithLogfareFallback, logfareStatus,
   // Logfare media (image models + Deepgram Aura-2 narration).
   LOGFARE_IMAGE_MODELS, LOGFARE_TTS_MODEL, LOGFARE_TTS_VOICES, LOGFARE_LOCAL_PREFIX,
-  isLogfareImageModel, isLogfareLocal, cropToRatio, generateLogfareImage, logfareTtsChunk,
+  isLogfareImageModel, isLogfareLocal, cropToRatio, generateLogfareImage, logfareTtsChunk, logfareImageError,
   refImageBuffer, submitImg2ImgTask,
   imageModels: IMAGE_MODELS, narrationEngines: NARRATION_ENGINES,
   scrapeFlashloop, scrapeSjinn,
