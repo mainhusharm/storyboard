@@ -395,6 +395,10 @@ let IS_VERCEL_CLIENT=false; // set from /api/health — Vercel renders videos on
 // and can vanish between calls, so per-frame runs log locally instead.
 let LOCAL_LOG=[];
 let LOCAL_LAST_ACTIVITY = Date.now();
+// Client-side phase label (e.g. "VIDEOS 2/8 · rendering 3m"). poll() shows this
+// while a client-driven run is active — long renders run quietly in the background
+// with at most one log line per frame instead of an elapsed-time timer in the log.
+let LOCAL_PHASE='';
 function logLocal(msg,cls=''){LOCAL_LOG.push({t:new Date().toLocaleTimeString(),m:String(msg),c:cls});if(LOCAL_LOG.length>200)LOCAL_LOG.shift();LOCAL_LAST_ACTIVITY=Date.now();const el=$('log');if(el){el.innerHTML=LOCAL_LOG.map(l=>`<span class="${l.c}"><span class="t">[${esc(l.t)}]</span> ${esc(l.m)}</span>`).join('\n');el.scrollTop=el.scrollHeight;}}
 
 // A request with NO timeout can hang forever (Vercel cold start, a stalled
@@ -633,7 +637,7 @@ async function poll(){
   const busy=LOCAL_BUSY||s.phase!=='idle';
   const cancelling=!!s.cancelling;
   $('phasepill').classList.toggle('busy',busy||cancelling);
-  $('phasetxt').textContent=cancelling?'CANCELLING…':(busy?`${s.phase.toUpperCase()} ${s.done}/${s.total||'?'}`:'IDLE');
+  $('phasetxt').textContent=cancelling?'CANCELLING…':(LOCAL_BUSY&&LOCAL_PHASE)?LOCAL_PHASE:(busy?`${s.phase.toUpperCase()} ${s.done}/${s.total||'?'}`:'IDLE');
   $('gprog').firstElementChild.style.width=s.total?Math.round(100*s.done/s.total)+'%':((busy||cancelling)?'12%':'0%');
   // Run buttons stay ENABLED while busy — clicking one asks to cancel the running
   // task first (guardBusy) so a new run never gets stuck behind the previous one.
@@ -752,7 +756,7 @@ $('btnAuto').onclick=async()=>{
 // when the next phase arrives. That is a queueing delay, not a failure — so wait
 // it out instead of aborting the whole pipeline with a "Pipeline failed: busy".
 async function callPhase(path, body, opts = {}) {
-  const attempts = opts.attempts || 12;
+  const attempts = opts.attempts || 24;
   const timeoutMs = opts.timeoutMs || 280000; // under Vercel's 300s function kill
   for (let i = 0; i < attempts; i++) {
     let r = null;
@@ -778,13 +782,15 @@ async function callPhase(path, body, opts = {}) {
     clearTimeout(timer); PHASE_ABORT = null;
     if (r && r.error === 'busy') {
       if (i === attempts - 1) throw new Error('busy (waited ' + attempts + ' tries)');
+      // A transient "busy" is usually a stale job waiting for its reap window on
+      // another instance — wait it out patiently instead of killing the pipeline.
       logLocal(`${path}: busy (${i + 1}/${attempts}) — waiting…`);
-      await new Promise(r => setTimeout(r, 3000));
+      await new Promise(r => setTimeout(r, 5000));
       continue;
     }
     return r;
   }
-  return r;
+  return null;
 }
 // VERCEL AUTO PIPELINE — the whole pipeline must NOT run inside one serverless
 // invocation (300s kill → "stuck at storyboard ready"). Instead the client drives
@@ -839,7 +845,8 @@ async function runAutoVercel(script){
           break;
         }else if(poll&&poll.pending){
           consecutiveErrors=0;
-          logLocal(`storyboard: ${Math.round((i+1)*pollInterval/1000)}s elapsed…`);
+          // Quiet background progress — the pill shows it, no console timer spam.
+          LOCAL_PHASE=`STORYBOARD · ${Math.round((i+1)*pollInterval/1000)}s`;
         }else{
           // An explicit error payload from the server (failed / timed out) is real.
           throw new Error((poll&&poll.error)||'storyboard job failed');
@@ -864,9 +871,10 @@ async function runAutoVercel(script){
     const imagesP=callPhase('/images',sbPayload({frames:frameNumbers,imageModel:opts.imageModel,ratio:opts.ratio,style:opts.style,consistency:opts.consistency}))
       .then(im=>{if(im&&im.error)logLocal('images: '+im.error,'err');else if(im&&im.failed&&im.failed.length)logLocal('images: '+im.failed.length+' failed — continuing','err');else logLocal('images done','ok');})
       .catch(e=>logLocal('images failed: '+e.message,'err'));
+    let narrUrl='';
     const narrP=opts.narrationMode==='tts'
       ? callPhase('/narration',sbPayload({voice:opts.voice,language:opts.language,narrationEngine:opts.narrationEngine,narrVolume:opts.narrVolume,origVolume:opts.origVolume,force:true}))
-          .then(nr=>{if(nr&&nr.error)logLocal('narration: '+nr.error,'err');else logLocal('narration done','ok');})
+          .then(nr=>{if(nr&&nr.narrationUrl){narrUrl=nr.narrationUrl;try{localStorage.setItem('sb_narr_url',narrUrl)}catch(e){}}if(nr&&nr.error)logLocal('narration: '+nr.error,'err');else logLocal('narration done','ok');})
           .catch(e=>logLocal('narration failed: '+e.message,'err'))
       : Promise.resolve();
     logLocal(`phases 2-5 running in parallel (char-refs${CHARS.length?'':' skipped'}, images ${frameNumbers.length}, narration ${opts.narrationMode==='tts'?'tts':'off'})…`);
@@ -877,6 +885,7 @@ async function runAutoVercel(script){
     // one render per invocation is what fits Vercel's 300s budget.
     const targets=FRAMES.filter(f=>f.animation_prompt).sort((a,b)=>a.frame-b.frame);
     logLocal(`phase 4/6: videos (${targets.length})…`,'');
+    LOCAL_PHASE=`VIDEOS 1/${targets.length}`;
     let prevChain='';
     // Hosted clip URL per frame. Each render happens on its OWN Vercel instance
     // with its own /tmp, so the mp4 is not visible to the combine invocation.
@@ -886,9 +895,10 @@ async function runAutoVercel(script){
     for(let i=0;i<targets.length;i++){
       const f=targets[i];
       logLocal(`video ${i+1}/${targets.length}: frame ${f.frame}…`);
+      LOCAL_PHASE=`VIDEOS ${i+1}/${targets.length}`;
       let j;
       try{
-        const body=sbPayload({frames:[f.frame],ratio:opts.ratio,videoModel:opts.videoModel,chainContinuity:opts.chainContinuity});
+        const body=sbPayload({frames:[f.frame],ratio:opts.ratio,videoModel:opts.videoModel,chainContinuity:opts.chainContinuity,narrationMode:opts.narrationMode});
         if(prevChain)body.chainAnchor=prevChain;
         j=await callPhase('/videos',body);
         // Wan (Novita) renders run 4-30 minutes — far longer than any single
@@ -898,16 +908,8 @@ async function runAutoVercel(script){
         // never a failure. Without this the request timed out at ~280s and every
         // retry re-submitted a NEW paid render.
         if(j&&j.pending&&j.task){
-          const pollBody=sbPayload({frames:[f.frame],ratio:opts.ratio,videoModel:opts.videoModel,chainContinuity:opts.chainContinuity,pollTask:j.task});
-          let waited=0;
-          while(waited<2700000){            // 45-min ceiling for one scene (wan3.0 30s clips can be slow)
-            logLocal(`frame ${f.frame}: rendering in the cloud (${Math.round(waited/1000)}s elapsed — wan clips take 4-30 min, no timeout here)…`);
-            await new Promise(r=>setTimeout(r,15000));
-            waited+=15000;
-            if(USER_CANCELLED)throw new Error('cancelled');
-            j=await callPhase('/videos',pollBody,{attempts:4});
-            if(!j||!j.pending)break;       // settled (done or hard failure)
-          }
+          logLocal(`frame ${f.frame}: rendering in the background — wan clips can take a while, no need to watch this screen`);
+          j=await pollVideoTask(f.frame,j.task,{frames:[f.frame],ratio:opts.ratio,videoModel:opts.videoModel,chainContinuity:opts.chainContinuity,narrationMode:opts.narrationMode},i+1,targets.length);
         }
       }catch(e){j={error:e.message}}
       if(j&&j.error)logLocal(`frame ${f.frame}: ${j.error}`,'err');
@@ -924,7 +926,7 @@ async function runAutoVercel(script){
 
     // ---- Phase 6: combine ----
     logLocal('phase 6/6: combining final film…','');
-    const cb=await callPhase('/combine',sbPayload({ratio:opts.ratio,narrationMode:opts.narrationMode,narrVolume:opts.narrVolume,origVolume:opts.origVolume,clipUrls,imageModel:opts.imageModel}));
+    const cb=await callPhase('/combine',sbPayload({ratio:opts.ratio,narrationMode:opts.narrationMode,narrVolume:opts.narrVolume,origVolume:opts.origVolume,clipUrls,imageModel:opts.imageModel,narrationUrl:narrUrl||localStorage.getItem('sb_narr_url')||''}));
     if(cb&&cb.error)logLocal('combine: '+cb.error,'err');
     else {
       if(cb&&cb.finalUrl){
@@ -936,7 +938,7 @@ async function runAutoVercel(script){
       logLocal('🎬 FINAL FILM READY','ok');
     }
   }catch(e){logLocal('pipeline failed: '+e.message,'err');logLocal('⚠ stopped — the console above has the details. Click 🔧 Force Clean, then run again.','err')}
-  finally{SUBMITTING=false;LOCAL_BUSY=false;poll();refresh();refreshCredits()}
+  finally{SUBMITTING=false;LOCAL_BUSY=false;LOCAL_PHASE='';poll();refresh();refreshCredits()}
 }
 $('btnCharRefs').onclick=async()=>{const r=await postJob('/char-refs',sbPayload({imageModel:$('imageModel').value,style:$('style').value,force:true}));if(r&&r.characters){CHARS=r.characters;try{localStorage.setItem('sb_chars',JSON.stringify(CHARS))}catch(e){}}};
 $('btnImages').onclick=async()=>{
@@ -944,6 +946,37 @@ $('btnImages').onclick=async()=>{
   if(!frameNumbers.length) return alert('Generate a storyboard first.');
   await postJob('/images',sbPayload({frames:frameNumbers,imageModel:$('imageModel').value,ratio:$('ratio').value,style:$('style').value,consistency:$('consistency').checked}));
 };
+// Hosted clip URLs per frame (rendered on instances whose /tmp we can't see).
+function loadClipUrls(){try{return JSON.parse(localStorage.getItem('sb_clip_urls')||'{}')}catch(e){return{}}}
+function saveClipUrl(frameNum,clipUrl){
+  if(!clipUrl)return;
+  try{const m=loadClipUrls();m[String(frameNum)]=clipUrl;localStorage.setItem('sb_clip_urls',JSON.stringify(m))}catch(e){}
+}
+// Poll a two-phase (Novita/wan) render task with fresh requests until it settles.
+// The server submitted the job and answered {pending, task} — a wan clip renders
+// 4-30 min, far past any single request. This loop runs QUIETLY in the background:
+// progress goes to the header pill, one log line per frame, no elapsed-time spam.
+// "pending" always means keep waiting, never a failure.
+async function pollVideoTask(frameNum, task, body, idx, total){
+  const pollBody=sbPayload({...body, pollTask:task});
+  let waited=0, consecutiveErrors=0;
+  while(waited<2700000){ // 45-min ceiling for one scene
+    LOCAL_PHASE=`VIDEOS ${idx}/${total} · rendering in background ${Math.round(waited/60000)}m`;
+    await new Promise(r=>setTimeout(r,15000));
+    waited+=15000;
+    if(USER_CANCELLED)throw new Error('cancelled');
+    let j=null;
+    try{ j=await callPhase('/videos',pollBody,{attempts:4}); consecutiveErrors=0; }
+    catch(e){
+      consecutiveErrors++;
+      if(consecutiveErrors>=6)return {error:'polling failed repeatedly: '+e.message};
+      continue; // transient — the render is still alive server-side
+    }
+    if(j&&j.pending)continue;           // still rendering — keep waiting
+    return j||{error:'no response'};    // settled (done or hard failure)
+  }
+  return {error:'render still running after 45 min — try this scene again'};
+}
 // On Vercel, render videos ONE FRAME PER REQUEST — a serverless invocation dies at
 // 300s, and a full board (especially with seamless chaining) can take 20-60 min, so
 // the whole-board synchronous POST always times out. Splitting per-frame keeps each
@@ -951,7 +984,7 @@ $('btnImages').onclick=async()=>{
 // next frame can anchor across separate invocations.
 $('btnVideos').onclick=async()=>{
   if(IS_VERCEL_CLIENT) return runVideosVercel();
-  await postJob('/videos',sbPayload({ratio:$('ratio').value,videoModel:$('videoModel').value,force:true,chainContinuity:$('chainContinuity').checked}));
+  await postJob('/videos',sbPayload({ratio:$('ratio').value,videoModel:$('videoModel').value,force:true,chainContinuity:$('chainContinuity').checked,narrationMode:$('narrationMode').value}));
 };
 async function runVideosVercel(){
   if(SUBMITTING) return;
@@ -959,13 +992,15 @@ async function runVideosVercel(){
   const targets=FRAMES.filter(f=>f.animation_prompt).sort((a,b)=>a.frame-b.frame);
   if(!targets.length)return alert('No frames with animation prompts yet.');
   const chained=$('chainContinuity').checked;
-  SUBMITTING=true;LOCAL_BUSY=true;LOCAL_LOG=[];poll();
+  SUBMITTING=true;LOCAL_BUSY=true;LOCAL_LOG=[];LOCAL_PHASE=`VIDEOS 1/${targets.length}`;poll();
   logLocal(`video phase (Vercel): ${targets.length} frame(s) — ${$('videoModel').value} — ${chained?'seamless chaining':'parallel'}`,'');
   let prevChain='',failedVideos=[];
+  const clipUrls=loadClipUrls();
   try{
     for(let i=0;i<targets.length;i++){
       const f=targets[i];
-      $('phasetxt').textContent=`VIDEOS ${i+1}/${targets.length}`;
+      LOCAL_PHASE=`VIDEOS ${i+1}/${targets.length}`;
+      logLocal(`video ${i+1}/${targets.length}: frame ${f.frame}…`);
       // Render this frame; retry ONCE when the server reports a failed render
       // (e.g. the render exceeded Vercel's 300s function budget — render times vary,
       // so a second attempt usually lands inside the window).
@@ -974,27 +1009,51 @@ async function runVideosVercel(){
         try{
           // 320s client-side timeout: Vercel kills the function at 300s — if that
           // happens mid-render the connection drops, so never let the loop hang.
-          r=await api('/videos',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sbPayload({frames:[f.frame],ratio:$('ratio').value,videoModel:$('videoModel').value,force:true,chainContinuity:chained,chainAnchor:prevChain})),signal:AbortSignal.timeout(320000)});
+          r=await api('/videos',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sbPayload({frames:[f.frame],ratio:$('ratio').value,videoModel:$('videoModel').value,force:true,chainContinuity:chained,chainAnchor:prevChain,narrationMode:$('narrationMode').value})),signal:AbortSignal.timeout(320000)});
         }catch(e){r={error:'request failed: '+e.message};}
+        // Wan (Novita) renders run 4-30 min — the server submits and hands back
+        // {pending, task}. Poll THAT task with fresh requests in the background.
+        // NEVER retry the submit: every submission is a NEW paid render.
+        if(r&&r.pending&&r.task){
+          logLocal(`frame ${f.frame}: rendering in the background — wan clips can take a while, no need to watch this screen`);
+          r=await pollVideoTask(f.frame,r.task,{frames:[f.frame],ratio:$('ratio').value,videoModel:$('videoModel').value,chainContinuity:chained,narrationMode:$('narrationMode').value},i+1,targets.length);
+          break;
+        }
         if(r.error||r.ok===false){logLocal(`frame ${f.frame}: attempt ${attempt} failed — ${r.error||'render did not complete'}`,'err');if(attempt===1)logLocal(`frame ${f.frame}: retrying once…`,'');else break;continue;}
         break;
       }
-      if(r.error||r.ok===false){failedVideos.push(f.frame);continue;}
+      if(!r||r.error||r.ok===false){failedVideos.push(f.frame);if(r&&r.error)logLocal(`frame ${f.frame}: ${r.error}`,'err');continue;}
       // Save this frame's chain anchor (server returns it) for the next request
       if(chained&&r.frame&&r.frame.chain_image_url) prevChain=r.frame.chain_image_url;
       // Persist the render result locally — Vercel /tmp is ephemeral, so the UI and
       // later Combine must see this frame as rendered even after an instance switch.
-      if(r.frame){const local=FRAMES.find(x=>x.frame===f.frame);if(local){local.hasVideo=true;if(r.frame.chain_image_url)local.chain_image_url=r.frame.chain_image_url;}}
+      const clipUrl=r.clipUrl||(r.frame&&r.frame.clip_url)||'';
+      if(clipUrl){clipUrls[String(f.frame)]=clipUrl;saveClipUrl(f.frame,clipUrl);}
+      if(r.frame&&typeof r.frame==='object'){const local=FRAMES.find(x=>x.frame===f.frame);if(local){local.hasVideo=true;if(r.frame.chain_image_url)local.chain_image_url=r.frame.chain_image_url;if(clipUrl)local.clip_url=clipUrl;}}
       try{localStorage.setItem('sb_frames',JSON.stringify(FRAMES))}catch(e){}
       logLocal(`frame ${f.frame}: VIDEO DONE`,'ok');
     }
+    const clipCount=Object.keys(clipUrls).length;
+    if(targets.length&&!clipCount)logLocal('note: no clip URLs returned — combine may fall back to stills on other instances','err');
     if(failedVideos.length)logLocal(`${failedVideos.length} frame(s) still failed after retry: #${failedVideos.join(', #')} — Combine will use the still image for them`,'err');
     await refresh();
   }catch(e){logLocal('video error: '+e.message,'err');}
-  finally{SUBMITTING=false;LOCAL_BUSY=false;poll();}
+  finally{SUBMITTING=false;LOCAL_BUSY=false;LOCAL_PHASE='';poll();}
 }
-$('btnNarration').onclick=async()=>{await postJob('/narration',sbPayload({voice:$('voice').value,language:$('language').value,narrationEngine:$('narrationEngine').value,narrVolume:Number($('narrVolume').value),origVolume:Number($('origVolume').value),force:true}))};
-$('btnCombine').onclick=async()=>{await postJob('/combine',sbPayload({ratio:$('ratio').value,narrationMode:$('narrationMode').value,narrVolume:Number($('narrVolume').value),origVolume:Number($('origVolume').value),imageModel:$('imageModel').value}))};
+$('btnNarration').onclick=async()=>{
+  const r=await postJob('/narration',sbPayload({voice:$('voice').value,language:$('language').value,narrationEngine:$('narrationEngine').value,narrVolume:Number($('narrVolume').value),origVolume:Number($('origVolume').value),force:true}));
+  // Remember the hosted narration URL — the combine request may land on another
+  // instance that cannot see the audio file, so it recovers it from this URL.
+  if(r&&r.narrationUrl){try{localStorage.setItem('sb_narr_url',r.narrationUrl)}catch(e){}}
+};
+$('btnCombine').onclick=async()=>{
+  // Cross-instance recovery: clips + narration live on the instance that rendered
+  // them — pass their hosted URLs so combine can re-download anything missing.
+  const clipUrls=loadClipUrls();
+  for(const f of FRAMES) if(f.clip_url&&!clipUrls[String(f.frame)]) clipUrls[String(f.frame)]=f.clip_url;
+  let narrationUrl='';try{narrationUrl=localStorage.getItem('sb_narr_url')||''}catch(e){}
+  await postJob('/combine',sbPayload({ratio:$('ratio').value,narrationMode:$('narrationMode').value,narrVolume:Number($('narrVolume').value),origVolume:Number($('origVolume').value),imageModel:$('imageModel').value,clipUrls,narrationUrl}));
+};
 async function regenFrame(n){await api('/images',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sbPayload({frames:[n],imageModel:$('imageModel').value,ratio:$('ratio').value,style:$('style').value,consistency:$('consistency').checked}))})}
 async function regenChar(id){const r=await api('/char-refs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sbPayload({force:[id]}))});if(r.characters){CHARS=r.characters;try{localStorage.setItem('sb_chars',JSON.stringify(CHARS))}catch(e){}}}
 

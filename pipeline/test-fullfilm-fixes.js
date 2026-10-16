@@ -22,7 +22,7 @@ function check(name, cond, detail) {
   else { failures++; console.error(`FAIL  ${name}${detail ? ' — ' + detail : ''}`); }
 }
 
-const { storyboardFrameCount, emergencyImageChain, isLogfareImageModel } =
+const { storyboardFrameCount, emergencyImageChain, isLogfareImageModel, vocalizeAnimationPrompts } =
   require(path.join(ROOT, 'web', 'server.js')).__internal;
 
 console.log('\n[1] combine restores the frame image before generating anything');
@@ -49,11 +49,13 @@ check('novita image models pass through', emergencyImageChain('novita:qwen-image
 
 console.log('\n[3] imageModel travels from the client to combine');
 check('run-all combine step threads imageModel', /clipUrls: body\.clipUrls, imageModel: body\.imageModel/.test(src));
-check('/api/combine (vercel) threads imageModel', /const fp = await combineFilm\(frames, body\.ratio \|\| '16:9', body\.narrationMode, \{ narrVol: body\.narrVolume, origVol: body\.origVolume, clipUrls: body\.clipUrls, imageModel: body\.imageModel \}\)/.test(src));
+check('/api/combine (vercel) threads imageModel', /const fp = await combineFilm\(frames, body\.ratio \|\| '16:9', body\.narrationMode, \{ narrVol: body\.narrVolume, origVol: body\.origVolume, clipUrls: body\.clipUrls, imageModel: body\.imageModel, narrationUrl: body\.narrationUrl \}\)/.test(src));
+check('/api/combine (vercel) threads narrationUrl (cross-instance voice track)', /narrationUrl: body\.narrationUrl/.test(src));
 check('/api/combine (vercel) still hosts the finished film (remote fix kept)', /final film hosted: \$\{finalUrl\}/.test(src));
-check('/api/combine (local) threads imageModel', /combineFilm\(frames, body\.ratio \|\| '16:9', body\.narrationMode, \{ narrVol: body\.narrVolume, origVol: body\.origVolume, clipUrls: body\.clipUrls, imageModel: body\.imageModel \}\)\.then/.test(src));
+check('/api/combine (local) threads imageModel', /combineFilm\(frames, body\.ratio \|\| '16:9', body\.narrationMode, \{ narrVol: body\.narrVolume, origVol: body\.origVolume, clipUrls: body\.clipUrls, imageModel: body\.imageModel, narrationUrl: body\.narrationUrl \}\)\.then/.test(src));
 check('auto pipeline combine sends imageModel', /origVolume:opts\.origVolume,clipUrls,imageModel:opts\.imageModel/.test(client));
-check('manual combine button sends imageModel', /origVolume:Number\(\$\('origVolume'\)\.value\),imageModel:\$\('imageModel'\)\.value/.test(src) || /origVolume:Number\(\$\('origVolume'\)\.value\),imageModel:\$\('imageModel'\)\.value\}/.test(client));
+check('manual combine button sends imageModel', /origVolume:Number\(\$\('origVolume'\)\.value\),imageModel:\$\('imageModel'\)\.value/.test(src) || /origVolume:Number\(\$\('origVolume'\)\.value\),imageModel:\$\('imageModel'\)\.value[,}]/.test(client));
+check('manual combine button sends clipUrls + narrationUrl (cross-instance audio/clips)', /imageModel:\$\('imageModel'\)\.value,clipUrls,narrationUrl\}/.test(client));
 
 console.log('\n[4] storyboard frame count honours target ÷ clip');
 // The user's exact selection must win: 1 min + 30s Wan clips = 2 videos, not 3.
@@ -83,9 +85,34 @@ check('completion still hosts the clip for combine', /clipUrl = await uploadVide
 check('wan3.0 start frame passed via imageUrls', /\.\.\.\(useImg \? \{ imageUrls: \[anchor\] \} : \{\}\)/.test(src));
 check('client polls pending renders (45-min ceiling)', /while\(waited<2700000\)/.test(client));
 check('client polls every 15s', /setTimeout\(r,15000\)\);\s*\r?\n\s*waited\+=15000;/.test(client));
-check('client treats pending as keep-waiting, not failure', /if\(!j\|\|!j\.pending\)break;/.test(client));
+check('client treats pending as keep-waiting, not failure', /if\(!j\|\|!j\.pending\)break;/.test(client) || /if\(j&&j\.pending\)continue;/.test(client));
 check('client cancel still stops the poll loop', /if\(USER_CANCELLED\)throw new Error\('cancelled'\);/.test(client));
 check('sync path kept for PaxSenix models', /PaxSenix models \(grok \/ omni-flash \/ veo\) render inside the 300s budget/.test(src));
+
+console.log('\n[6] prompt-vocalized mode: narration rides inside the video prompts');
+// Regression: "Prompt Vocalized" came out as a SILENT film. The spoken text was
+// only ever embedded in the local /api/run-all pipeline — the manual Videos
+// button and the client-driven auto pipeline rendered plain animation_prompts,
+// so the video model never heard the narration and the clips had no vocals.
+check('/api/videos embeds narration in prompt mode', /if \(body\.narrationMode === 'prompt'\) \{[\s\S]{0,400}?frames = vocalizeAnimationPrompts\(frames\)/.test(src));
+check('/api/run-all uses the same helper', /videoFrames = vocalizeAnimationPrompts\(frames\)/.test(src));
+check('no leftover inline embedding in run-all', !/clone\.animation_prompt = `\$\{clone\.animation_prompt\} The character narrates aloud/.test(src));
+check('client auto pipeline sends narrationMode with /videos', /chainContinuity:opts\.chainContinuity,narrationMode:opts\.narrationMode/.test(client));
+check('client Vercel per-frame render sends narrationMode', /chainAnchor:prevChain,narrationMode:\$\('narrationMode'\)\.value/.test(client));
+check('client manual Videos button sends narrationMode', /postJob\('\/videos',sbPayload\(\{ratio:\$\('ratio'\)\.value,videoModel:\$\('videoModel'\)\.value,force:true,chainContinuity:\$\('chainContinuity'\)\.checked,narrationMode:\$\('narrationMode'\)\.value\}\)\)/.test(client));
+// Behavioural: the helper embeds narration + dialogue, leaves speechless frames
+// alone, and never double-embeds when a poll re-sends the same frames.
+const vInput = [
+  { frame: 1, narration: 'Once upon a time.', dialogue: 'Hello!', animation_prompt: 'slow push in' },
+  { frame: 2, narration: '', dialogue: '', animation_prompt: 'slow pull out' },
+];
+const vFrames = vocalizeAnimationPrompts(vInput);
+check('narration + dialogue embedded verbatim', /narrates aloud: "Once upon a time\.\. Hello!"/.test(vFrames[0].animation_prompt), vFrames[0].animation_prompt);
+check('original motion prompt kept', vFrames[0].animation_prompt.startsWith('slow push in'));
+check('frame without narration is untouched', vFrames[1].animation_prompt === 'slow pull out');
+const vAgain = vocalizeAnimationPrompts(vFrames);
+check('idempotent on re-render/poll retries', vAgain[0].animation_prompt === vFrames[0].animation_prompt);
+check('original frame objects are not mutated', vInput[0].animation_prompt === 'slow push in');
 
 console.log('\n' + (failures ? failures + ' FAILED' : 'all passed'));
 process.exit(failures ? 1 : 0);

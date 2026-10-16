@@ -1481,6 +1481,14 @@ function logLine(msg) {
   // startedAt, so a long-but-healthy run is never mistaken for a frozen one.
   job.lastProgressAt = Date.now();
 }
+// Liveness heartbeat WITHOUT a log line. Long render waits (wan clips take
+// 4-30 min) poll silently for minutes at a time, and the stale-job reaper used
+// to treat that silence as a corpse and release a perfectly healthy run
+// mid-render ("process died right after the first scene"). The task poll loops
+// call this every tick so only genuinely dead jobs get reaped.
+function touchJobProgress() {
+  if (job.phase !== 'idle') job.lastProgressAt = Date.now();
+}
 // Release a job. `cancelling` records that work may still be unwinding: the
 // phase must NOT claim idle while renders are in flight, because a lying status
 // is what let a second job stack on top of a running one.
@@ -1643,19 +1651,19 @@ async function uploadToImageHost(filePath, logFn = inflLogLine) {
 // mime — a clip must keep its .mp4 extension/mime so the combine step can
 // fetch it and the browser can play it (serverless instances don't share /tmp,
 // so the clip has to survive outside the instance that rendered it).
-async function uploadVideoClip(filePath, logFn = logLine) {
+async function uploadVideoClip(filePath, logFn = logLine, mime = 'video/mp4', fileName = 'clip.mp4') {
   const buf = await fsp.readFile(filePath);
   try {
     const form = new FormData();
     form.append('reqtype', 'fileupload');
-    form.append('fileToUpload', new Blob([buf], { type: 'video/mp4' }), 'clip.mp4');
+    form.append('fileToUpload', new Blob([buf], { type: mime }), fileName);
     const res = await fetch('https://catbox.moe/user/api.php', { method: 'POST', body: form, signal: AbortSignal.timeout(180000) });
     const text = await res.text();
     if (res.ok && text && text.startsWith('https://')) { logFn(`clip uploaded to catbox: ${text}`); return text.trim(); }
   } catch (e) { logFn(`catbox clip upload failed: ${e.message}`); }
   try {
     const form = new FormData();
-    form.append('files[]', new Blob([buf], { type: 'video/mp4' }), 'clip.mp4');
+    form.append('files[]', new Blob([buf], { type: mime }), fileName);
     const res = await fetch('https://uguu.se/upload', { method: 'POST', body: form, signal: AbortSignal.timeout(180000) });
     const j = await res.json().catch(() => ({}));
     if (j.files && j.files[0] && j.files[0].url) { logFn(`clip uploaded to uguu: ${j.files[0].url}`); return j.files[0].url; }
@@ -1883,6 +1891,7 @@ async function novitaWait(marker, maxMin = 25, logFn = logLine, outInfo = null) 
   const deadline = Date.now() + maxMin * 60000;
   let networkErrors = 0, lastStatus = 'PENDING';
   while (Date.now() < deadline) {
+    touchJobProgress(); // heartbeat — a long render is healthy, not a stuck job
     if (storyboardCancelRequested(logFn)) { logFn('novita task cancelled by user'); if (outInfo) outInfo.cancelled = true; return null; }
     try {
       const res = await novitaFetch('/v1/status/' + encodeURIComponent(taskId), {}, 60000);
@@ -2084,6 +2093,7 @@ async function waitTask(taskUrl, maxMin = 25, logFn = logLine, outInfo = null) {
   let networkErrors = 0;
   let lastStatus = 'pending';
   while (Date.now() < deadline) {
+    touchJobProgress(); // heartbeat — a long render is healthy, not a stuck job
     if (storyboardCancelRequested(logFn)) { logFn('task cancelled by user'); if (outInfo) outInfo.cancelled = true; return null; }
     try {
       const res = await paxFetch(taskUrl, {}, 90000);
@@ -3707,8 +3717,18 @@ async function generateVideos(frames, ratio, videoModel = DEFAULT_VIDEO_MODEL, c
       // Client-supplied anchor wins (Vercel per-frame rendering passes the previous
       // scene's chain URL explicitly because each request is a fresh invocation and
       // can't see the previous frame's chain PNG on disk).
-      const chainUrl = f._chainAnchor || (prev ? (anchors.get(prev.frame) || await chainRefFor(prev, videoModel)) : null);
-      const ok = await renderVideo(f, prompt, chainUrl);
+      // A chain-anchor failure (catbox/uguu down, ffmpeg hiccup) must DEGRADE to an
+      // unanchored render — an uncaught throw here used to kill the entire video
+      // phase right after the previous scene succeeded ("dies after scene 1").
+      let chainUrl = null;
+      try {
+        chainUrl = f._chainAnchor || (prev ? (anchors.get(prev.frame) || await chainRefFor(prev, videoModel)) : null);
+      } catch (e) {
+        logLine(`frame ${f.frame}: chain anchor failed (${e.message}) — rendering without continuity`);
+      }
+      let ok = false;
+      try { ok = await renderVideo(f, prompt, chainUrl); }
+      catch (e) { logLine(`frame ${f.frame}: render crashed (${e.message}) — continuing with the next scene`); ok = false; }
       if (ok && f.chain_image_url) {
         anchors.set(f.frame, f.chain_image_url); // next scene starts from THIS scene's last frame
       } else if (!ok) {
@@ -3722,7 +3742,10 @@ async function generateVideos(frames, ratio, videoModel = DEFAULT_VIDEO_MODEL, c
     logLine(`rendering ${enhanced.length} frame videos in parallel (can take several minutes)...`);
     await Promise.all(enhanced.map(async ({ f, prompt }) => {
       if (job.cancelRequested) return;
-      const ok = await renderVideo(f, prompt, null);
+      // One frame's unexpected throw must not sink the whole batch.
+      let ok = false;
+      try { ok = await renderVideo(f, prompt, null); }
+      catch (e) { logLine(`frame ${f.frame}: render crashed (${e.message}) — continuing`); ok = false; }
       if (!ok) {
         if (job.cancelRequested) { logLine(`frame ${f.frame}: cancelled by user`); return; }
         job.failed.push(f.frame); logLine(`frame ${f.frame}: VIDEO FAILED (${modelChain.join('/')})`);
@@ -3761,6 +3784,24 @@ function buildNarrationText(frames) {
     .join('. ... ');
 }
 
+// Prompt-vocalized narration ("Prompt Vocalized" narration mode): the VIDEO MODEL
+// voices the narration/dialogue itself, so the spoken text must ride inside the
+// animation prompt. EVERY render path funnels through this helper — the manual
+// Videos button, the client-driven auto pipeline (one frame per request) and
+// /api/run-all — because a plain animation_prompt never asks for speech and the
+// clips (and the combined film) came out silent. Idempotent: a prompt already
+// carrying the spoken text is returned untouched (poll retries re-send frames).
+function vocalizeAnimationPrompts(frames) {
+  return frames.map(f => {
+    const spoken = [f.narration, f.dialogue].filter(Boolean).join('. ');
+    if (!spoken || /narrates aloud/i.test(String(f.animation_prompt || ''))) return f;
+    return {
+      ...f,
+      animation_prompt: `${f.animation_prompt} The character narrates aloud: "${spoken}". Lip-sync and natural speaking gestures should be visible.`
+    };
+  });
+}
+
 // Overlay the assembled narration track onto the final film. Mixes with the
 // original audio when present, otherwise replaces. Shared by the narration step
 // AND combineFilm so a re-combine never wipes previously generated narration.
@@ -3780,6 +3821,28 @@ function probeHasAudio(videoPath) {
       resolve(/Stream #\d+:\d+.*Audio|Audio:/.test(out));
     });
   });
+}
+// Media duration in seconds via the ffmpeg binary (ffmpeg `-i` prints
+// "Duration: HH:MM:SS.xx" to stderr). Raw `ffprobe` is NOT on PATH in Vercel's
+// runtime — `execFile('ffprobe', …)` fails there and any caller that treats the
+// failure as "no audio / zero duration" silently corrupts the output.
+function probeDuration(mediaPath) {
+  return new Promise((resolve) => {
+    execFile(ffmpegBin(), ['-i', mediaPath], { timeout: 15000 }, (e, stdout, stderr) => {
+      const m = /Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/.exec(String(stderr || '') + String(stdout || ''));
+      resolve(m ? Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]) : 0);
+    });
+  });
+}
+
+// Host the assembled narration track publicly. On Vercel every invocation has
+// its own /tmp, so the combine invocation CANNOT see full_narration.mp3 written by
+// the narration invocation — without this URL the final film came out silent.
+async function hostNarrationAudio() {
+  const fullAudioPath = path.join(VIDEO_DIR, 'full_narration.mp3');
+  if (!fs.existsSync(fullAudioPath)) return '';
+  try { return await uploadVideoClip(fullAudioPath, logLine, 'audio/mpeg', 'narration.mp3'); }
+  catch (e) { logLine(`narration audio upload failed: ${e.message} — combine on another instance may miss the voice track`); return ''; }
 }
 
 async function overlayNarrationOnFinal(finalPath, fullAudioPath, opts = {}) {
@@ -4004,8 +4067,11 @@ async function generateFullNarration(frames, voice = DEFAULT_VOICE, language = D
 
   if (!fs.existsSync(fullAudioPath)) { logLine('full narration: concat failed'); return false; }
   logLine('full narration: audio assembled');
+  // Host the track so a combine on ANOTHER instance can still overlay it.
+  const narrationUrl = await hostNarrationAudio();
 
-  return overlayNarrationOnFinal(path.join(VIDEO_DIR, 'final_story.mp4'), fullAudioPath, opts);
+  const overlaid = await overlayNarrationOnFinal(path.join(VIDEO_DIR, 'final_story.mp4'), fullAudioPath, opts);
+  return { ok: !!overlaid, narrationUrl };
 }
 
 // Overlay TTS audio onto a video clip (returns path to narrated video or null)
@@ -4026,8 +4092,7 @@ function overlayAudioOnClip(videoPath, audioPath, outPath) {
 // Pad a video to a target duration by freezing the last frame (or create from still image)
 function padVideoToDuration(inputPath, targetSec, outputPath) {
   return new Promise((resolve) => {
-    execFile('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', inputPath], { timeout: 15000 }, (err, stdout) => {
-      const actual = parseFloat(stdout) || 0;
+    probeDuration(inputPath).then((actual) => {
       const gap = targetSec - actual;
       if (gap <= 0.5) {
         // Close enough — copy and ensure audio track exists
@@ -4245,11 +4310,10 @@ async function combineFilm(frames, ratio = '16:9', narrationMode = 'tts', opts =
 
     // ONE pass: normalize video + audio (keep original or add silent)
     // TTS narration is now added AFTER combine, not per-frame
-    const hasAudio = await new Promise((resolve) => {
-      execFile('ffprobe', ['-v','error','-show_entries','stream=codec_type','-of','csv=p=0', sourceVideo], { timeout: 10000 }, (e, out) => {
-        resolve(out && out.includes('audio'));
-      });
-    });
+    // ffmpegBin()-based probe: raw `ffprobe` is not on PATH in the serverless
+    // runtime, and its failure resolved to `hasAudio = false` — which REPLACED the
+    // clips' real audio (veo/omni generate sound) with silence in the final film.
+    const hasAudio = await probeHasAudio(sourceVideo);
     if (hasAudio) {
       logLine(`frame ${f.frame}: normalize + original audio`);
       await new Promise((resolve) => {
@@ -4298,7 +4362,7 @@ async function combineFilm(frames, ratio = '16:9', narrationMode = 'tts', opts =
       const outExists = fs.existsSync(finalPath) && fs.statSync(finalPath).size > 10000;
       if (outExists) {
         const stats = await fsp.stat(finalPath).catch(() => null);
-        const dur = await new Promise(r => execFile('ffprobe', ['-v','error','-show_entries','format=duration','-of','csv=p=0', finalPath], {timeout:10000}, (e,o)=>r(parseFloat(o)||0)));
+        const dur = await probeDuration(finalPath);
         logLine(`final film: ${stats ? (stats.size/1048576).toFixed(1)+'MB' : 'created'} — ${normClips.length} clips — ${dur.toFixed(1)}s`);
         job.done = 1; job.ok = 1;
       } else if (err) {
@@ -4320,17 +4384,33 @@ async function combineFilm(frames, ratio = '16:9', narrationMode = 'tts', opts =
   });
 
   // Re-apply previously generated narration so re-combines never wipe the voice
-  // track. Only when the stored narration matches the current storyboard text
-  // (sig hash) and narration mode isn't 'prompt' (no separate TTS audio).
+  // track. On Vercel the narration was assembled on ANOTHER instance, so the
+  // client passes its hosted URL (`narrationUrl`) — an explicit URL IS the voice
+  // track for the current board and needs no sig file to vouch for it. Locally,
+  // the stored narration is used only when it matches the current storyboard text
+  // (sig hash). Narration mode 'prompt' has no separate TTS audio.
   if (built && narrationMode !== 'prompt') {
     try {
-      const sigRaw = fs.readFileSync(path.join(VIDEO_DIR, 'narr_chunk_sig.txt'), 'utf8');
-      const sig = JSON.parse(sigRaw);
-      const currentHash = crypto.createHash('sha1').update(buildNarrationText(frames)).digest('hex');
       const fullAudioPath = path.join(VIDEO_DIR, 'full_narration.mp3');
-      if (sig && sig.hash === currentHash && fs.existsSync(fullAudioPath)) {
-        logLine('combine: matching narration found — re-overlaying voice track');
-        await overlayNarrationOnFinal(built, fullAudioPath, opts);
+      const narrUrl = String(opts.narrationUrl || opts.narration_url || '');
+      if (!fs.existsSync(fullAudioPath) && /^https?:\/\//i.test(narrUrl)) {
+        logLine('combine: narration audio missing on this instance — recovering from hosted URL');
+        await download(narrUrl, fullAudioPath);
+      }
+      if (fs.existsSync(fullAudioPath)) {
+        let match = !!narrUrl;
+        if (!match) {
+          const sig = JSON.parse(fs.readFileSync(path.join(VIDEO_DIR, 'narr_chunk_sig.txt'), 'utf8'));
+          match = sig && sig.hash === crypto.createHash('sha1').update(buildNarrationText(frames)).digest('hex');
+        }
+        if (match) {
+          logLine('combine: matching narration found — re-overlaying voice track');
+          await overlayNarrationOnFinal(built, fullAudioPath, opts);
+        } else {
+          logLine('combine: stored narration does not match this storyboard — keeping the film audio as-is');
+        }
+      } else {
+        logLine('combine: no narration audio available — keeping the film audio as-is (run 🔊 Narration to add a voice track)');
       }
     } catch (e) { logLine(`combine: narration re-overlay skipped (${e.message})`); }
   }
@@ -5057,7 +5137,12 @@ async function requireCredits(req, res, amount, label) {
 function bearerToken(req) { return (req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim() || null; }
 function readBody(req) { return new Promise((resolve, reject) => { let s = ''; req.on('data', c => { s += c; if (s.length > 15e6) req.destroy(); }); req.on('end', () => { try { resolve(s ? JSON.parse(s) : {}); } catch (e) { reject(e); } }); req.on('error', reject); }); }
 async function runJobOnVercel(res, jobFn, successData = { ok: true }) {
-  try { await jobFn(); return sendJson(res, 200, successData); }
+  try {
+    // jobFn may return extra response fields (e.g. the hosted narration URL) —
+    // merge them into the success payload.
+    const extra = await jobFn();
+    return sendJson(res, 200, Object.assign({}, successData, (extra && typeof extra === 'object') ? extra : {}));
+  }
   catch (e) { return sendJson(res, 500, { error: String(e.message || e) }); }
 }
 
@@ -5474,14 +5559,7 @@ const requestHandler = async (req, res) => {
         let videoFrames = frames;
         if (narrationMode === 'prompt') {
           logLine('prompt-vocalized mode: embedding narration into video prompts');
-          videoFrames = frames.map(f => {
-            const clone = { ...f };
-            const narr = [clone.narration, clone.dialogue].filter(Boolean).join('. ');
-            if (narr) {
-              clone.animation_prompt = `${clone.animation_prompt} The character narrates aloud: "${narr}". Lip-sync and natural speaking gestures should be visible.`;
-            }
-            return clone;
-          });
+          videoFrames = vocalizeAnimationPrompts(frames);
         }
 
         const steps = [
@@ -5491,8 +5569,7 @@ const requestHandler = async (req, res) => {
         if (narrationMode === 'prompt') {
           logLine('prompt-vocalized mode: narration embedded in video prompts, no TTS');
         }
-        steps.push(['videos', () => generateVideos(videoFrames, body.ratio || '16:9', body.videoModel || DEFAULT_VIDEO_MODEL, body.chainContinuity === true)]);
-        steps.push(['combine', () => combineFilm(frames, body.ratio || '16:9', narrationMode, { narrVol: body.narrVolume, origVol: body.origVolume, clipUrls: body.clipUrls, imageModel: body.imageModel })]);
+        steps.push(['videos', () => generateVideos(videoFrames, body.ratio || '16:9', body.videoModel || DEFAULT_VIDEO_MODEL, body.chainContinuity === true)]);          steps.push(['combine', () => combineFilm(frames, body.ratio || '16:9', narrationMode, { narrVol: body.narrVolume, origVol: body.origVolume, clipUrls: body.clipUrls, imageModel: body.imageModel, narrationUrl: body.narrationUrl })]);
         // After combine: generate full narration TTS and overlay on final video
         if (narrationMode === 'tts') {
           const engine = body.narrationEngine || body.engine || DEFAULT_NARRATION_ENGINE;
@@ -5583,6 +5660,17 @@ const requestHandler = async (req, res) => {
       // the previous frame's chain URL on disk (each call is a fresh invocation), so
       // the client tracks the anchor across calls and passes it along explicitly.
       if (body.chainAnchor && isPartial) { for (const f of frames) f._chainAnchor = String(body.chainAnchor); }
+      // Prompt-vocalized narration mode: the video model voices the narration, so
+      // the spoken text must be part of EVERY video render request — the manual
+      // Videos button and the client-driven auto pipeline both land here (the old
+      // code only embedded it in the local /api/run-all pipeline, so those paths
+      // rendered silent clips and the combined film had no vocals at all).
+      if (body.narrationMode === 'prompt') {
+        const before = frames.length;
+        frames = vocalizeAnimationPrompts(frames);
+        const voiced = frames.filter(f => /narrates aloud/i.test(String(f.animation_prompt || ''))).length;
+        logLine(`prompt-vocalized mode: narration/dialogue embedded in ${voiced}/${before} video prompt(s) — the video model must generate audio (veo-3.1 / omni-flash do; wan models render silent clips)`);
+      }
       if (body.force) { for (const f of frames) { if (f.animation_prompt) { try { fs.unlinkSync(videoFile(f.frame)); } catch {} } } }
       // Credit gate on the SUBMIT only — polling an already-charged task must
       // never charge twice (mirrors the Flashloop two-phase route).
@@ -5711,7 +5799,7 @@ if (p === '/api/combine' && req.method === 'POST') {
       let { frames } = await storyDataFrom(body);
       if (IS_VERCEL) return (async () => {
         try {
-          const fp = await combineFilm(frames, body.ratio || '16:9', body.narrationMode, { narrVol: body.narrVolume, origVol: body.origVolume, clipUrls: body.clipUrls, imageModel: body.imageModel });
+          const fp = await combineFilm(frames, body.ratio || '16:9', body.narrationMode, { narrVol: body.narrVolume, origVol: body.origVolume, clipUrls: body.clipUrls, imageModel: body.imageModel, narrationUrl: body.narrationUrl });
           job.phase = 'idle';
           // Publish the finished film and return its URL. The file lives only in
           // THIS instance's /tmp, so the browser's request for /video/final_story.mp4
@@ -5725,7 +5813,7 @@ if (p === '/api/combine' && req.method === 'POST') {
           return sendJson(res, 200, { ok: true, finalUrl });
         } catch (e) { job.phase = 'idle'; return sendJson(res, 500, { error: String(e.message || e) }); }
       })();
-      combineFilm(frames, body.ratio || '16:9', body.narrationMode, { narrVol: body.narrVolume, origVol: body.origVolume, clipUrls: body.clipUrls, imageModel: body.imageModel }).then(fp => { if (!fp) logLine('combine: no output'); }).catch(e => { logLine(`combine crash: ${e.message}`); job.phase = 'idle'; });
+      combineFilm(frames, body.ratio || '16:9', body.narrationMode, { narrVol: body.narrVolume, origVol: body.origVolume, clipUrls: body.clipUrls, imageModel: body.imageModel, narrationUrl: body.narrationUrl }).then(fp => { if (!fp) logLine('combine: no output'); }).catch(e => { logLine(`combine crash: ${e.message}`); job.phase = 'idle'; });
       return sendJson(res, 202, { started: true });
     }
 
@@ -5745,7 +5833,13 @@ if (p === '/api/combine' && req.method === 'POST') {
       setPhase('narration', 1);
       const engine = body.narrationEngine || body.engine || DEFAULT_NARRATION_ENGINE;
       const narrOpts = { narrVol: body.narrVolume, origVol: body.origVolume, clipUrls: body.clipUrls };
-      if (IS_VERCEL) return runJobOnVercel(res, async () => { await generateFullNarration(frames, body.voice || DEFAULT_VOICE, body.language || DEFAULT_LANGUAGE, engine, narrOpts); job.phase = 'idle'; });
+      if (IS_VERCEL) return runJobOnVercel(res, async () => {
+        const nr = await generateFullNarration(frames, body.voice || DEFAULT_VOICE, body.language || DEFAULT_LANGUAGE, engine, narrOpts);
+        job.phase = 'idle';
+        // Hand the hosted narration URL back so the client can pass it to combine
+        // (another instance cannot see this one's /tmp).
+        return { ok: true, narrationUrl: (nr && nr.narrationUrl) || '' };
+      });
       (async () => {
         try { await generateFullNarration(frames, body.voice || DEFAULT_VOICE, body.language || DEFAULT_LANGUAGE, engine, narrOpts); }
         catch (e) { logLine(`narration crash: ${e.message}`); }
@@ -7969,7 +8063,7 @@ module.exports = requestHandler;
 // Exposed for the pipeline/test-*.js regression tests.
 module.exports.__internal = {
   flashloopScenePlan,
-  storyboardFrameCount, emergencyImageChain,
+  storyboardFrameCount, emergencyImageChain, vocalizeAnimationPrompts,
   // Logfare async-job models (wan3.0 video + qwen/wanx image).
   NOVITA_VIDEO_MODELS, NOVITA_IMAGE_MODELS, NOVITA_TASK_PREFIX,
   isNovitaVideoModel, isNovitaI2VModel, isNovitaImageModel, novitaAcceptsImage,
