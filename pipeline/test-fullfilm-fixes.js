@@ -94,7 +94,7 @@ console.log('\n[6] prompt-vocalized mode: narration rides inside the video promp
 // only ever embedded in the local /api/run-all pipeline — the manual Videos
 // button and the client-driven auto pipeline rendered plain animation_prompts,
 // so the video model never heard the narration and the clips had no vocals.
-check('/api/videos embeds narration once for audio-capable models', /if \(!body\.pollTask && body\.narrationMode === 'prompt' && !isNovitaVideoModel\(body\.videoModel\)\) \{[\s\S]{0,400}?frames = vocalizeAnimationPrompts\(frames\)/.test(src));
+check('/api/videos embeds narration once for every selected model', /if \(!body\.pollTask && body\.narrationMode === 'prompt'\) \{[\s\S]{0,400}?frames = vocalizeAnimationPrompts\(frames\)/.test(src));
 check('/api/run-all uses the same helper', /videoFrames = vocalizeAnimationPrompts\(frames\)/.test(src));
 check('no leftover inline embedding in run-all', !/clone\.animation_prompt = `\$\{clone\.animation_prompt\} The character narrates aloud/.test(src));
 check('client auto pipeline sends narrationMode with /videos', /chainContinuity:opts\.chainContinuity,narrationMode:opts\.narrationMode/.test(client));

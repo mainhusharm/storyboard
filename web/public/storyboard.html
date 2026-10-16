@@ -538,13 +538,6 @@ async function init(){
   const fillVoices=()=>{const per=(m.narrationVoices||{})[$('narrationEngine').value];const list=(per&&per.length)?per:(m.voices||[{id:'female',label:'Female narrator'},{id:'male',label:'Male narrator'}]);$('voice').innerHTML=list.map(v=>`<option value="${v.id}">${v.label}</option>`).join('');};
   $('language').innerHTML=(m.languages||[{id:'en',label:'English'},{id:'hi',label:'Hindi'}]).map(l=>`<option value="${l.id}">${l.label}</option>`).join('');
   $('narrationMode').innerHTML=(m.narrationModes||[{id:'tts',label:'TTS Voice'},{id:'prompt',label:'Prompt Vocalized'}]).map(n=>`<option value="${n.id}">${n.label}</option>`).join('');
-  const syncNarrationMode=()=>{
-    const silent=$('videoModel').value.startsWith('wan');
-    const prompt=Array.from($('narrationMode').options).find(o=>o.value==='prompt');
-    if(prompt)prompt.disabled=silent;
-    if(silent&&$('narrationMode').value==='prompt')$('narrationMode').value='tts';
-    $('narrationMode').title=silent?'Wan clips use TTS Voice for narration.':'';
-  };
   $('narrationEngine').innerHTML=(m.narrationEngines||[{id:'fish',label:'Fish Audio — s2.1-pro-free (default)'},{id:'mimo',label:'MIMO — high quality voices (fallback option)'}]).map(e=>`<option value="${e.id}">${e.label}</option>`).join('');
   $('narrationEngine').onchange=()=>{fillVoices();};
   fillVoices(); // engine-specific voices: Fish/MIMO narrators, Logfare Aura-2 speakers
@@ -554,14 +547,12 @@ async function init(){
   // Sync clip duration with the video model (Grok: 6s, Omni Flash / Veo 3.1: 8s,
   // Wan 3.0 models: 30s — the long-shot default — other Novita models: 5s)
   $('videoModel').onchange=()=>{
-    syncNarrationMode();
     const v=$('videoModel').value;
     $('clipDuration').value = v==='grok-video' ? '6'
       : (v==='omni-flash'||v==='veo-3.1') ? '8'
       : v.startsWith('wan3.0') ? '30'
       : v.startsWith('wan') ? '5' : '8';
   };
-  syncNarrationMode();
   $('script').oninput=()=>$('charcount').textContent=$('script').value.length+' chars';
   await refresh();
   poll();setInterval(poll,2500);

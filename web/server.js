@@ -5789,7 +5789,7 @@ const requestHandler = async (req, res) => {
       // Videos button and the client-driven auto pipeline both land here (the old
       // code only embedded it in the local /api/run-all pipeline, so those paths
       // rendered silent clips and the combined film had no vocals at all).
-      if (!body.pollTask && body.narrationMode === 'prompt' && !isNovitaVideoModel(body.videoModel)) {
+      if (!body.pollTask && body.narrationMode === 'prompt') {
         const before = frames.length;
         frames = vocalizeAnimationPrompts(frames);
         const voiced = frames.filter(f => /narrates aloud/i.test(String(f.animation_prompt || ''))).length;

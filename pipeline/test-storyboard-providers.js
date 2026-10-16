@@ -34,6 +34,7 @@ async function upstream(url, options = {}) {
   }
   if (url.includes('/v1/status/')) return json(statusBody, statusCode);
   if (url === 'https://cdn.example.test/clip.mp4') return new Response(clip);
+  if (url === 'https://cdn.example.test/still.png') return new Response(png, { headers: { 'Content-Type': 'image/png' } });
   if (url === 'https://catbox.moe/user/api.php') {
     if (failUploads) return new Response('upload unavailable', { status: 503 });
     const file = options.body.get('fileToUpload');
@@ -123,7 +124,8 @@ async function main() {
   result = await api('/videos', videoBody);
   assert.equal(result.status, 202);
   assert.equal(result.body.pending, true);
-  assert.equal(submitted.input.prompt, frame.animation_prompt, 'silent models must not receive narration instructions');
+  assert.ok(submitted.input.prompt.startsWith(frame.animation_prompt));
+  assert.ok(submitted.input.prompt.includes('The character narrates aloud: "A quiet morning."'), 'Wan receives the narration inside the prompt');
   const pollBody = { ...videoBody, pollTask: result.body.task, force: true };
   const existingClip = path.join(tmp, 'video/frame_02.mp4');
   fs.writeFileSync(existingClip, clip);
@@ -136,7 +138,7 @@ async function main() {
   assert.equal((await api('/credits')).body.credits, before, 'polls are free');
   assert.equal(submits, 1, 'polls never submit another paid render');
   const log = (await api('/status')).body.log.join('\n');
-  assert.ok(!log.includes('prompt-vocalized mode'));
+  assert.equal(log.split('prompt-vocalized mode').length-1, 1, 'narration is embedded on submit only, never repeated on polls');
   statusBody = { status: 'SUCCEEDED', output: { results: [{ url: 'https://cdn.example.test/clip.mp4' }] } };
   result = await api('/videos', pollBody);
   assert.equal(result.body.ok, true);
@@ -155,6 +157,15 @@ async function main() {
   assert.match(result.body.error, /without a media URL/);
   assert.equal(submits, 1);
   console.log('ok: authentication failure and missing completed asset stop polling without resubmission');
+
+  const i2vFrame = { ...frame, frame: 5, dialogue: 'Hello there.', generated_image_url: 'https://cdn.example.test/still.png' };
+  result = await api('/videos', { ...videoBody, frames: [5], framesData: [i2vFrame], videoModel: 'wan2.7-i2v' });
+  assert.equal(result.status, 202);
+  assert.equal(submitted.imageUrls[0], i2vFrame.generated_image_url, 'the image anchor is kept with prompt vocalization');
+  assert.ok(submitted.input.prompt.includes('A quiet morning.. Hello there.'), 'narration and dialogue both reach the I2V model');
+  assert.equal(submitted.parameters.generate_audio, undefined, 'prompt vocalization needs no extra audio parameters');
+  assert.equal(submits, 2);
+  console.log('ok: Wan T2V and I2V receive spoken text directly in the prompt without changing image anchors');
 
   const combineBody = { framesData: [{ ...frame, frame: 3, clip_url: 'https://cdn.example.test/clip.mp4' },
     { ...frame, frame: 4, clip_url: 'https://cdn.example.test/clip.mp4' }], narrationMode: 'prompt' };
@@ -202,9 +213,9 @@ async function main() {
   assert.match(polled.error, /Check this task/);
   console.log('ok: browser polling uses wall time and keeps the watchdog alive without log spam');
 
-  for (const failImages of [true, false]) {
+  for (const [failImages, narrationMode] of [[true, 'prompt'], [false, 'tts'], [false, 'prompt']]) {
     const phases = [], logs = [], storage = new Map();
-    const values = { videoModel: 'wan3.0-video-prime', imageModel: 'flux-2-klein-9b', narrationMode: 'tts',
+    const values = { videoModel: 'wan3.0-video-prime', imageModel: 'flux-2-klein-9b', narrationMode,
       ratio: '16:9', duration: '1', clipDuration: '1', narrVolume: '1', origVolume: '1' };
     const auto = {
       CHARS: [], FRAMES: [], IS_VERCEL_CLIENT: true, USER_CANCELLED: false,
@@ -223,12 +234,13 @@ async function main() {
         }
         if (route === '/narration') return { ok: true, narrationUrl: 'https://cdn.example.test/voice.mp3' };
         if (route === '/videos') {
+          assert.equal(body.narrationMode, narrationMode);
           assert.equal(body.framesData[0].generated_image_url, 'https://cdn.example.test/still.png');
           return { ok: true, frame: { ...body.framesData[0], clip_url: 'https://cdn.example.test/clip.mp4' }, clipUrl: 'https://cdn.example.test/clip.mp4' };
         }
         if (route === '/combine') {
           assert.equal(body.clipUrls[1], 'https://cdn.example.test/clip.mp4');
-          assert.equal(body.narrationUrl, 'https://cdn.example.test/voice.mp3');
+          assert.equal(body.narrationUrl, narrationMode==='tts'?'https://cdn.example.test/voice.mp3':'');
           return { ok: true, finalUrl: 'https://cdn.example.test/final.mp4' };
         }
         throw new Error('Unexpected auto phase: ' + route);
@@ -238,11 +250,28 @@ async function main() {
     vm.runInContext(client.slice(client.indexOf('function sbPayload('), client.indexOf('async function poll(){')), auto);
     vm.runInContext(client.slice(client.indexOf('async function runAutoVercel('), client.indexOf("$('btnCharRefs').onclick")), auto);
     await auto.runAutoVercel('An ordinary test scene.');
-    assert.deepEqual(phases, failImages ? ['/char-refs', '/images'] : ['/char-refs', '/images', '/narration', '/videos', '/combine']);
+    assert.deepEqual(phases, failImages ? ['/char-refs', '/images'] : narrationMode==='tts'
+      ? ['/char-refs', '/images', '/narration', '/videos', '/combine']
+      : ['/char-refs', '/images', '/videos', '/combine']);
     assert.equal(logs.some(msg => msg.includes('FINAL FILM READY')), !failImages);
     assert.equal(auto.LOCAL_BUSY, false);
   }
   console.log('ok: automatic pipeline waits for references, stops on failed images, and hands hosted assets to video/combine');
+
+  const pickers = { videoModel: { value: 'wan3.0-video-prime' }, clipDuration: { value: '8' },
+    narrationMode: { value: 'prompt', options: [{ value: 'prompt', disabled: false }] } };
+  const selection = { $: id => pickers[id] };
+  vm.createContext(selection);
+  const modelChange = client.match(/\$\('videoModel'\)\.onchange=\(\)=>\{[\s\S]*?\r?\n  \};/);
+  assert.ok(modelChange);
+  vm.runInContext(modelChange[0], selection);
+  for (const model of ['wan3.0-video-prime', 'wan3.0-video', 'wan2.7-i2v']) {
+    pickers.videoModel.value = model;
+    pickers.videoModel.onchange();
+    assert.equal(pickers.narrationMode.value, 'prompt', 'changing to Wan preserves Prompt Vocalized');
+    assert.equal(pickers.narrationMode.options[0].disabled, false);
+  }
+  console.log('ok: selecting any Wan model keeps Prompt Vocalized enabled and selected');
 }
 
 main().then(() => console.log('all provider regressions passed')).catch(e => {
