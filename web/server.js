@@ -3203,9 +3203,10 @@ async function generateCharRefs(characters, imageModel = 'seedream-5', style = '
   const perTaskMin = IS_VERCEL ? Math.max(1, Math.floor(budgetMs / 60000)) : 25;
   const renderCharRef = async (c, prompt) => {
     const out = charRefFile(c.id);
-    const refAttempt = async (label, p) => {
+    const refAttempt = async (label, p, modelOverride) => {
+      const mdl = modelOverride || imageModel;
       p = capProviderImagePrompt(p);
-      const q = `${imageEndpoint(imageModel)}?prompt=${encodeURIComponent(p)}&model=${encodeURIComponent(imageModel)}&ratio=1:1`;
+      const q = `${imageEndpoint(mdl)}?prompt=${encodeURIComponent(p)}&model=${encodeURIComponent(mdl)}&ratio=1:1`;
       const info = {};
       const task = await submitTask(q, logLine, info);
       if (info.error?.permanent) { info.error.submittedPrompt = p; throw info.error; }
@@ -3223,6 +3224,31 @@ async function generateCharRefs(characters, imageModel = 'seedream-5', style = '
       logLine(`${c.id}: ref RENDER FAILED (${label}) — repairing prompt and retrying`);
       return false;
     };
+    // Content-filter recovery (e.g. Logfare's 3030 on a perfectly respectful
+    // devotional portrait): retry the SAME visual identity with honorific and
+    // religious wording stripped, then through PaxSenix nano-banana-pro — a
+    // different provider with no such filter. The identity itself is never
+    // altered: only the wording of one retry and, failing that, the provider.
+    const filteredRecovery = async (e) => {
+      const original = e.submittedPrompt || prompt;
+      const secular = secularizeForImageFilter(original);
+      if (secular && secular !== original) {
+        try {
+          const r = await refAttempt('content-filter secularized retry', secular);
+          if (r === true) return true;
+          if (r === 'cancel') return 'cancel';
+        } catch (e2) { if (e2.code !== 'IMAGE_CONTENT_FILTERED') throw e2; }
+      }
+      if (imageModel !== 'nano-banana-pro') {
+        try {
+          const r = await refAttempt('content-filter cross-provider retry', original, 'nano-banana-pro');
+          if (r === true) return true;
+          if (r === 'cancel') return 'cancel';
+        } catch (e2) { if (e2.code !== 'IMAGE_CONTENT_FILTERED') throw e2; }
+      }
+      return false;
+    };
+    try {
     // 1) enhanced prompt (original)
     let r = await refAttempt('enhanced', prompt);
     if (r === true) { job.done++; return; }
@@ -3253,6 +3279,17 @@ async function generateCharRefs(characters, imageModel = 'seedream-5', style = '
       job.failed.push(c.id); logLine(`${c.id}: REF FAILED — all render attempts failed`);
     }
     job.done++;
+    } catch (e) {
+      // A provider content filter is not a reason to abandon the character —
+      // recover first, and only surface the rejection when every path is blocked.
+      if (e.code === 'IMAGE_CONTENT_FILTERED' && !job.cancelRequested) {
+        logLine(`${c.id}: ${imageModel} content-filtered this portrait — recovering`);
+        const fr = await filteredRecovery(e);
+        if (fr === true) { job.done++; return; }
+        if (fr === 'cancel') return;
+      }
+      throw e;
+    }
   };
 
   // All characters render in parallel — the ladder runs submit→wait→retry inside
@@ -3283,6 +3320,22 @@ function sanitizeImagePrompt(prompt) {
   return String(prompt)
     .replace(IMAGE_RISKY_WORDS, ' ')
     .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
+// Content filters can reject honorific/religious WORDING ("Lord", "divine",
+// "devotional", "sacred", "temple", the "ji" suffix) even when the portrait it
+// describes is entirely respectful. Strip ONLY that wording for one retry —
+// names and every physical detail (face, fur, wardrobe, ornaments) stay, so the
+// rendered identity is unchanged.
+const IMAGE_FILTER_RELIGIOUS_WORDS = /\b(lord|lady|shri|shree|bhagwan|bhagavan|god|gods|goddess|deity|deities|divine|devotion|devotional|sacred|holy|blessed|temple|worship|worshipped|revered|religious|spiritual)\b/gi;
+function secularizeForImageFilter(prompt) {
+  if (!prompt) return prompt;
+  return String(prompt)
+    .replace(/\b([A-Za-z]+)\s+ji\b/g, '$1') // honorific suffix: "Hanuman ji" → "Hanuman"
+    .replace(IMAGE_FILTER_RELIGIOUS_WORDS, ' ')
+    .replace(/\s{2,}/g, ' ')
+    .replace(/\s+([,.;:])/g, '$1')
     .trim();
 }
 
@@ -3339,8 +3392,12 @@ async function generateImages(frames, imageModel, ratio, style, consistency = tr
     // the essentials fallback instead of burning the function budget.
     const ladderStart = Date.now();
     const outOfBudget = () => IS_VERCEL && (Date.now() - ladderStart > 150000);
+    // Every failed attempt records its provider reason here so the final
+    // "all attempts" error can say WHAT failed, not just that something did.
+    const attemptFailures = [];
     const refsFor = () => (f.characters_present || []).map(id => refById.get(id)).filter(Boolean).slice(0, 3);
-    const imgAttempt = async (label, p, useRef) => {
+    const imgAttempt = async (label, p, useRef, modelOverride) => {
+      const mdl = modelOverride || imageModel;
       p = capProviderImagePrompt(p);
       let task = null;
       const info = {};
@@ -3348,16 +3405,21 @@ async function generateImages(frames, imageModel, ratio, style, consistency = tr
         const refs = refsFor();
         if (refs.length) {
           const anchorPrompt = capProviderImagePrompt(`${p} — IMPORTANT: keep the exact same faces, hair, skin tone and wardrobe as the reference portrait(s). Do not change character identity.`, 1950);
-          task = await submitImg2ImgTask(anchorPrompt, refs, imageModel, ratio, info);
-          if (info.error?.permanent) throw info.error;
+          task = await submitImg2ImgTask(anchorPrompt, refs, mdl, ratio, info);
+          if (info.error?.permanent) { info.error.submittedPrompt = p; throw info.error; }
         }
       }
       if (!task) {
-        const q = `${imageEndpoint(imageModel)}?prompt=${encodeURIComponent(p)}&model=${encodeURIComponent(imageModel)}&ratio=${encodeURIComponent(ratio)}`;
+        const q = `${imageEndpoint(mdl)}?prompt=${encodeURIComponent(p)}&model=${encodeURIComponent(mdl)}&ratio=${encodeURIComponent(ratio)}`;
         task = await submitTask(q, logLine, info);
-        if (info.error?.permanent) throw info.error;
+        if (info.error?.permanent) { info.error.submittedPrompt = p; throw info.error; }
       }
-      if (!task) { logLine(`frame ${f.frame}: image SUBMIT FAILED (${label})`); return false; }
+      if (!task) {
+        const why = info.error ? `${mdl}: ${info.error.message}` : `${mdl}: submit failed`;
+        attemptFailures.push(`[${label}] ${why}`);
+        logLine(`frame ${f.frame}: image SUBMIT FAILED (${label}) — ${why}`);
+        return false;
+      }
       logLine(`frame ${f.frame}: image submitted (${label}${useRef && refsFor().length ? ', img2img anchored' : ', t2i'})`);
       // Budgeted wait: the default 25-minute deadline outlives Vercel's 300s
       // function kill, so one slow provider froze this whole request with no
@@ -3376,11 +3438,13 @@ async function generateImages(frames, imageModel, ratio, style, consistency = tr
         logLine(`frame ${f.frame}: IMAGE DONE (${label})`);
         return true;
       }
+      attemptFailures.push(`[${label}] ${mdl}: ${url ? 'download of the rendered image failed' : 'render task produced no image'}`);
       logLine(`frame ${f.frame}: image RENDER FAILED (${label}) — repairing prompt and retrying`);
       return false;
     };
 
     const usedRefs = useRefs;
+    try {
     // 1) original prompt (img2img when consistency refs exist)
     let r = await imgAttempt('original', prompt, usedRefs);
     if (r === true) return true; if (r === 'cancel') return false;
@@ -3403,7 +3467,39 @@ async function generateImages(frames, imageModel, ratio, style, consistency = tr
     // on-model frame beats a blank hole in the final film
     const essentials = `cinematic film still of ${f.summary || 'the scene'}${(f.characters_present || []).length ? `, featuring ${f.characters_present.join(' and ')}` : ''}, dramatic lighting, ${ratio}`;
     r = await imgAttempt('essentials fallback', essentials, false);
+    if (r !== true && r !== 'cancel') {
+      // Carry the LAST provider reason into the reported error — a bare "all
+      // attempts failed" hides whether it was the submit, the render or the
+      // download, and on which model.
+      const last = attemptFailures.length ? ` — last failure: ${attemptFailures[attemptFailures.length - 1]}` : '';
+      f.image_error ||= { code: 'IMAGE_RENDER_FAILED', message: 'Image render failed after all attempts' + last, retryable: true };
+    }
     return r === true;
+    } catch (e) {
+      // Same recovery as character references: a filter rejection (e.g. Logfare
+      // 3030 on devotional wording) is retried with secularized wording and then
+      // through PaxSenix nano-banana-pro before the frame is reported failed.
+      if (e.code === 'IMAGE_CONTENT_FILTERED' && !job.cancelRequested && !outOfBudget()) {
+        logLine(`frame ${f.frame}: ${imageModel} content-filtered this prompt — recovering`);
+        const original = e.submittedPrompt || prompt;
+        const secular = secularizeForImageFilter(original);
+        if (secular && secular !== original) {
+          try {
+            const r = await imgAttempt('content-filter secularized retry', secular, usedRefs);
+            if (r === true) return true;
+            if (r === 'cancel') return false;
+          } catch (e2) { if (e2.code !== 'IMAGE_CONTENT_FILTERED') throw e2; }
+        }
+        if (imageModel !== 'nano-banana-pro' && !outOfBudget()) {
+          try {
+            const r = await imgAttempt('content-filter cross-provider retry', original, usedRefs, 'nano-banana-pro');
+            if (r === true) return true;
+            if (r === 'cancel') return false;
+          } catch (e2) { if (e2.code !== 'IMAGE_CONTENT_FILTERED') throw e2; }
+        }
+      }
+      throw e;
+    }
   };
 
   // Submit + wait per frame (the ladder runs submit→wait→retry sequentially
@@ -8244,7 +8340,7 @@ module.exports = requestHandler;
 module.exports.__internal = {
   flashloopScenePlan,
   storyboardFrameCount, emergencyImageChain, vocalizeAnimationPrompts,
-  capProviderImagePrompt, lockSacredCharacter,
+  capProviderImagePrompt, lockSacredCharacter, secularizeForImageFilter,
   // Logfare async-job models (wan3.0 video + qwen/wanx image).
   NOVITA_VIDEO_MODELS, NOVITA_IMAGE_MODELS, NOVITA_TASK_PREFIX,
   isNovitaVideoModel, isNovitaI2VModel, isNovitaImageModel, novitaAcceptsImage,

@@ -15,6 +15,7 @@ const serverFile = path.join(root, 'web/server.js');
 const source = fs.readFileSync(serverFile, 'utf8');
 const client = fs.readFileSync(path.join(root, 'web/public/storyboard.html'), 'utf8');
 let imageCalls = 0, submits = 0, imageMode = 'filtered', failUploads = false;
+let paxImages = false, paxImageSubmits = 0;
 let forceCopyFailure = false, forceConcatFailure = false, fallbackCount = 0;
 let statusCode = 200, statusBody = { status: 'RUNNING' };
 let png, clip, submitted;
@@ -26,7 +27,16 @@ async function upstream(url, options = {}) {
     if (imageMode === 'filtered') return json({ error: { message: JSON.stringify({
       errors: [{ message: 'AiError: Your output has been flagged.', code: 3030 }], success: false
     }) } }, 400);
+    if (imageMode === 'server-error') return json({ error: { message: 'upstream exploded' } }, 500);
     return json({ data: [{ b64_json: png.toString('base64') }] });
+  }
+  // PaxSenix fallback image endpoints (cross-provider recovery for 3030 blocks).
+  if (paxImages && url.startsWith('https://api.paxsenix.org/ai-image/')) {
+    paxImageSubmits++;
+    return json({ ok: true, task_url: 'https://api.paxsenix.org/task/img' });
+  }
+  if (paxImages && url.startsWith('https://api.paxsenix.org/task/')) {
+    return json({ status: 'done', ok: true, url: 'https://cdn.example.test/still.png' });
   }
   if (url.endsWith('/v1/submit')) {
     submits++; submitted = JSON.parse(options.body);
@@ -92,6 +102,13 @@ async function main() {
   assert.equal(T.novitaPollResult({}, 200).failed, true);
   console.log('ok: nested image errors and terminal/transient Wan status classification');
 
+  const secularHanuman = T.secularizeForImageFilter('respectful devotional portrait of Lord Hanuman (Hanuman ji), a divine vanara with reddish-orange fur, compassionate monkey face, saffron-red dhoti, sacred thread, gold ornaments, temple-toned background');
+  assert.equal(/lord|divine|devotion|sacred|temple|ji\b/i.test(secularHanuman), false, 'religious wording must be stripped: ' + secularHanuman);
+  assert.equal(/Hanuman/.test(secularHanuman), true, 'the name stays so the depiction remains recognizable');
+  assert.equal(/reddish-orange fur/.test(secularHanuman) && /saffron-red dhoti/.test(secularHanuman), true, 'every physical identity detail survives');
+  assert.equal(T.secularizeForImageFilter('A blue ceramic vase on a table.'), 'A blue ceramic vase on a table.', 'secular prompts pass through untouched');
+  console.log('ok: secularized retry wording strips honorifics only, never the identity');
+
   await new Promise(r => srv.listen(0, '127.0.0.1', r));
   const base = `http://127.0.0.1:${srv.address().port}`;
   let cookie = '';
@@ -128,6 +145,18 @@ async function main() {
   assert.ok(fs.existsSync(path.join(tmp, 'frames/frame_01.png')));
   console.log('ok: successful Flux still is hosted and returned inline, clearing the previous error');
 
+  // Transient provider failures must not surface as a bare "all attempts" — the
+  // reported error carries the last per-attempt reason so the log is actionable.
+  imageMode = 'server-error';
+  const beforeTransient = imageCalls;
+  const transientFrame = { frame: 6, duration_sec: 1, image_prompt: 'A blue ceramic vase on a table', animation_prompt: 'Slow push-in', narration: '' };
+  result = await api('/images', { frames: [6], framesData: [transientFrame], characters: [], imageModel: 'flux-2-klein-9b' });
+  assert.equal(result.body.ok, false);
+  assert.equal(result.body.errors[0].code, 'IMAGE_RENDER_FAILED');
+  assert.match(result.body.errors[0].message, /last failure: \[essentials fallback\] flux-2-klein-9b: upstream exploded/, 'the exhaustion message must carry the last provider reason: ' + result.body.errors[0].message);
+  assert.equal(imageCalls - beforeTransient, 4, 'original + essentials rungs, two gateway attempts each');
+  console.log('ok: exhausted image ladders report the last provider failure, not a bare generic message');
+
   const characters = [
     { id: 'Character A', name: 'Ram', description: 'Adult man wearing traditional yellow clothing.', reference_prompt: 'Standalone illustrated portrait of Ram, relaxed pose, yellow clothing.' },
     { id: 'Character B', name: 'Hanuman', description: 'Hanuman wearing traditional clothing.', reference_prompt: 'Standalone illustrated portrait of Hanuman, relaxed pose, plain background.' }
@@ -156,6 +185,31 @@ async function main() {
   assert.equal(fs.statSync(path.join(tmp, 'frames/char_Character_A_ref.png')).mtimeMs, aTime, 'the completed reference is untouched');
   assert.equal(result.body.characters.every(c => !c.reference_error && c.reference_image_url.startsWith('https://')), true);
   console.log('ok: rejected references recover one character at a time, preserving completed portraits and all profiles');
+
+  // Content-filter recovery: a respectful devotional portrait blocked by the
+  // gateway's 3030 filter must still render — identical identity via a
+  // secularized-wording retry, then via PaxSenix when the filter keeps firing.
+  imageMode = 'filtered';
+  paxImages = true;
+  const devotional = [
+    { id: 'Character D', name: 'Hanuman ji', description: 'Lord Hanuman, a divine vanara with reddish-orange fur.',
+      reference_prompt: 'respectful devotional portrait of Lord Hanuman (Hanuman ji), a divine vanara with reddish-orange fur, compassionate monkey face, saffron-red dhoti, sacred thread, gold ornaments' }
+  ];
+  beforeRefs = imageCalls;
+  const beforePax = paxImageSubmits;
+  result = await api('/char-refs', { characters: devotional, imageModel: 'flux-2-klein-9b', force: true });
+  assert.equal(result.body.ok, true, JSON.stringify(result.body));
+  assert.equal(imageCalls - beforeRefs, 2, 'original + secularized wording are tried on the selected model first');
+  assert.equal(paxImageSubmits - beforePax, 1, 'the cross-provider retry renders the same portrait through nano-banana-pro');
+  assert.equal(result.body.characters[0].reference_error, undefined);
+  assert.ok(result.body.characters[0].reference_image_url.startsWith('https://'), 'the recovered portrait is hosted for img2img anchoring');
+  const hanFrame = { frame: 3, duration_sec: 1, image_prompt: 'Lord Hanuman, a divine vanara with reddish-orange fur, carrying the golden mountain, devotional cinematic scene', animation_prompt: 'Slow push-in', narration: 'Jai Shri Ram.' };
+  result = await api('/images', { frames: [3], framesData: [hanFrame], characters: [], imageModel: 'flux-2-klein-9b' });
+  assert.equal(result.body.ok, true, JSON.stringify(result.body));
+  assert.equal(result.body.frames[0].image_error, undefined);
+  assert.ok(result.body.frames[0].generated_image_url.startsWith('https://'));
+  paxImages = false;
+  console.log('ok: filter-blocked devotional portraits and frames recover with identity intact');
 
   const videoBody = { frames: [2], framesData: [{ ...frame, frame: 2 }], characters: [],
     videoModel: 'wan3.0-video-prime', narrationMode: 'prompt', chainContinuity: false };
