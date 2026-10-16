@@ -435,15 +435,40 @@ function renderFinalFilm(data={}){
     video.src=src;video.load();
   }
 }
-// Client-side log buffer: on Vercel the server's in-memory job log is per-instance
-// and can vanish between calls, so per-frame runs log locally instead.
-let LOCAL_LOG=[];
+// Keep the browser's run history after completion, failure, and page reloads.
+// Vercel status responses come from different instances and cannot replace it.
+let SAVED_RUN={};
+try{SAVED_RUN=JSON.parse(localStorage.getItem('sb_run_console')||'{}')||{}}catch(e){}
+let LOCAL_LOG=Array.isArray(SAVED_RUN.log)?SAVED_RUN.log.filter(l=>l&&typeof l.m==='string'&&typeof l.t==='string').slice(-200).map(l=>({...l,c:['err','ok'].includes(l.c)?l.c:''})):[];
+let LOCAL_RESULT=typeof SAVED_RUN.result==='string'?SAVED_RUN.result:'';
+let LOCAL_LAST_PHASE=typeof SAVED_RUN.phase==='string'?SAVED_RUN.phase:'';
 let LOCAL_LAST_ACTIVITY = Date.now();
 // Client-side phase label (e.g. "VIDEOS 2/8 · rendering 3m"). poll() shows this
 // while a client-driven run is active — long renders run quietly in the background
 // with at most one log line per frame instead of an elapsed-time timer in the log.
 let LOCAL_PHASE='';
-function logLocal(msg,cls=''){LOCAL_LOG.push({t:new Date().toLocaleTimeString(),m:String(msg),c:cls});if(LOCAL_LOG.length>200)LOCAL_LOG.shift();LOCAL_LAST_ACTIVITY=Date.now();const el=$('log');if(el){el.innerHTML=LOCAL_LOG.map(l=>`<span class="${l.c}"><span class="t">[${esc(l.t)}]</span> ${esc(l.m)}</span>`).join('\n');el.scrollTop=el.scrollHeight;}}
+function saveLocalLog(){
+  if(LOCAL_PHASE)LOCAL_LAST_PHASE=LOCAL_PHASE;
+  try{localStorage.setItem('sb_run_console',JSON.stringify({log:LOCAL_LOG,result:LOCAL_RESULT,phase:LOCAL_LAST_PHASE}))}catch(e){}
+}
+function renderLocalLog(){
+  const el=$('log');if(!el)return;
+  el.innerHTML=LOCAL_LOG.map(l=>`<span class="${l.c}"><span class="t">[${esc(l.t)}]</span> ${esc(l.m)}</span>`).join('\n');
+  el.scrollTop=el.scrollHeight;
+}
+function clearLocalLog(){LOCAL_LOG=[];LOCAL_RESULT='';LOCAL_PHASE='';LOCAL_LAST_PHASE='';LOCAL_LAST_ACTIVITY=Date.now();saveLocalLog();renderLocalLog();}
+function logLocal(msg,cls=''){
+  LOCAL_LOG.push({t:new Date().toLocaleTimeString(),m:String(msg),c:cls});
+  if(LOCAL_LOG.length>200)LOCAL_LOG.shift();
+  LOCAL_LAST_ACTIVITY=Date.now();saveLocalLog();renderLocalLog();
+}
+function restoreRunConsole(){
+  if(LOCAL_RESULT==='running'){
+    LOCAL_RESULT='interrupted';
+    logLocal(`Page reopened during ${LOCAL_LAST_PHASE||'the previous run'}. Run history was retained; no new generation has been started.`,'err');
+  }
+  renderLocalLog();
+}
 
 // A request with NO timeout can hang forever (Vercel cold start, a stalled
 // invocation). The pipeline awaits these inline, so one hung request left
@@ -465,6 +490,7 @@ function clientWatchdog() {
   try { PHASE_ABORT && PHASE_ABORT.abort('watchdog'); } catch (e) {}
   PHASE_ABORT = null;
   LOCAL_BUSY = false; SUBMITTING = false;
+  LOCAL_RESULT='stalled';
   logLocal('no progress for 15 minutes — released the stuck pipeline. Click Force Clean, then run again.', 'err');
   poll();
 }
@@ -474,7 +500,7 @@ async function api(p,opts){
   const t=await r.text();
   let j;try{j=JSON.parse(t)}catch(e){throw new Error('API '+r.status+': '+(t||'').slice(0,120))}
   // A real 401 means the session is actually gone — send them to login once.
-  if(r.status===401){location.replace('/login?next='+encodeURIComponent(location.pathname+location.search));throw new Error(j.error||'session expired');}
+  if(r.status===401){LOCAL_RESULT='failed';logLocal(`Session expired during ${LOCAL_PHASE||'the request'}. Sign in again; your run history has been saved.`,'err');location.replace('/login?next='+encodeURIComponent(location.pathname+location.search));throw new Error(j.error||'session expired');}
   // 402 = out of trial credits — only on Vercel (localhost is unlimited).
   // Surface a clear upgrade prompt and refresh the header pill.
   if(r.status===402&&j&&j.outOfCredits){
@@ -511,6 +537,7 @@ async function refreshNarrStatus(){
 }
 
 async function init(){
+  restoreRunConsole();
   $('finalVideo').onloadedmetadata=()=>{
     const seconds=Math.floor($('finalVideo').duration);
     $('finalMeta').textContent=Number.isFinite(seconds)?`${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,'0')}`:'Ready';
@@ -703,19 +730,18 @@ async function poll(){
   const busy=LOCAL_BUSY||s.phase!=='idle';
   const cancelling=!!s.cancelling;
   $('phasepill').classList.toggle('busy',busy||cancelling);
-  $('phasetxt').textContent=cancelling?'CANCELLING…':(LOCAL_BUSY&&LOCAL_PHASE)?LOCAL_PHASE:(busy?`${s.phase.toUpperCase()} ${s.done}/${s.total||'?'}`:'IDLE');
+  const settledLabel={failed:'STOPPED',stalled:'STALLED',interrupted:'INTERRUPTED',cancelled:'CANCELLED',complete:'COMPLETE'}[LOCAL_RESULT]||'IDLE';
+  $('phasetxt').textContent=cancelling?'CANCELLING…':(LOCAL_BUSY&&LOCAL_PHASE)?LOCAL_PHASE:(busy?`${s.phase.toUpperCase()} ${s.done}/${s.total||'?'}`:settledLabel);
   $('gprog').firstElementChild.style.width=s.total?Math.round(100*s.done/s.total)+'%':((busy||cancelling)?'12%':'0%');
   // Run buttons stay ENABLED while busy — clicking one asks to cancel the running
   // task first (guardBusy) so a new run never gets stuck behind the previous one.
   $('btnCancel').style.display=(busy&&!cancelling)?'':'none';
-  // On Vercel, prefer the client-side log buffer while a per-frame run is active
-  // (server log is per-instance). Once idle, fall back to the server log so stale
-  // video lines never mask a later job's output.
-  if(LOCAL_LOG.length&&busy){
-    $('log').innerHTML=LOCAL_LOG.map(l=>`<span class="${l.c}"><span class="t">[${esc(l.t)}]</span> ${esc(l.m)}</span>`).join('\n');
-    $('log').scrollTop=$('log').scrollHeight;
+  // Retain the completed/stopped run until the user starts another job. Empty
+  // logs from a cold instance must never erase the reason the pipeline stopped.
+  if(LOCAL_LOG.length){
+    renderLocalLog();
   } else {
-    $('log').innerHTML=s.log.map(l=>{
+    $('log').innerHTML=(s.log||[]).map(l=>{
       const m=l.match(/^(\[[^\]]+\])\s?(.*)$/);
       const time=m?`<span class="t">${esc(m[1])}</span> `:'';
       const body=m?m[2]:l;
@@ -738,6 +764,7 @@ let USER_CANCELLED=false;
 async function cancelJob(){
   if(!confirm('Cancel the current task?')) return;
   USER_CANCELLED=true;
+  LOCAL_RESULT='cancelled';
   try{ PHASE_ABORT&&PHASE_ABORT.abort('user-cancel'); }catch(e){}
   PHASE_ABORT=null;
   logLocal('cancel requested — stopping after the current step…','err');
@@ -777,12 +804,13 @@ let SUBMITTING=false;
  async function postJob(path, body){
   if(SUBMITTING) return null;
   if(!(await guardBusy())) return null;
+  clearLocalLog();
   SUBMITTING=true;
   try{
     const r=await api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-    if(r&&r.error)alert(r.error);
+    if(r&&r.error){LOCAL_RESULT='failed';logLocal(`${path}: ${r.error}`,'err');alert(r.error);}
     return r;
-  } catch(e) { alert('Error: '+e.message); return null; }
+  } catch(e) { LOCAL_RESULT='failed';logLocal(`${path}: ${e.message}`,'err');alert('Error: '+e.message); return null; }
   finally { SUBMITTING=false; refreshCredits(); }
 }
 
@@ -791,6 +819,7 @@ $('btnStoryboard').onclick=async()=>{
   if(script.length<10)return alert('Paste a script first.');
   if(FRAMES.length && !confirm('This will archive existing renders and start a new storyboard. Continue?')) return;
   if(!(await guardBusy()))return;
+  clearLocalLog();
   LOCAL_BUSY=true;poll();
   try{
     await api('/clean-outputs',{method:'POST'});
@@ -810,6 +839,7 @@ $('btnAuto').onclick=async()=>{
   if(!confirm(`Full auto pipeline: archives old renders, then builds storyboard → character refs → images → ${$('narrationMode').value==='tts'?'TTS narration → ':''}videos → final film. Language: ${$('language').selectedOptions[0]?.text||'English'}. This can take 20–60 minutes. Start?`))return;
   if(!(await guardBusy()))return;
   if(IS_VERCEL_CLIENT) return runAutoVercel(script);
+  clearLocalLog();
   const r=await api('/run-all',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
     script,model:$('chatModel').value,duration:Number($('duration').value),look:$('look').value,
     style:$('style').value,imageModel:$('imageModel').value,videoModel:$('videoModel').value,ratio:$('ratio').value,
@@ -838,6 +868,7 @@ async function callPhase(path, body, opts = {}) {
       clearTimeout(timer); PHASE_ABORT = null;
       // The user pressed Cancel: stop now and never retry.
       if (USER_CANCELLED) throw new Error('cancelled');
+      if (ac.signal.reason === 'watchdog') throw new Error('Stopped after 15 minutes without progress. The previous request will not be automatically submitted again.');
       // A 401/402 is a real, actionable failure — surface it immediately.
       if (/session expired|Free trial|credits/i.test(e.message)) throw e;
       if (i === attempts - 1) throw e;
@@ -864,7 +895,7 @@ async function callPhase(path, body, opts = {}) {
 // each phase with separate requests, exactly like the manual buttons do:
 // storyboard → char-refs → images → videos (one frame per request) → narration → combine.
 async function runAutoVercel(script){
-  SUBMITTING=true;LOCAL_BUSY=true;LOCAL_LOG=[];USER_CANCELLED=false;PHASE_ABORT=null;poll();
+  SUBMITTING=true;LOCAL_BUSY=true;clearLocalLog();LOCAL_PHASE='STORYBOARD';LOCAL_RESULT='running';USER_CANCELLED=false;PHASE_ABORT=null;poll();
   const opts={ratio:$('ratio').value,imageModel:$('imageModel').value,videoModel:$('videoModel').value,style:$('style').value,voice:$('voice').value,consistency:$('consistency').checked,language:$('language').value,narrationMode:$('narrationMode').value,narrationEngine:$('narrationEngine').value,narrVolume:Number($('narrVolume').value),origVolume:Number($('origVolume').value),chainContinuity:$('chainContinuity').checked,clipDuration:Number($('clipDuration').value)};
   try{
     // ---- Phase 1: storyboard ----
@@ -1008,12 +1039,18 @@ async function runAutoVercel(script){
     if(targets.length&&!clipCount)logLocal('note: no clip URLs returned — combine may fall back to stills on other instances','err');
 
     // ---- Phase 6: combine ----
+    LOCAL_PHASE='COMBINING';
     logLocal('phase 6/6: combining final film…','');
     const cb=await callPhase('/combine',sbPayload({ratio:opts.ratio,narrationMode:opts.narrationMode,narrVolume:opts.narrVolume,origVolume:opts.origVolume,clipUrls,imageModel:opts.imageModel,narrationUrl:narrUrl||localStorage.getItem('sb_narr_url')||''}));
     if(!cb||cb.error||cb.ok===false)throw new Error((cb&&cb.error)||'Combine failed');
     rememberFinalFilm(cb.finalUrl);
+    LOCAL_RESULT='complete';
     logLocal('🎬 FINAL FILM READY','ok');
-  }catch(e){logLocal('pipeline failed: '+e.message,'err');logLocal('⚠ stopped — the console above has the details. Click 🔧 Force Clean, then run again.','err')}
+  }catch(e){
+    LOCAL_RESULT=USER_CANCELLED?'cancelled':LOCAL_RESULT==='stalled'?'stalled':'failed';
+    logLocal(`${USER_CANCELLED?'Run cancelled by you':'Pipeline stopped'} during ${LOCAL_PHASE||'the request'}: ${e.message}`,'err');
+    if(!USER_CANCELLED)logLocal('The storyboard and finished assets are retained. Resolve the error above before restarting the failed phase.','err');
+  }
   finally{SUBMITTING=false;LOCAL_BUSY=false;LOCAL_PHASE='';poll();refresh();refreshCredits()}
 }
 $('btnCharRefs').onclick=async()=>{const r=await postJob('/char-refs',sbPayload({imageModel:$('imageModel').value,style:$('style').value,force:true}));if(r&&r.characters){CHARS=r.characters;try{localStorage.setItem('sb_chars',JSON.stringify(CHARS))}catch(e){}}};
@@ -1074,7 +1111,7 @@ async function runVideosVercel(){
   const targets=FRAMES.filter(f=>f.animation_prompt).sort((a,b)=>a.frame-b.frame);
   if(!targets.length)return alert('No frames with animation prompts yet.');
   const chained=$('chainContinuity').checked;
-  SUBMITTING=true;LOCAL_BUSY=true;USER_CANCELLED=false;LOCAL_LOG=[];LOCAL_PHASE=`VIDEOS 1/${targets.length}`;poll();
+  SUBMITTING=true;LOCAL_BUSY=true;USER_CANCELLED=false;clearLocalLog();LOCAL_RESULT='running';LOCAL_PHASE=`VIDEOS 1/${targets.length}`;poll();
   logLocal(`video phase (Vercel): ${targets.length} frame(s) — ${$('videoModel').value} — ${chained?'seamless chaining':'parallel'}`,'');
   let prevChain='',failedVideos=[];
   const clipUrls=loadClipUrls();
@@ -1119,8 +1156,9 @@ async function runVideosVercel(){
     const clipCount=Object.keys(clipUrls).length;
     if(targets.length&&!clipCount)logLocal('note: no clip URLs returned — combine may fall back to stills on other instances','err');
     if(failedVideos.length)logLocal(`${failedVideos.length} frame(s) still failed after retry: #${failedVideos.join(', #')} — Combine will use the still image for them`,'err');
+    LOCAL_RESULT=failedVideos.length?'failed':'complete';saveLocalLog();
     await refresh();
-  }catch(e){logLocal('video error: '+e.message,'err');}
+  }catch(e){LOCAL_RESULT=USER_CANCELLED?'cancelled':'failed';logLocal('video error: '+e.message,'err');}
   finally{SUBMITTING=false;LOCAL_BUSY=false;LOCAL_PHASE='';poll();}
 }
 $('btnNarration').onclick=async()=>{

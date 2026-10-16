@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname, '../web/public/storyboard.html'), 'utf8');
-const helpers = source.slice(source.indexOf('let FINAL_FILM=null;'), source.indexOf('// Client-side log buffer:'));
+const helpers = source.slice(source.indexOf('let FINAL_FILM=null;'), source.indexOf('let SAVED_RUN={}'));
 const manualCombine = source.slice(source.indexOf("$('btnCombine').onclick"), source.indexOf('async function regenFrame('));
 
 function environment(storage = new Map()) {

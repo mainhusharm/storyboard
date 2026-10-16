@@ -222,6 +222,7 @@ async function main() {
       $: id => ({ value: values[id] || '', checked: true, style: {}, load() {} }),
       localStorage: { setItem: (k, v) => storage.set(k, v), getItem: k => storage.get(k) },
       resetStoryboardAssets() { storage.clear(); }, rememberFinalFilm: url => assert.ok(url),
+      clearLocalLog() { logs.length=0; },
       logLocal: msg => logs.push(msg), poll() {}, refresh() {}, refreshCredits() {}, withTimeout: b => b,
       api: async () => ({ ok: true, characters: [{ id: 'hero' }], frames: [frame] }),
       callPhase: async (route, body) => {
