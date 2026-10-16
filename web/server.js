@@ -2844,6 +2844,11 @@ OUTPUT FORMAT — a single JSON object:
   ]
 }
 
+RELIGIOUS AND MYTHOLOGICAL CHARACTER ACCURACY:
+- When the script names a deity or sacred figure, preserve that figure's canonical Indian visual identity exactly. Do not turn a deity into a generic human, western fantasy character, animal mascot, or unrelated person.
+- For Hanuman ji / Lord Hanuman: describe a divine vanara with a distinctly compassionate monkey face and muzzle, expressive devotional eyes, powerful body, long curved tail, traditional red or saffron dhoti, sacred thread, gold ornaments, and a respectful heroic presence. Follow explicit script details for age, form, complexion, crown and gada; otherwise use the familiar adult devotional depiction with reddish-orange fur. Never replace him with a normal human man or an ordinary monkey.
+- Keep sacred identity details in both "description" and "reference_prompt"; the reference prompt must be a faithful visual anchor, not a generic portrait.
+
 RULES:
 - description: 100-200 words, hyper-detailed. Include face, hair, eyes, skin, build, clothing, accessories
 - reference_prompt: a standalone portrait for identifying the character (waist-up, neutral background, relaxed pose). Describe the same face, hair, clothing and distinguishing features as description. Keep story events, confrontations, injuries, dialogue and scene action out of this portrait; those belong in frame prompts.
@@ -2852,7 +2857,7 @@ RULES:
 function buildFramesPrompt(frameCount, secPerFrame) {
   return `You are an elite AI Cinematographer. Given a script and locked character descriptions, generate a production-ready storyboard (frames only).
 
-The characters are ALREADY DEFINED. In every frame's "image_prompt" where a character appears, you MUST paste their FULL description VERBATIM. Do NOT paraphrase or shorten. The image model has no memory.
+The characters are ALREADY DEFINED. In every frame's "image_prompt" where a character appears, use a SHORT identity anchor: the character's name plus the most important face, skin/fur, hair, body, wardrobe, sacred identity, and accessory details. Do NOT paste the full biography verbatim. The frame prompt must remain concise because the image provider accepts at most 2048 characters.
 
 OUTPUT FORMAT — a single JSON object:
 {
@@ -2872,7 +2877,7 @@ OUTPUT FORMAT — a single JSON object:
       "location": "...",
       "characters_present": ["Character A"],
       "continuity_notes": "...",
-      "image_prompt": "150-300 words. MUST include the FULL VERBATIM character description from the characters array for every character present. Describe the scene, subject, action, lighting, composition, camera angle, and mood. Do NOT include style keywords like 'photorealistic', 'cinematic', or '8K' — the visual style is applied separately by the user.",
+      "image_prompt": "90-160 words and under 1500 characters. Include concise identity anchors for every character present, plus scene, action, lighting, composition, camera angle, and mood. Do NOT include biographies, repeated instructions, or style keywords like 'photorealistic', 'cinematic', or '8K' — the visual style is applied separately by the user.",
       "negative_prompt": "...",
       "animation_prompt": "one sentence of camera movement for AI video (6 second clip)",
       "sound_design": "...",
@@ -2885,9 +2890,10 @@ OUTPUT FORMAT — a single JSON object:
 
 RULES:
 - Return EXACTLY ${frameCount} frames covering the full arc (hook, setup, conflict, climax, ending)
+- Follow the SCRIPT's actual events and characters in order. Do not invent unrelated episodes, substitute another deity, or repeat one event just to fill frames. Keep narration and visible scene action about the same event.
 - Each frame will be a ${secPerFrame}-second video clip (image-to-video), so animation_prompt should describe ${secPerFrame}s of camera/subject movement
-- image_prompt: 150-300 words each. Include subject, action, lighting, composition, camera angle, lens, mood, wardrobe
-- CRITICAL: Every image_prompt must contain the FULL character description verbatim for every character in that frame
+- image_prompt: 90-160 words each and under 1500 characters. Include concise identity anchors, subject, action, lighting, composition, camera angle, lens, mood, and wardrobe
+- CRITICAL: Preserve canonical deity/sacred-figure identity details exactly, but never paste full character biographies into frame prompts
 - animation_prompt: describe camera movement and subject action for a ${secPerFrame}-second clip
 - importance: low | medium | high | hero
 - Estimate timestamps cumulatively (mm:ss) — each frame is ${secPerFrame}s
@@ -2915,6 +2921,39 @@ function storyboardFrameCount(targetDuration, secPerFrame) {
   const total = Number(targetDuration) || 120;
   const per = Number(secPerFrame) || 6;
   return Math.max(1, Math.ceil(total / per));
+}
+
+// PaxSenix rejects image prompts above 2048 characters. Keep headroom for the
+// consistency instruction appended by the img2img path and preserve complete
+// words/sentences where possible.
+function capProviderImagePrompt(prompt, maxChars = 1800) {
+  const text = String(prompt || '').replace(/\s+/g, ' ').trim();
+  if (text.length <= maxChars) return text;
+  const clipped = text.slice(0, maxChars - 1);
+  const boundary = Math.max(clipped.lastIndexOf('. '), clipped.lastIndexOf(', '), clipped.lastIndexOf(' '));
+  return clipped.slice(0, boundary > 200 ? boundary : maxChars - 1).trim().replace(/[,:;.-]+$/, '') + '.';
+}
+
+const HANUMAN_IDENTITY = 'Lord Hanuman (Hanuman ji), a divine vanara with reddish-orange fur, a compassionate monkey face and muzzle, expressive devotional eyes, a powerful muscular human-like body, long curved tail, traditional saffron-red dhoti, sacred thread, gold ornaments and a small crown, dignified heroic presence';
+
+function lockSacredCharacter(c, script = '') {
+  const name = String(c.name || '').trim();
+  const source = name.toLowerCase();
+  if (!/\bhanuman\b|\bhanumān\b|\bbajrang\b|\banjaneya\b/.test(source)) return c;
+  // Explicit variants (e.g. Bala Hanuman) need their script-defined anatomy,
+  // age and accessories, rather than the default adult portrait.
+  if (/\b(bala?|baby|child|young|panchamukhi|five[- ]faced)\b/i.test(`${name} ${script}`)) return c;
+  const description = String(c.description || '').trim();
+  const reference = String(c.reference_prompt || '').trim();
+  return {
+    ...c,
+    description: description.includes('divine vanara') && description.includes('reddish-orange fur')
+      ? description
+      : HANUMAN_IDENTITY,
+    reference_prompt: reference.includes('divine vanara') && reference.includes('reddish-orange fur')
+      ? reference
+      : `respectful devotional character portrait of ${HANUMAN_IDENTITY}, waist-up 3/4 view, neutral temple-toned background, soft warm directional light, detailed traditional Indian visual design`
+  };
 }
 
 async function generateStoryboard(script, model, targetDuration = 120, look = '', language = DEFAULT_LANGUAGE, secPerFrame = 6, style = 'cinematic') {
@@ -3014,13 +3053,13 @@ async function generateStoryboard(script, model, targetDuration = 120, look = ''
         : [c.name, c.age ? `${c.age} years old` : '', c.appearance, c.clothing, c.personality]
             .filter(Boolean).map(s => String(s).trim()).filter(Boolean).join(', ')
             || `${c.name || 'Character'} — a key figure in the story`;
-      return {
+      return lockSacredCharacter({
         id: c.id || `Character ${String.fromCharCode(65 + i)}`,
         name: c.name || `Character ${String.fromCharCode(65 + i)}`,
         age: c.age || null,
         description,
         reference_prompt: c.reference_prompt || `character portrait of ${description}, waist-up 3/4 view, neutral background, soft directional key light, 85mm portrait lens`
-      };
+      }, script);
     });
   if (!characters.length) throw new Error('all models failed for characters');
   logLine(`phase 1 done: ${characters.length} characters locked (model: ${charModel})`);
@@ -3068,7 +3107,7 @@ async function generateStoryboard(script, model, targetDuration = 120, look = ''
     shot_type: f.shot_type || 'Medium Shot', camera_angle: f.camera_angle || 'Eye Level',
     lens: f.lens || '35mm', lighting: f.lighting || 'Natural', mood: f.mood || '',
     location: f.location || '', characters_present: f.characters_present || f.characters || [],
-    continuity_notes: f.continuity_notes || '', image_prompt: f.image_prompt || f.prompt || '',
+    continuity_notes: f.continuity_notes || '', image_prompt: capProviderImagePrompt(f.image_prompt || f.prompt || '', 1500),
     negative_prompt: f.negative_prompt || 'low quality, blurry, watermark, text, bad anatomy, distorted face',
     animation_prompt: f.animation_prompt || 'slow cinematic push-in',
     sound_design: f.sound_design || '', transition: f.transition || 'cut',
@@ -3111,7 +3150,7 @@ async function generateStoryboard(script, model, targetDuration = 120, look = ''
         camera_angle: f.camera_angle || 'Eye Level', lens: f.lens || '35mm',
         lighting: f.lighting || 'Natural', mood: f.mood || '', location: f.location || '',
         characters_present: f.characters_present || f.characters || [], continuity_notes: f.continuity_notes || '',
-        image_prompt: f.image_prompt || f.prompt || '',
+        image_prompt: capProviderImagePrompt(f.image_prompt || f.prompt || '', 1500),
         negative_prompt: f.negative_prompt || 'low quality, blurry, watermark, text, bad anatomy, distorted face',
         animation_prompt: f.animation_prompt || 'slow cinematic push-in', sound_design: f.sound_design || '',
         transition: f.transition || 'cut', duration_sec: f.duration_sec || secPerFrame,
@@ -3164,6 +3203,7 @@ async function generateCharRefs(characters, imageModel = 'seedream-5', style = '
   const renderCharRef = async (c, prompt) => {
     const out = charRefFile(c.id);
     const refAttempt = async (label, p) => {
+      p = capProviderImagePrompt(p);
       const q = `${imageEndpoint(imageModel)}?prompt=${encodeURIComponent(p)}&model=${encodeURIComponent(imageModel)}&ratio=1:1`;
       const info = {};
       const task = await submitTask(q, logLine, info);
@@ -3280,8 +3320,9 @@ async function generateImages(frames, imageModel, ratio, style, consistency = tr
   // Enhance all prompts in parallel
   logLine(`enhancing ${work.length} prompts in parallel...`);
   const enhanced = await Promise.all(work.map(async (f) => {
-    const styled = applyStyle(f.image_prompt, style);
-    const enh = await enhancePrompt(styled);
+    const styled = capProviderImagePrompt(applyStyle(f.image_prompt, style));
+    const enh = capProviderImagePrompt(await enhancePrompt(styled));
+    logLine(`frame ${f.frame}: image prompt ${enh.length} chars (provider cap 2048)`);
     return { f, prompt: enh };
   }));
 
@@ -3299,12 +3340,13 @@ async function generateImages(frames, imageModel, ratio, style, consistency = tr
     const outOfBudget = () => IS_VERCEL && (Date.now() - ladderStart > 150000);
     const refsFor = () => (f.characters_present || []).map(id => refById.get(id)).filter(Boolean).slice(0, 3);
     const imgAttempt = async (label, p, useRef) => {
+      p = capProviderImagePrompt(p);
       let task = null;
       const info = {};
       if (useRef) {
         const refs = refsFor();
         if (refs.length) {
-          const anchorPrompt = `${p} — IMPORTANT: keep the exact same faces, hair, skin tone and wardrobe as the reference portrait(s). Do not change character identity.`;
+          const anchorPrompt = capProviderImagePrompt(`${p} — IMPORTANT: keep the exact same faces, hair, skin tone and wardrobe as the reference portrait(s). Do not change character identity.`, 1950);
           task = await submitImg2ImgTask(anchorPrompt, refs, imageModel, ratio, info);
           if (info.error?.permanent) throw info.error;
         }
@@ -8201,6 +8243,7 @@ module.exports = requestHandler;
 module.exports.__internal = {
   flashloopScenePlan,
   storyboardFrameCount, emergencyImageChain, vocalizeAnimationPrompts,
+  capProviderImagePrompt, lockSacredCharacter,
   // Logfare async-job models (wan3.0 video + qwen/wanx image).
   NOVITA_VIDEO_MODELS, NOVITA_IMAGE_MODELS, NOVITA_TASK_PREFIX,
   isNovitaVideoModel, isNovitaI2VModel, isNovitaImageModel, novitaAcceptsImage,

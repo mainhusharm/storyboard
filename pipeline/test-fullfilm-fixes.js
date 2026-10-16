@@ -22,8 +22,21 @@ function check(name, cond, detail) {
   else { failures++; console.error(`FAIL  ${name}${detail ? ' — ' + detail : ''}`); }
 }
 
-const { storyboardFrameCount, emergencyImageChain, isLogfareImageModel, vocalizeAnimationPrompts } =
+const { storyboardFrameCount, emergencyImageChain, isLogfareImageModel, vocalizeAnimationPrompts, capProviderImagePrompt, lockSacredCharacter } =
   require(path.join(ROOT, 'web', 'server.js')).__internal;
+
+console.log('\n[0] storyboard image prompt limits and sacred character identity');
+const longPrompt = 'Hanuman carries the mountain. ' + 'Detailed forest lighting and distant landscape. '.repeat(100);
+check('oversized styled image prompt fits provider limit', capProviderImagePrompt(longPrompt).length <= 1800);
+check('short scene prompt is retained', capProviderImagePrompt('Hanuman carries the mountain.') === 'Hanuman carries the mountain.');
+check('Hanuman scene action survives length limiting', capProviderImagePrompt(longPrompt).startsWith('Hanuman carries the mountain.'));
+const lockedHanuman = lockSacredCharacter({ name: 'Hanuman ji', description: 'An ordinary human warrior.', reference_prompt: 'Man in armor.' });
+check('Hanuman profile locks vanara face and tail', /divine vanara/.test(lockedHanuman.description) && /monkey face/.test(lockedHanuman.description) && /long curved tail/.test(lockedHanuman.description));
+check('conflicting human portrait is replaced', !/Man in armor/.test(lockedHanuman.reference_prompt));
+const rama = { name: 'Lord Rama', description: 'Human prince accompanying Hanuman.' };
+check('other characters in Hanuman script remain unchanged', lockSacredCharacter(rama, 'Hanuman meets Rama.') === rama);
+const bala = { name: 'Bala Hanuman', description: 'A divine vanara child.' };
+check('explicit child Hanuman form is retained', lockSacredCharacter(bala) === bala);
 
 console.log('\n[1] combine restores the frame image before generating anything');
 // The frame WAS rendered — only the local file is missing (cold instance / archived
