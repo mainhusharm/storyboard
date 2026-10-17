@@ -8,6 +8,10 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { Readable } = require('node:stream');
 const { createVaultStore } = require('../web/vault-store');
+const authNames = ['BLOB_READ_WRITE_TOKEN', 'BLOB_STORE_ID', 'BLOB_READ_WRITE_TOKEN_STORE_ID', 'BLOB_READ_WRITE_TOKEN_WEBHOOK_PUBLIC_KEY', 'VERCEL_OIDC_TOKEN'];
+const initialAuth = Object.fromEntries(authNames.map(name => [name, process.env[name]]));
+test.beforeEach(() => { for (const name of authNames) delete process.env[name]; });
+test.after(() => { for (const name of authNames) { if (initialAuth[name] === undefined) delete process.env[name]; else process.env[name] = initialAuth[name]; } });
 
 async function contents(opened) {
   assert.ok(opened);
@@ -203,7 +207,7 @@ test('Vercel fails closed without database or private Blob token', async t => {
   const root = await temporary(t);
   delete process.env.BLOB_READ_WRITE_TOKEN;
   const missingToken = createVaultStore({ root, isVercel: true, getDb: async () => fakeDatabase(), blob: fakeBlob() });
-  assert.deepEqual(await missingToken.status(), { mode: 'cloud', ready: false, message: 'Vault storage needs BLOB_READ_WRITE_TOKEN from a private Vercel Blob store.' });
+  assert.deepEqual(await missingToken.status(), { mode: 'cloud', ready: false, message: 'Connect a private Vercel Blob store with BLOB_STORE_ID and Vercel OIDC authentication, or set BLOB_READ_WRITE_TOKEN.' });
   await assert.rejects(missingToken.save(asset()), { code: 'VAULT_NOT_CONFIGURED', statusCode: 503 });
   process.env.BLOB_READ_WRITE_TOKEN = 'test-only-token';
   const missingDb = createVaultStore({ root, isVercel: true, getDb: async () => null, blob: fakeBlob() });
@@ -289,4 +293,39 @@ test('cloud file uploads use an immutable snapshot and close failed upload strea
   blob.failPut = true;
   await assert.rejects(store.save(asset({ filePath, buffer: undefined })), /upload failed/);
   assert.equal(db.rows.size, 1);
+});
+
+for (const variable of ['BLOB_STORE_ID', 'BLOB_READ_WRITE_TOKEN_STORE_ID']) {
+  test('cloud OIDC works with ' + variable + ' without a static token', async t => {
+    process.env[variable] = 'store_test';
+    process.env.VERCEL_OIDC_TOKEN = 'test-only-rotating-oidc';
+    const root = await temporary(t); const db = fakeDatabase(); const blob = fakeBlob();
+    const calls = [];
+    for (const method of ['put', 'get', 'del']) {
+      const original = blob[method];
+      blob[method] = async (...args) => {
+        const options = args[method === 'put' ? 2 : 1];
+        assert.equal(options.storeId, 'store_test');
+        assert.equal(options.oidcToken, undefined, 'SDK must manage token refresh');
+        assert.equal(options.token, undefined);
+        calls.push(method);
+        return original(...args);
+      };
+    }
+    const store = createVaultStore({ root, isVercel: true, getDb: async () => db, blob });
+    assert.equal((await store.status()).ready, true);
+    const saved = await store.save(asset());
+    assert.equal(await contents(await store.open('alice', saved.id)), '0123456789');
+    assert.equal(await store.remove('alice', saved.id), true);
+    assert.deepEqual(calls, ['put', 'get', 'del']);
+  });
+}
+
+test('a store id or webhook key alone cannot authenticate Blob operations', async t => {
+  const root = await temporary(t);
+  const store = createVaultStore({ root, isVercel: true, getDb: async () => fakeDatabase(), blob: fakeBlob() });
+  process.env.BLOB_READ_WRITE_TOKEN_STORE_ID = 'store_test';
+  process.env.BLOB_READ_WRITE_TOKEN_WEBHOOK_PUBLIC_KEY = 'test-public-key';
+  assert.equal((await store.status()).ready, false);
+  await assert.rejects(store.save(asset()), { code: 'VAULT_NOT_CONFIGURED' });
 });

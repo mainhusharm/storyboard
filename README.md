@@ -2,7 +2,7 @@
 
 The new **[/vault](/vault)** library automatically stores scripts, images, audio, scene clips and finished films from Storyboard, Flashloop and SJinn. Each account has its own searchable library with previews, downloads and deletion.
 
-For Vercel, connect **Postgres (`DATABASE_URL`)** and a **private Vercel Blob store (`BLOB_READ_WRITE_TOKEN`)**. See [VAULT.md](VAULT.md) for setup, behavior and verification. Older release notes below describe the previous final-film-only archive.
+For Vercel, connect **Postgres (`DATABASE_URL`)** and a **private Vercel Blob store (Vercel OIDC + `BLOB_STORE_ID`, or legacy `BLOB_READ_WRITE_TOKEN`)**. See [VAULT.md](VAULT.md) for setup, behavior and verification. Older release notes below describe the previous final-film-only archive.
 
 # Storyboard Studio
 

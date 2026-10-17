@@ -147,8 +147,17 @@ function createVaultStore({ root, isVercel = false, getDb = async () => null, bl
 
   function sdk() { return injectedBlob || require('@vercel/blob'); }
 
+  // Vercel now connects stores using OIDC. The second name supports the
+  // custom prefix selected when this project's store was connected.
+  function blobOptions() {
+    const storeId = (process.env.BLOB_STORE_ID || process.env.BLOB_READ_WRITE_TOKEN_STORE_ID || '').trim();
+    return storeId ? { storeId } : {};
+  }
+
   async function cloud() {
-    if (!process.env.BLOB_READ_WRITE_TOKEN) throw unavailable('Vault storage needs BLOB_READ_WRITE_TOKEN from a private Vercel Blob store.');
+    const hasToken = !!process.env.BLOB_READ_WRITE_TOKEN;
+    const hasOidc = !!(blobOptions().storeId && process.env.VERCEL_OIDC_TOKEN);
+    if (!hasToken && !hasOidc) throw unavailable('Connect a private Vercel Blob store with BLOB_STORE_ID and Vercel OIDC authentication, or set BLOB_READ_WRITE_TOKEN.');
     if (!databaseReady) {
       databaseReady = (async () => {
         const db = await getDb();
@@ -290,7 +299,7 @@ function createVaultStore({ root, isVercel = false, getDb = async () => null, bl
         const uploadBody = buffer || fs.createReadStream(input.filePath);
         try {
           uploaded = await api.put(`vault/v2/${ownerHash(userId)}/${entry.id}/${entry.filename}`, uploadBody, {
-            access: 'private', addRandomSuffix: false, allowOverwrite: false, contentType: entry.mime_type,
+            ...blobOptions(), access: 'private', addRandomSuffix: false, allowOverwrite: false, contentType: entry.mime_type,
             ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
           });
         } finally {
@@ -305,13 +314,13 @@ function createVaultStore({ root, isVercel = false, getDb = async () => null, bl
           entry.created_at, JSON.stringify(entry.metadata), entry.sha256, uploaded.url]);
         if (result.rows[0]) return publicEntry(result.rows[0]);
         // Another request finished the same output while this upload was running.
-        await api.del(uploaded.url);
+        await api.del(uploaded.url, blobOptions());
         uploaded = null;
         const winner = await db.query('SELECT * FROM sb_vault_assets WHERE owner_id = $1 AND source = $2 AND kind = $3 AND sha256 = $4', values);
         if (!winner.rows[0]) throw new Error('Vault could not finish saving this asset. Please retry.');
         return publicEntry(winner.rows[0]);
       } catch (error) {
-        if (uploaded?.url) await api.del(uploaded.url).catch(() => {});
+        if (uploaded?.url) await api.del(uploaded.url, blobOptions()).catch(() => {});
         throw error;
       }
     }
@@ -371,7 +380,7 @@ function createVaultStore({ root, isVercel = false, getDb = async () => null, bl
       if (!privateBlobUrl(entry.blob_url)) throw new Error('Vault content location is invalid.');
       const { db, api } = await cloud();
       // Keep the row on storage failure so a user can retry rather than lose access.
-      await api.del(entry.blob_url);
+      await api.del(entry.blob_url, blobOptions());
       const result = await db.query('DELETE FROM sb_vault_assets WHERE owner_id = $1 AND id = $2 RETURNING id', [userId, id]);
       return result.rows.length > 0;
     }
@@ -395,7 +404,7 @@ function createVaultStore({ root, isVercel = false, getDb = async () => null, bl
     if (isVercel) {
       if (!privateBlobUrl(entry.blob_url)) throw new Error('Vault content location is invalid.');
       const { api } = await cloud();
-      const content = await api.get(entry.blob_url, { access: 'private', useCache: false,
+      const content = await api.get(entry.blob_url, { ...blobOptions(), access: 'private', useCache: false,
         ...(range ? { headers: { range: `bytes=${range.start}-${range.end}` } } : {}) });
       if (!content?.stream) return null;
       const returnedRange = content.headers?.get?.('content-range');

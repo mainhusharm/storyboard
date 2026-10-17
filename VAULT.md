@@ -25,8 +25,12 @@ data directory; back it up along with the app's account data.
 1. Connect a Postgres database (for example Neon) to the Vercel project and set
    **DATABASE_URL**. This is also the existing application's account database.
 2. In the project's **Storage** tab, create and connect a **private Vercel Blob**
-   store. Verify **BLOB_READ_WRITE_TOKEN** is available to the intended deployment
-   environments. A public Blob store is rejected by the vault.
+   store for Production and Preview. Vercel authenticates with its automatically
+   refreshed OIDC token and **BLOB_STORE_ID**. The custom-prefix name
+   **BLOB_READ_WRITE_TOKEN_STORE_ID** is also supported. Keep those generated
+   names unchanged; neither the store id nor a webhook public key is a secret
+   read/write token. Legacy **BLOB_READ_WRITE_TOKEN** authentication still works.
+   A public Blob store is rejected by the vault.
 3. Keep **SESSION_SECRET** stable across deployments and instances so account
    sessions and signed image-completion tickets remain valid.
 4. Deploy the changes using the existing `npm run build` command and Node 24

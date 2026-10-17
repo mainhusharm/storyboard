@@ -51,7 +51,8 @@ consistency**, generates frame images, animates them via Grok Video / Omni Flash
   ownership, capture hooks, signed provider-task completion and authenticated delivery;
   web/vault-store.js owns immutable storage and metadata. Local development uses
   per-account files beneath gitignored vault/v2/; Vercel requires Postgres
-  (DATABASE_URL) + a PRIVATE Vercel Blob store (BLOB_READ_WRITE_TOKEN). It never
+  (DATABASE_URL) + a PRIVATE Vercel Blob store (OIDC + BLOB_STORE_ID, or legacy
+  BLOB_READ_WRITE_TOKEN; custom BLOB_READ_WRITE_TOKEN_STORE_ID is supported). It never
   falls back to /tmp or browser localStorage for durable cloud assets. Saves complete
   before synchronous responses; failures preserve generation output and surface
   vault_warning. GET /api/vault lists the signed-in account only; DELETE
