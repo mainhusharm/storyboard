@@ -71,6 +71,15 @@ consistency**, generates frame images, animates them via Grok Video / Omni Flash
   anchors pass the reference BYTES inline (no re-host round-trip). The finished bytes come back
   behind the `logfare-local:` marker, so the whole submit→wait→download ladder, the emergency
   still chain, and the hosting-on-Vercel behaviour are unchanged.
+- **Aqua image transport** uses normal authenticated JSON API headers. Do not add
+  fake browser Client Hints, Origin or Referer to solve Cloudflare challenges.
+  A challenge is AQUA_CLOUDFLARE_BLOCKED with terminal=true, permanent=false:
+  stop this attempt and the prompt-repair ladder, retain outputs, and show the
+  provider access error/Ray ID. Queued Aqua images share a 60-second cooldown;
+  other providers remain available. A poll failure must never resubmit a paid
+  generation task. Verify with node pipeline/test-aqua-image-responses.js.
+  Local live checks on 2026-10-17 succeeded for nanobanana-pro and agnes-image;
+  this does not prove that Vercel egress is accepted by Aqua's Cloudflare rules.
 - **Vercel: videos render ONE FRAME PER REQUEST** — on Vercel a serverless invocation dies at
   300s, so a whole-board synchronous `/api/videos` always times out. The client detects Vercel via
   `/api/health` and loops frames one-per-request (`runVideosVercel`), passing the previous frame's

@@ -1229,30 +1229,12 @@ const IMAGE_MODELS = ['nano-banana-pro', 'nano-banana-2', 'nano-banana-2-lite', 
 // AquaDevs image models (POST https://api.aquadevs.com/v1/images/generations).
 // Selected from the UI as "aqua:<id>" so they never collide with same-named
 // PaxSenix models. These return a direct image URL (no task polling).
-// api.aquadevs.com sits behind Cloudflare: a bare server-side fetch from a
-// datacenter IP (Vercel) gets a "Just a moment..." 403 challenge. Send a real
-// browser fingerprint so the managed challenge is not triggered.
-const AQUA_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
+// Use the documented server-to-server API. Browser-only headers do not solve
+// Cloudflare's JavaScript challenges and can misrepresent a Node request.
 function aquaHeaders(extra) {
-  const h = Object.assign({
-    'Authorization': 'Bearer ' + AQUA_API_KEY,
-    'Content-Type': 'application/json',
-    'Accept': 'application/json, text/plain, */*',
-    'Accept-Language': 'en-US,en;q=0.9',
-    'User-Agent': AQUA_UA,
-    'Origin': 'https://api.aquadevs.com',
-    'Referer': 'https://api.aquadevs.com/',
-    'sec-ch-ua': '"Chromium";v="128", "Not(A:Brand";v="24", "Google Chrome";v="128"',
-    'sec-ch-ua-mobile': '?0',
-    'sec-ch-ua-platform': '"Windows"',
-    'sec-fetch-dest': 'empty',
-    'sec-fetch-mode': 'cors',
-'sec-fetch-site': 'same-origin'
-  }, extra || {});
-  // Callers can disable a header by passing an explicit undefined (the task poll
-  // sends no body, so it must not carry a Content-Type).
-  for (const k of Object.keys(h)) if (h[k] === undefined || h[k] === null) delete h[k];
-  return h;
+  const headers = { Authorization: 'Bearer ' + AQUA_API_KEY, 'Content-Type': 'application/json', Accept: 'application/json', ...extra };
+  for (const key of Object.keys(headers)) if (headers[key] == null) delete headers[key];
+  return headers;
 }
 const AQUA_IMAGE_MODELS = ['agnes-image', 'nanobanana-2', 'nanobanana-pro', 'gptimage-2'];
 // Grok Imagine is xAI's image model on PaxSenix: GET /ai-image/grok-imagine
@@ -1782,13 +1764,33 @@ function aquaUrlFrom(j) {
   }
   return '';
 }
+// A challenge is a transport rejection, not a bad prompt or a model rejection.
+// Briefly stop queued images too; changing prompts or models on the same API
+// cannot complete a browser challenge. Another provider remains independent.
+let aquaImageBlock = null;
+function aquaImageChallenge(response, text) {
+  const challenged = response.headers.get('cf-mitigated') === 'challenge'
+    || (response.status === 403 && /just a moment|cf-chl|challenge-platform|cloudflare/i.test(text));
+  if (!challenged) return null;
+  const ray = response.headers.get('cf-ray');
+  const error = Object.assign(new Error('Aqua image API HTTP ' + response.status + ': Cloudflare blocked this server request'
+    + (ray ? ' (Ray ID: ' + ray + ')' : '')
+    + '. Prompt changes cannot resolve this. Retry later or choose another image provider. If it persists, ask AquaDevs to allow authenticated server API requests.'),
+    { code: 'AQUA_CLOUDFLARE_BLOCKED', terminal: true, permanent: false });
+  aquaImageBlock = { until: Date.now() + 60000, error };
+  aquaStatus.lastError = error.message;
+  return error;
+}
 async function aquaPollImage(taskUrl, maxMs = 170000) {
   const deadline = Date.now() + maxMs;
   let last = '';
   while (Date.now() < deadline) {
     try {
       const r = await fetch(taskUrl, { headers: aquaHeaders({ 'Content-Type': undefined }), signal: AbortSignal.timeout(45000) });
-      const j = await r.json().catch(() => ({}));
+      const text = await r.text();
+      const challenge = aquaImageChallenge(r, text);
+      if (challenge) throw challenge;
+      let j = {}; try { j = JSON.parse(text); } catch {}
       if (!r.ok || j.error || j.success === false) throw Object.assign(new Error(`Aqua task HTTP ${r.status}: ${JSON.stringify(j).slice(0, 400)}`), { terminal: r.status >= 400 && r.status < 500 && r.status !== 429 });
       const url = aquaUrlFrom(j);
       if (url) return url;
@@ -1803,10 +1805,8 @@ async function aquaPollImage(taskUrl, maxMs = 170000) {
   throw new Error('aqua task still ' + (last || 'pending') + ' after ' + Math.round(maxMs / 1000) + 's');
 }
 
-// api.aquadevs.com also challenges BURSTS: five character references firing at
-// once from one IP trips the bot heuristic even with a valid key and browser
-// headers. Serialize Aqua renders through a small gate (max 2 in flight, 1s
-// spacing between starts).
+// Bound simultaneous image jobs to avoid overwhelming the provider. This is
+// load control; it does not claim to solve a Cloudflare challenge.
 const aquaQueue = [];
 let aquaActive = 0;
 function aquaPump() {
@@ -1826,6 +1826,10 @@ async function generateAquaImage(model, prompt, ratio = '9:16', imageUrl = '') {
   const id = String(model).replace(/^aqua:/, '');
   if (!AQUA_IMAGE_MODELS.includes(id)) throw new Error('unknown Aqua image model: ' + id);
   if (!AQUA_API_KEY) throw new Error('no AquaDevs key (env AQUA_API_KEY or pipeline/aqua_apikey.txt)');
+  if (aquaImageBlock?.until > Date.now()) {
+    throw Object.assign(new Error(aquaImageBlock.error.message), { code: 'AQUA_CLOUDFLARE_BLOCKED', terminal: true, permanent: false });
+  }
+  aquaImageBlock = null;
   const body = { model: id, prompt: String(prompt || ''), ratio: aquaRatio(ratio) };
   if (imageUrl) body.image = imageUrl;
   let lastErr = null;
@@ -1838,31 +1842,36 @@ async function generateAquaImage(model, prompt, ratio = '9:16', imageUrl = '') {
         signal: AbortSignal.timeout(240000)
       });
       const text = await res.text();
+      const challenge = aquaImageChallenge(res, text);
+      if (challenge) throw challenge;
       let j = null; try { j = JSON.parse(text); } catch { j = null; }
       const failed = !res.ok || j?.error || j?.success === false;
       const directUrl = !failed ? aquaUrlFrom(j) : '';
-      if (directUrl) { logLine(`aqua image: ${id} done in ${(j && j.latency) || '?'}s`); return directUrl; }
+      if (directUrl) { aquaStatus.lastOkAt = Date.now(); aquaStatus.lastModel = id; aquaStatus.lastError = ''; logLine(`aqua image: ${id} done in ${(j && j.latency) || '?'}s`); return directUrl; }
       // Edit/i2i (and some models) answer with a task to poll instead.
       const taskData = j?.data && !Array.isArray(j.data) ? j.data : j;
       const taskId = taskData && (taskData.task_id || taskData.taskId);
       const taskUrl = aquaTaskUrl(j && (j.task_url || j.taskUrl || taskData?.task_url || (taskId ? AQUA_API + '/v1/images/tasks/' + encodeURIComponent(taskId) : '')));
       if (!failed && taskUrl) {
         logLine(`aqua image: ${id} queued (${(j && j.status) || 'pending'}) - polling`);
-        return await aquaPollImage(taskUrl);
+        try {
+          const url = await aquaPollImage(taskUrl);
+          aquaStatus.lastOkAt = Date.now(); aquaStatus.lastModel = id; aquaStatus.lastError = '';
+          return url;
+        } catch (error) {
+          // The paid task already exists. Never submit another generation just
+          // because polling failed or timed out.
+          error.terminal = true;
+          throw error;
+        }
       }
-      // A Cloudflare "managed challenge" (403 "Just a moment...") is a TRANSIENT
-      // edge block — the API key is never seen by it. The chat path retries
-      // through these successfully, so images earn the same escalating backoff
-      // instead of a permanent fail. Only genuine API rejections (bad key, bad
-      // model) stay permanent so paid retries are never wasted.
-      const isChallenge = res.status === 403 && /just a moment|cf-|cloudflare|<html/i.test(text);
-      lastErr = Object.assign(new Error(`Aqua ${id} HTTP ${res.status}: ${isChallenge ? 'Cloudflare challenge' : (j ? JSON.stringify(j).slice(0, 400) : text.slice(0, 200))}`), { code: 'AQUA_IMAGE_ERROR', permanent: !isChallenge && res.status >= 400 && res.status < 500 && ![408, 429].includes(res.status) });
+      lastErr = Object.assign(new Error(`Aqua ${id} HTTP ${res.status}: ${j ? JSON.stringify(j).slice(0, 400) : text.slice(0, 200)}`), { code: 'AQUA_IMAGE_ERROR', permanent: res.status >= 400 && res.status < 500 && ![408, 429].includes(res.status) });
       if (lastErr.permanent) throw lastErr;
-      if (isChallenge) { logLine(`aqua image ${id}: Cloudflare challenge (attempt ${attempt}) — backing off`); await new Promise(r => setTimeout(r, 8000 * attempt)); }
-      else logLine(`aqua image ${id} attempt ${attempt}: ${lastErr.message}`);
+      logLine(`aqua image ${id} attempt ${attempt}: ${lastErr.message}`);
     } catch (e) { if (e.permanent || e.terminal) throw e; lastErr = e; logLine(`aqua image ${id} attempt ${attempt}: ${e.message}`); }
-    await new Promise(r => setTimeout(r, 3000 * attempt));
+    if (attempt < 3) await new Promise(r => setTimeout(r, 3000 * attempt));
   }
+  aquaStatus.lastError = lastErr?.message || 'Aqua image failed';
   throw lastErr || new Error('aqua image failed');
   });
  }
@@ -3300,7 +3309,7 @@ async function generateCharRefs(characters, imageModel = 'seedream-5', style = '
       const q = `${imageEndpoint(mdl)}?prompt=${encodeURIComponent(p)}&model=${encodeURIComponent(mdl)}&ratio=1:1`;
       const info = {};
       const task = await submitTask(q, logLine, info);
-      if (info.error?.permanent) { info.error.submittedPrompt = p; throw info.error; }
+      if (info.error?.permanent || info.error?.terminal) { info.error.submittedPrompt = p; throw info.error; }
       if (!task) {
         lastFailure = { code: info.error?.code || 'REFERENCE_SUBMIT_FAILED', message: `${mdl} (${label}): ${info.error?.message || 'provider did not return an image task'}`, submitted_prompt: p, model: mdl, retryable: true };
         logLine(`${c.id}: ref SUBMIT FAILED — ${lastFailure.message}`); return false;
@@ -3502,13 +3511,13 @@ async function generateImages(frames, imageModel, ratio, style, consistency = tr
         if (refs.length) {
           const anchorPrompt = capProviderImagePrompt(`${p} — IMPORTANT: keep the exact same faces, hair, skin tone and wardrobe as the reference portrait(s). Do not change character identity.`, 1950);
           task = await submitImg2ImgTask(anchorPrompt, refs, mdl, ratio, info);
-          if (info.error?.permanent) { info.error.submittedPrompt = p; throw info.error; }
+          if (info.error?.permanent || info.error?.terminal) { info.error.submittedPrompt = p; throw info.error; }
         }
       }
       if (!task) {
         const q = `${imageEndpoint(mdl)}?prompt=${encodeURIComponent(p)}&model=${encodeURIComponent(mdl)}&ratio=${encodeURIComponent(ratio)}`;
         task = await submitTask(q, logLine, info);
-        if (info.error?.permanent) { info.error.submittedPrompt = p; throw info.error; }
+        if (info.error?.permanent || info.error?.terminal) { info.error.submittedPrompt = p; throw info.error; }
       }
       if (!task) {
         const why = info.error ? `${mdl}: ${info.error.message}` : `${mdl}: submit failed`;
@@ -7343,7 +7352,7 @@ RULES:
             try {
               imageUrl = await generateAquaImage(selectedModel, p, ratio, ref);
             } catch (i2iErr) {
-              if (!ref) throw i2iErr;
+              if (!ref || i2iErr.terminal || i2iErr.permanent) throw i2iErr;
               logLine('aqua image: i2i failed (' + i2iErr.message + ') - retrying as text-to-image with the trend description');
               imageUrl = await generateAquaImage(selectedModel, p, ratio, '');
             }
