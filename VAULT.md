@@ -1,8 +1,9 @@
 # Shared asset vault
 
 Open **/vault** from Storyboard, Flashloop or SJinn. The library automatically
-saves generated storyboard/script JSON, character references, scene images,
-scene videos, full narration audio and finished films. Filter by tool and file
+saves **only final combined videos**. Scripts, character references, scene images,
+individual scene clips and narration audio are not automatically archived. Older
+saved assets remain available until deleted or expired. Filter by tool and file
 type, search by title, preview, download, or delete an item.
 
 Each entry belongs to the signed-in account. Media delivery and deletion check
@@ -36,7 +37,7 @@ data directory; back it up along with the app's account data.
    read/write token. Legacy **BLOB_READ_WRITE_TOKEN** authentication still works.
    A public Blob store is rejected by the vault.
 3. Keep **SESSION_SECRET** stable across deployments and instances so account
-   sessions and signed image-completion tickets remain valid.
+   sessions remain valid.
 4. Deploy the changes using the existing `npm run build` command and Node 24
    (Node 20 or later is required by the Blob SDK).
 5. Sign in and open `/vault`. Its status should report cloud storage ready.
@@ -63,7 +64,7 @@ before relying on automatic archiving. Storage is not provisioned by this code.
 Existing unscoped `vault/index.json` records and browser `sb_vault` history are
 left intact but are not assigned to an account automatically: the old format has
 no reliable ownership information. The new library automatically captures new
-outputs; it does not scan unrelated files or recover expired temporary links.
+final combined videos; it does not scan unrelated files or recover expired temporary links.
 
 ## Seven-day retention and freeing storage
 
@@ -105,8 +106,8 @@ and [Hobby scheduling limits](https://vercel.com/docs/cron-jobs/usage-and-pricin
 
 `npm run test:vault` runs offline storage and HTTP integration tests. They cover
 account isolation, authenticated downloads, filters/pagination, immutable bytes,
-concurrent saves, cold-instance cloud recovery, deletion, partial reads, signed
-image tasks and explicit misconfiguration/failure handling. Cloud tests use
+concurrent saves, cold-instance cloud recovery, deletion, partial reads, seven-day
+cleanup, final-video-only capture and explicit misconfiguration/failure handling. Cloud tests use
 injected Postgres/Blob doubles and do not spend generation credits.
 
 Storage API references: [Vercel Blob SDK](https://vercel.com/docs/vercel-blob/using-blob-sdk)

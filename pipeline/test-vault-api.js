@@ -63,7 +63,7 @@ test('vault pages and every content operation require a signed-in account', asyn
   assert.equal((await request('/vault/film_old.mp4', alice)).status, 404);
 });
 
-test('script generation automatically archives the real endpoint response under its source', async () => {
+test('script generation returns its result without filling the vault', async () => {
   global.fetch = async (url, options) => {
     if (String(url).startsWith('https://logfare.ai/v1/chat/completions')) {
       return new Response(JSON.stringify({ choices: [{ message: { content: 'SCENE 1 — Sunrise\nThe camera rises over the sea.' } }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
@@ -74,19 +74,15 @@ test('script generation automatically archives the real endpoint response under 
     const response = await request('/api/flashloop/edit-prompt', alice, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ source: 'sjinn', title: 'Sunrise film', model: 'logfare:auto', script: 'SCENE 1 — Original', instruction: 'Add a sunrise' }) });
     const result = await response.json();
     assert.equal(response.status, 200, JSON.stringify(result));
-    assert.ok(result.vault_saved?.length);
+    assert.equal(result.vault_saved, undefined);
+    assert.match(result.script, /Sunrise/);
     const listed = await (await request('/api/vault?source=sjinn&kind=script&q=Sunrise', alice)).json();
-    assert.equal(listed.vault.length, 1);
-    assert.equal(listed.vault[0].source, 'sjinn');
-    const download = await request(listed.vault[0].download_url, alice);
-    assert.equal((await download.json()).script, result.script);
-    assert.match(download.headers.get('content-disposition'), /^attachment/);
-    assert.equal(download.headers.get('cache-control'), 'private, no-store');
+    assert.equal(listed.vault.length, 0);
   } finally { global.fetch = nativeFetch; }
 });
 
 test('accounts cannot list, stream or delete another account\'s assets; ranges and HEAD work', async () => {
-  const asset = await owned(alice, 'flashloop', () => vault.capture({ kind: 'video', buffer: Buffer.from('0123456789'), filename: 'Scene 1.mp4', mimeType: 'video/mp4', title: 'Range sample' }));
+  const asset = await owned(alice, 'flashloop', () => vault.capture({ kind: 'video', buffer: Buffer.from('0123456789'), filename: 'Scene 1.mp4', mimeType: 'video/mp4', title: 'Range sample', metadata: { stage: 'final' } }));
   assert.ok(asset);
   const response = await request(asset.url, alice, { headers: { Range: 'bytes=2-5' } });
   assert.equal(response.status, 206);
@@ -108,9 +104,9 @@ test('accounts cannot list, stream or delete another account\'s assets; ranges a
 });
 
 test('captures retain independent bytes when working outputs are overwritten or cleaned', async () => {
-  const file = path.join(root, 'frames', 'frame_01.png');
+  const file = path.join(root, 'video', 'final_story.mp4');
   await fs.writeFile(file, png);
-  const saved = await owned(alice, 'storyboard', () => vault.captureFile(file, 'image', 'Original frame'));
+  const saved = await owned(alice, 'storyboard', () => vault.captureFile(file, 'video', 'Original film', { stage: 'final' }));
   assert.ok(saved);
   await fs.writeFile(file, 'replaced by a different generation');
   await fs.unlink(file);
@@ -120,8 +116,8 @@ test('captures retain independent bytes when working outputs are overwritten or 
 
 test('parallel generation contexts preserve owner and tool labels', async () => {
   const results = await Promise.all([
-    owned(alice, 'flashloop', async () => { await new Promise(resolve => setTimeout(resolve, 25)); return vault.captureJSON({ scene: 'alice-only' }, 'Alice scene'); }),
-    owned(bob, 'sjinn', () => vault.captureJSON({ scene: 'bob-only' }, 'Bob scene'))
+    owned(alice, 'flashloop', async () => { await new Promise(resolve => setTimeout(resolve, 25)); return vault.capture({ kind: 'video', buffer: Buffer.from('alice-only'), title: 'Alice scene', filename: 'alice.mp4', metadata: { stage: 'final' } }); }),
+    owned(bob, 'sjinn', () => vault.capture({ kind: 'video', buffer: Buffer.from('bob-only'), title: 'Bob scene', filename: 'bob.mp4', metadata: { stage: 'final' } }))
   ]);
   assert.equal(results[0].source, 'flashloop');
   assert.equal(results[1].source, 'sjinn');
@@ -131,36 +127,31 @@ test('parallel generation contexts preserve owner and tool labels', async () => 
   assert.equal(listed.vault[0].title, 'Bob scene');
 });
 
-test('unsigned, tampered, wrong-owner and expired completion tickets are rejected', async () => {
-  const token = await owned(alice, 'sjinn', () => vault.ticket('https://api.paxsenix.org/task/example'));
-  assert.equal((await request('/api/vault/capture-task', bob, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ticket: token }) })).status, 403);
-  assert.equal((await request('/api/vault/capture-task', alice, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ticket: token + 'x' }) })).status, 403);
-  assert.equal(vault.verifyTicket(token, alice.user.id).source, 'sjinn');
-  assert.equal(vault.verifyTicket('not-a-ticket', alice.user.id), null);
-  await assert.rejects(() => owned(alice, 'sjinn', () => vault.ticket('https://127.0.0.1/task')), /Unsupported/);
+test('only final combined videos are captured; intermediates perform no storage work', async () => {
+  const saved = [];
+  const fake = createVault({ store: { save: async input => { saved.push(input); return { id: 'final', ...input }; } } });
+  await fake.run(async () => {
+    fake.setUser(alice.user, '/api/flashloop/combine-videos');
+    fake.setBody({ source: 'sjinn' });
+    for (const [kind, stage] of [['script','storyboard'],['image','frame-image'],['audio','narration'],['video','scene-video'],['video',undefined],['image','final']]) {
+      assert.equal(await fake.captureFile('/missing/intermediate', kind, 'Intermediate', { stage }), null);
+    }
+    assert.equal(saved.length, 0);
+    const final = await fake.capture({ kind: 'video', buffer: Buffer.from('combined'), filename: 'final.mp4', metadata: { stage: 'final' } });
+    assert.equal(final.source, 'sjinn');
+    assert.equal(saved.length, 1);
+    const response = await fake.prepareResponse(200, { ok: true, url: '/video/final.mp4' });
+    assert.deepEqual(response.vault_saved, ['final']);
+  });
 });
 
-test('completed async images are saved before replying; repeated completion is idempotent', async () => {
-  const fake = createVault({ root, isVercel: false, getSecret: () => 'test-secret', readBody: async req => req.testBody,
-    pollImageTask: async () => 'data:image/png;base64,' + png.toString('base64') });
-  const ticket = await fake.run(async () => {
-    fake.setUser(alice.user, '/api/flashloop/generate-i2i');
-    fake.setBody({ source: 'sjinn', title: 'Async image' });
-    const result = await fake.prepareResponse(200, { ok: true, taskUrl: 'https://api.paxsenix.org/task/image-test' });
-    return result.vault_ticket;
-  });
-  const ids = [];
-  for (let i = 0; i < 2; i++) {
-    await fake.run(async () => {
-      fake.setUser(alice.user, '/api/vault/capture-task');
-      const result = { writeHead(status) { this.status = status; }, end(body) { this.body = JSON.parse(body); } };
-      await fake.handle({ method: 'POST', headers: {}, user: alice.user, testBody: { ticket } }, result, new URL('http://localhost/api/vault/capture-task'));
-      assert.equal(result.status, 200);
-      assert.equal(result.body.asset.source, 'sjinn');
-      ids.push(result.body.asset.id);
-    });
+test('repeat final-film completion deduplicates within each studio', async () => {
+  for (const source of ['storyboard','flashloop','sjinn']) {
+    const input = { kind: 'video', buffer: Buffer.from('same final '+source), filename: 'final.mp4', metadata: { stage: 'final' } };
+    const first = await owned(alice, source, () => vault.capture(input));
+    const second = await owned(alice, source, () => vault.capture(input));
+    assert.ok(first); assert.equal(first.id,second.id); assert.equal(first.source,source);
   }
-  assert.equal(ids[0], ids[1]);
 });
 
 test('failed storage does not discard a finished generation and returns an explicit warning', async () => {
@@ -168,8 +159,9 @@ test('failed storage does not discard a finished generation and returns an expli
   await fake.run(async () => {
     fake.setUser(alice.user, '/api/flashloop/generate-prompt');
     fake.setBody({ source: 'flashloop', title: 'Failed archive' });
-    const result = await fake.prepareResponse(200, { ok: true, script: 'The finished generated script' });
-    assert.equal(result.script, 'The finished generated script');
+    await fake.capture({ kind: 'video', buffer: Buffer.from('finished'), filename: 'final.mp4', metadata: { stage: 'final' } });
+    const result = await fake.prepareResponse(200, { ok: true, url: '/video/final.mp4' });
+    assert.equal(result.url, '/video/final.mp4');
     assert.match(result.vault_warning, /could not be saved/);
     assert.match(result.vault_warning, /Cloud storage unavailable/);
     assert.equal(result.vault_saved, undefined);
@@ -177,7 +169,7 @@ test('failed storage does not discard a finished generation and returns an expli
 });
 
 test('background save warnings reach only their owner through status polling', async () => {
-  await owned(alice, 'storyboard', () => vault.captureFile(path.join(root, 'missing-output.png'), 'image', 'Missing output'));
+  await owned(alice, 'storyboard', () => vault.captureFile(path.join(root, 'missing-final.mp4'), 'video', 'Missing final movie', { stage: 'final' }));
   const first = await (await request('/api/status', alice)).json();
   assert.match(first.vault_warning, /could not be saved/);
   const other = await (await request('/api/status', bob)).json();
@@ -186,13 +178,15 @@ test('background save warnings reach only their owner through status polling', a
   assert.equal(anonymous.vault_warning, undefined);
 });
 
-test('an unsupported provider task still returns its generation result with an archive warning', async () => {
+test('image task responses create neither vault tickets nor archive warnings', async () => {
   const fake = createVault({ store: {}, getSecret: () => 'test' });
   await fake.run(async () => {
     fake.setUser(alice.user, '/api/flashloop/generate-i2i');
     const result = await fake.prepareResponse(200, { ok: true, taskUrl: 'https://other-provider.test/task/1' });
     assert.equal(result.ok, true);
-    assert.match(result.vault_warning, /Unsupported image task/);
+    assert.equal(result.vault_warning, undefined);
+    assert.equal(result.vault_ticket, undefined);
+    assert.equal(result.taskUrl, 'https://other-provider.test/task/1');
   });
 });
 

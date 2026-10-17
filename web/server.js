@@ -12,13 +12,6 @@ const assetVault = createVault({
   root: process.env.STORYBOARD_DATA_DIR || (process.env.VERCEL ? '/tmp' : path.resolve(__dirname, '..')),
   isVercel: !!process.env.VERCEL,
   getDb: async () => { await initAuthStore(); return authMode === 'pg' ? authPool : null; },
-  getSecret: () => SESSION_SECRET,
-  readBody: req => readBody(req),
-  pollImageTask: async taskUrl => {
-    const response = await paxFetch(taskUrl, {}, 20000);
-    const task = await response.json();
-    return response.ok && task.ok && task.status === 'done' ? task.url || task.urls?.[0] || null : null;
-  },
   log: message => logLine(message)
 });
 // ffmpeg binary resolver. Vercel's Node runtime has NO ffmpeg on PATH, so we ship
@@ -3266,7 +3259,6 @@ async function generateStoryboard(script, model, targetDuration = 120, look = ''
     logLine(`phase 2 keeping ${frames.length} frame(s) of ${frameCount} — models and top-ups exhausted`);
   }
   await writeJson(FRAMES_JSON, frames);
-  await assetVault.captureJSON({ script, characters, frames }, script.slice(0, 100), 'storyboard.json', { stage: 'storyboard', model });
   return { characters, frames };
 }
 
@@ -3318,7 +3310,6 @@ async function generateCharRefs(characters, imageModel = 'seedream-5', style = '
       const url = await waitTask(task, perTaskMin, logLine, waitInfo);
       if (job.cancelRequested) return 'cancel';
       if (url && await download(url, out)) {
-        await assetVault.captureFile(out, 'image', (c.name || c.id) + ' — character reference', { stage: 'character-reference', character_id: c.id, model: mdl, prompt: p });
         c.reference_image_url = IS_VERCEL && isLogfareLocal(url) ? await uploadToImageHost(out, logLine) : url;
         delete c.reference_error;
         job.ok++;
@@ -3532,7 +3523,6 @@ async function generateImages(frames, imageModel, ratio, style, consistency = tr
       const url = await waitTask(task, IS_VERCEL ? 4 : 25);
       if (job.cancelRequested) return 'cancel';
       if (url && await download(url, frameFile(f.frame))) {
-        await assetVault.captureFile(frameFile(f.frame), 'image', 'Frame ' + f.frame + ' — ' + (f.summary || 'story image'), { stage: 'frame-image', frame: f.frame, model: mdl, prompt: p });
         // Logfare returns a local marker, which cannot survive a Vercel cold
         // start. Publish the still and send it back to the browser for handoff.
         let storedUrl = url;
@@ -3991,7 +3981,6 @@ async function generateVideos(frames, ratio, videoModel = DEFAULT_VIDEO_MODEL, c
       const url = await waitTask(task, maxMin, logLine, info);
       if (job.cancelRequested) { logLine(`frame ${f.frame}: cancelled by user`); return 'cancel'; }
       if (url && await download(url, videoFile(f.frame))) {
-        await assetVault.captureFile(videoFile(f.frame), 'video', 'Frame ' + f.frame + ' — scene clip', { stage: 'scene-video', frame: f.frame, model: model0, prompt: p });
         job.ok++;
         logLine(`frame ${f.frame}: VIDEO DONE (${model0}${label ? ' — ' + label : ''})`);
         if (chainContinuity) {
@@ -4413,7 +4402,6 @@ async function generateFullNarration(frames, voice = DEFAULT_VOICE, language = D
 
   if (!fs.existsSync(fullAudioPath)) { logLine('full narration: concat failed'); return false; }
   logLine('full narration: audio assembled');
-  await assetVault.captureFile(fullAudioPath, 'audio', 'Full narration', { stage: 'narration', voice, language, engine });
   // Host the track so a combine on ANOTHER instance can still overlay it.
   const narrationUrl = await hostNarrationAudio();
 
@@ -4640,7 +4628,7 @@ async function combineFilm(frames, ratio = '16:9', narrationMode = 'tts', opts =
             const task = await submitTask(q);
             const url = task ? await waitTask(task, 10) : null;
             if (url) await download(url, img);
-            if (fs.existsSync(img)) { await assetVault.captureFile(img, 'image', 'Frame ' + f.frame + ' — fallback still', {stage:'frame-image', frame:f.frame, model:fbModel}); logLine(`frame ${f.frame}: emergency still generated via ${fbModel}`); break; }
+            if (fs.existsSync(img)) { logLine(`frame ${f.frame}: emergency still generated via ${fbModel}`); break; }
           } catch (e) { logLine(`frame ${f.frame}: emergency image via ${chainModel} failed: ${e.message}`); }
         }
       }
@@ -6111,7 +6099,6 @@ const routeRequest = async (req, res) => {
                 logLine(`frame ${f.frame}: ${vidModel} submitted (${dur}s, ${useImg ? 'image-to-video' : 'text-to-video'}) — returning task for polling`);
                 return sendJson(res, 202, { ok: true, pending: true, task, frame: f.frame, model: vidModel });
               }
-              await assetVault.captureFile(videoFile(f.frame), 'video', 'Frame ' + f.frame + ' — scene clip', { stage: 'scene-video', frame: f.frame, model: vidModel });
               // ---- shared finish: chain anchor + hosted clip + frame payload ----
               // (identical to the synchronous path so seamless chaining and the
               // clipUrls handoff to combine work unchanged)
@@ -7304,7 +7291,6 @@ RULES:
             logLine('logfare image: ' + selectedModel + ' ' + (refBuf ? 'i2i' : 't2i') + ' @ ' + ratio);
             const local = await generateLogfareImage(selectedModel, p, String(ratio), refBuf);
             const imageUrl = await uploadToImageHost(local, logLine);
-            await assetVault.captureFile(local, 'image', trendName || 'Scene image', { stage: 'scene-image', model: selectedModel, prompt });
             try { fs.unlinkSync(local); } catch {}
             return sendJson(res, 200, { ok: true, imageUrl, model: selectedModel, mode: refBuf ? 'i2i' : 't2i', provider: 'logfare' });
           } catch (e) {
@@ -7317,7 +7303,6 @@ RULES:
                 const p2 = sanitizePrompt(trendPromptPrefix(source, slug, trendName, tagline) + String(prompt));
                 const local2 = await generateLogfareImage(alt, p2, String(ratio), refBuf2);
                 const url2 = await uploadToImageHost(local2, logLine);
-                await assetVault.captureFile(local2, 'image', trendName || 'Scene image', { stage: 'scene-image', model: alt, prompt });
                 try { fs.unlinkSync(local2); } catch {}
                 return sendJson(res, 200, { ok: true, imageUrl: url2, model: alt, mode: refBuf2 ? 'i2i' : 't2i', provider: 'logfare' });
               } catch (e2) { logLine('logfare alternative ' + alt + ' failed: ' + e2.message); aquaFailureNote = e2.message; }
@@ -7386,7 +7371,6 @@ RULES:
             try {
               const localPath = taskUrl.slice(LOGFARE_LOCAL_PREFIX.length);
               const hosted = await uploadToImageHost(localPath, logLine);
-              await assetVault.captureFile(localPath, 'image', trendName || 'Scene image', { stage: 'scene-image', model: selectedModel, prompt });
               try { fs.unlinkSync(localPath); } catch {}
               return sendJson(res, 200, { ok: true, imageUrl: hosted, model: selectedModel, mode: 't2i', provider: 'logfare' });
             } catch (e) { logLine('logfare-local host failed: ' + e.message); }
@@ -7582,7 +7566,6 @@ RULES:
             if (!ok) { logLine(`flashloop video scene ${sceneN}: i2v failed — retrying as text-to-video`); ok = await attempt(false); }
             if (!ok) return sendJson(res, 500, { error: `${MODEL} failed for scene ${sceneN}` });
           }
-          await assetVault.captureFile(out, 'video', 'Scene ' + sceneN + ' — video clip', { stage: 'scene-video', scene: sceneN, model: MODEL, prompt });
           // Extract the final frame → host it as the chain anchor for the NEXT scene.
           let chainUrl = '';
           try {

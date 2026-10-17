@@ -45,10 +45,9 @@ consistency**, generates frame images, animates them via Grok Video / Omni Flash
 - **Seamless Scene Chaining toggle** — when ON (default), each scene's video starts from the last
   frame of the previous scene's video (extracted with ffmpeg and re-hosted to a public URL), so the
   story flows continuously across cuts. Renders scenes sequentially.
-- **Shared asset vault** — /vault automatically stores scripts/storyboard JSON,
-  character references, generated scene images/videos, full narration and final films
+- **Shared asset vault** — /vault automatically stores only final combined videos
   from Storyboard, Flashloop and SJinn. web/vault.js owns AsyncLocalStorage request
-  ownership, capture hooks, signed provider-task completion and authenticated delivery;
+  ownership, final-video capture hooks and authenticated delivery;
   web/vault-store.js owns immutable storage and metadata. Local development uses
   per-account files beneath gitignored vault/v2/; Vercel requires Postgres
   (DATABASE_URL) + a PRIVATE Vercel Blob store (OIDC + BLOB_STORE_ID, or legacy
