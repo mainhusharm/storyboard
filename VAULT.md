@@ -26,7 +26,9 @@ data directory; back it up along with the app's account data.
    **DATABASE_URL**. This is also the existing application's account database.
 2. In the project's **Storage** tab, create and connect a **private Vercel Blob**
    store for Production and Preview. Vercel authenticates with its automatically
-   refreshed OIDC token and **BLOB_STORE_ID**. The custom-prefix name
+   refreshed OIDC token and **BLOB_STORE_ID**. In Functions the token is supplied
+   through the request context; it does not have to appear as a manually added
+   VERCEL_OIDC_TOKEN environment variable. The official runtime helper detects it. The custom-prefix name
    **BLOB_READ_WRITE_TOKEN_STORE_ID** is also supported. Keep those generated
    names unchanged; neither the store id nor a webhook public key is a secret
    read/write token. Legacy **BLOB_READ_WRITE_TOKEN** authentication still works.

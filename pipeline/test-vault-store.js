@@ -329,3 +329,42 @@ test('a store id or webhook key alone cannot authenticate Blob operations', asyn
   assert.equal((await store.status()).ready, false);
   await assert.rejects(store.save(asset()), { code: 'VAULT_NOT_CONFIGURED' });
 });
+
+for (const variable of ['BLOB_STORE_ID', 'BLOB_READ_WRITE_TOKEN_STORE_ID']) {
+  test('runtime request OIDC works without environment token: ' + variable, async t => {
+    const { AsyncLocalStorage } = require('node:async_hooks');
+    const { getVercelOidcTokenSync } = require('@vercel/oidc');
+    const requestContext = new AsyncLocalStorage();
+    const symbol = Symbol.for('@vercel/request-context');
+    const original = globalThis[symbol];
+    globalThis[symbol] = { get: () => requestContext.getStore() };
+    t.after(() => { if (original === undefined) delete globalThis[symbol]; else globalThis[symbol] = original; });
+    process.env[variable] = 'store_test';
+    assert.equal(process.env.VERCEL_OIDC_TOKEN, undefined);
+    assert.equal(process.env.BLOB_READ_WRITE_TOKEN, undefined);
+    const root = await temporary(t); const db = fakeDatabase(); const blob = fakeBlob();
+    const observed = [];
+    for (const method of ['put', 'get', 'del']) {
+      const originalMethod = blob[method];
+      blob[method] = async (...args) => {
+        const options = args[method === 'put' ? 2 : 1];
+        assert.equal(options.storeId, 'store_test');
+        assert.equal(options.oidcToken, undefined, 'Never cache a runtime token in SDK options');
+        observed.push(getVercelOidcTokenSync());
+        return originalMethod(...args);
+      };
+    }
+    const store = createVaultStore({ root, isVercel: true, getDb: async () => db, blob });
+    let saved;
+    await requestContext.run({ headers: { 'x-vercel-oidc-token': 'request-one-token' } }, async () => {
+      assert.equal((await store.status()).ready, true);
+      saved = await store.save(asset());
+    });
+    await requestContext.run({ headers: { 'x-vercel-oidc-token': 'request-two-token' } }, async () => {
+      assert.equal(await contents(await store.open('alice', saved.id)), '0123456789');
+      assert.equal(await store.remove('alice', saved.id), true);
+    });
+    assert.deepEqual(observed, ['request-one-token', 'request-two-token', 'request-two-token']);
+    assert.equal((await store.status()).ready, false, 'Do not reuse credentials outside their request');
+  });
+}

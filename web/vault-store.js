@@ -156,7 +156,15 @@ function createVaultStore({ root, isVercel = false, getDb = async () => null, bl
 
   async function cloud() {
     const hasToken = !!process.env.BLOB_READ_WRITE_TOKEN;
-    const hasOidc = !!(blobOptions().storeId && process.env.VERCEL_OIDC_TOKEN);
+    let hasOidc = false;
+    if (blobOptions().storeId) {
+      try {
+        // Functions receive OIDC in Vercel's request context, not necessarily
+        // process.env. Check availability without caching or passing the token;
+        // the Blob SDK obtains and refreshes it separately on every operation.
+        hasOidc = !!require('@vercel/oidc').getVercelOidcTokenSync();
+      } catch { /* A real static read/write token remains a supported fallback. */ }
+    }
     if (!hasToken && !hasOidc) throw unavailable('Connect a private Vercel Blob store with BLOB_STORE_ID and Vercel OIDC authentication, or set BLOB_READ_WRITE_TOKEN.');
     if (!databaseReady) {
       databaseReady = (async () => {
