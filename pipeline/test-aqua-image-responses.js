@@ -28,8 +28,17 @@ assert.equal(context.aquaUrlFrom({ result: { b64_json: 'YWJj' } }), 'data:image/
   assert.equal(await context.generateAquaImage('aqua:nanobanana-pro', 'portrait'), url);
   assert.equal(requests.length, 2, 'a task is submitted only once before polling');
   requests = [];
+  let challengeHits = 0;
+  reply = async () => {
+    if (challengeHits < 2) { challengeHits++; return new Response('<html><title>Just a moment...</title></html>', { status: 403, headers: { 'Content-Type': 'text/html' } }); }
+    return new Response(JSON.stringify({ images: [{ url }] }));
+  };
+  assert.equal(await context.generateAquaImage('aqua:agnes-image', 'portrait'), url);
+  assert.equal(challengeHits, 2, 'transient Cloudflare challenges are retried, not failed permanently');
+  requests = [];
   reply = async () => new Response(JSON.stringify({ error: 'invalid key' }), { status: 401 });
-  await assert.rejects(context.generateAquaImage('aqua:agnes-image', 'portrait'), /HTTP 401.*invalid key/);
-  assert.equal(requests.length, 1, 'permanent failures do not resubmit paid image requests');
-  console.log('PASS: Aqua direct URLs, arrays, nested base64, task polling, and actionable permanent errors');
+   await assert.rejects(context.generateAquaImage('aqua:agnes-image', 'portrait'), /HTTP 401.*invalid key/);
+   assert.equal(requests.length, 1, 'permanent failures do not resubmit paid image requests');
+-  console.log('PASS: Aqua direct URLs, arrays, nested base64, task polling, and actionable permanent errors');
++  console.log('PASS: Aqua direct URLs, arrays, nested base64, task polling, challenge backoff, and actionable permanent errors');
 })().catch(error => { console.error(error); process.exitCode = 1; });

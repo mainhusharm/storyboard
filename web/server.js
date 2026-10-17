@@ -1810,7 +1810,26 @@ async function aquaPollImage(taskUrl, maxMs = 170000) {
   throw new Error('aqua task still ' + (last || 'pending') + ' after ' + Math.round(maxMs / 1000) + 's');
 }
 
+// api.aquadevs.com also challenges BURSTS: five character references firing at
+// once from one IP trips the bot heuristic even with a valid key and browser
+// headers. Serialize Aqua renders through a small gate (max 2 in flight, 1s
+// spacing between starts).
+const aquaQueue = [];
+let aquaActive = 0;
+function aquaPump() {
+  while (aquaActive < 2 && aquaQueue.length) { aquaActive++; aquaQueue.shift()(); }
+}
+function aquaSlot() {
+  return new Promise((release) => { aquaQueue.push(release); aquaPump(); });
+}
+async function withAquaSlot(fn) {
+  await aquaSlot();
+  try { return await fn(); }
+  finally { aquaActive--; setTimeout(aquaPump, 1000); }
+}
+
 async function generateAquaImage(model, prompt, ratio = '9:16', imageUrl = '') {
+  return withAquaSlot(async () => {
   const id = String(model).replace(/^aqua:/, '');
   if (!AQUA_IMAGE_MODELS.includes(id)) throw new Error('unknown Aqua image model: ' + id);
   if (!AQUA_API_KEY) throw new Error('no AquaDevs key (env AQUA_API_KEY or pipeline/aqua_apikey.txt)');
@@ -1838,17 +1857,21 @@ async function generateAquaImage(model, prompt, ratio = '9:16', imageUrl = '') {
         logLine(`aqua image: ${id} queued (${(j && j.status) || 'pending'}) - polling`);
         return await aquaPollImage(taskUrl);
       }
-      // A task-style response (task_id) is not used by these models — keep it clear.
-      // Cloudflare challenge (403 "Just a moment...") — retry with a pause.
-      const isChallenge = res.status === 403 && /just a moment|cf-|cloudflare/i.test(text);
-      lastErr = Object.assign(new Error(`Aqua ${id} HTTP ${res.status}: ${isChallenge ? 'Cloudflare challenge' : (j ? JSON.stringify(j).slice(0, 400) : text.slice(0, 200))}`), { code: 'AQUA_IMAGE_ERROR', permanent: res.status >= 400 && res.status < 500 && ![408, 429].includes(res.status) });
+      // A Cloudflare "managed challenge" (403 "Just a moment...") is a TRANSIENT
+      // edge block — the API key is never seen by it. The chat path retries
+      // through these successfully, so images earn the same escalating backoff
+      // instead of a permanent fail. Only genuine API rejections (bad key, bad
+      // model) stay permanent so paid retries are never wasted.
+      const isChallenge = res.status === 403 && /just a moment|cf-|cloudflare|<html/i.test(text);
+      lastErr = Object.assign(new Error(`Aqua ${id} HTTP ${res.status}: ${isChallenge ? 'Cloudflare challenge' : (j ? JSON.stringify(j).slice(0, 400) : text.slice(0, 200))}`), { code: 'AQUA_IMAGE_ERROR', permanent: !isChallenge && res.status >= 400 && res.status < 500 && ![408, 429].includes(res.status) });
       if (lastErr.permanent) throw lastErr;
-      if (isChallenge) await new Promise(r => setTimeout(r, 5000 * attempt));
-      logLine(`aqua image ${id} attempt ${attempt}: ${lastErr.message}`);
+      if (isChallenge) { logLine(`aqua image ${id}: Cloudflare challenge (attempt ${attempt}) — backing off`); await new Promise(r => setTimeout(r, 8000 * attempt)); }
+      else logLine(`aqua image ${id} attempt ${attempt}: ${lastErr.message}`);
     } catch (e) { if (e.permanent || e.terminal) throw e; lastErr = e; logLine(`aqua image ${id} attempt ${attempt}: ${e.message}`); }
     await new Promise(r => setTimeout(r, 3000 * attempt));
   }
   throw lastErr || new Error('aqua image failed');
+  });
  }
 
 // Persist a finished Aqua render (a direct URL or a base64 data: URL) as a local
