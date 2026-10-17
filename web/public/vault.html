@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Your Vault — Storyboard Studio</title>
+  <link rel="stylesheet" href="/vault.css">
+</head>
+<body>
+  <header class="site-header">
+    <a href="/" class="brand"><span class="brand-mark">S</span><span>STORYBOARD <b>STUDIO</b></span></a>
+    <nav aria-label="Studio navigation">
+      <a href="/storyboard">Storyboard</a>
+      <a href="/trends?source=flashloop">Flashloop</a>
+      <a href="/trends?source=sjinn">SJinn</a>
+      <a href="/vault" aria-current="page">Vault</a>
+    </nav>
+    <div class="account"><span id="authName" hidden></span><button id="btnLogout" hidden>Log out</button></div>
+  </header>
+
+  <main class="wrap">
+    <section class="intro" aria-labelledby="pageTitle">
+      <div><p class="eyebrow"><span class="tiny-square"></span> YOUR CREATIVE LIBRARY</p><h1 id="pageTitle">Everything you create.<br><span>One place to keep it.</span></h1>
+      <p class="intro-copy">Find your generated scripts, images, audio and videos from Storyboard, Flashloop and SJinn. Preview, download and come back whenever you need them.</p></div>
+      <div class="vault-mark" aria-hidden="true"><svg viewBox="0 0 100 100" fill="none"><rect x="15" y="15" width="70" height="70" rx="14"/><circle cx="50" cy="50" r="19"/><path d="M50 31v12m0 14v12M31 50h12m14 0h12M36.5 36.5l8.5 8.5m10 10l8.5 8.5m-27 0L45 55m10-10l8.5-8.5"/><circle cx="50" cy="50" r="7"/></svg></div>
+    </section>
+
+    <div id="storageStatus" class="storage-status" role="status"><span class="status-dot"></span><span id="storageMessage">Checking your storage…</span></div>
+    <section class="library" aria-label="Saved assets">
+      <div class="toolbar">
+        <div class="source-tabs" role="group" aria-label="Filter by studio">
+          <button data-source="" aria-pressed="true">All studios</button><button data-source="storyboard" aria-pressed="false">Storyboard</button><button data-source="flashloop" aria-pressed="false">Flashloop</button><button data-source="sjinn" aria-pressed="false">SJinn</button>
+        </div>
+        <button id="refresh" class="refresh" aria-label="Refresh vault"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6.1 7a7 7 0 0 1 11.6-1L20 9M4 15l2.3 3A7 7 0 0 0 18 17"/></svg> Refresh</button>
+      </div>
+      <div class="search-row">
+        <div class="search-field"><svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></svg><label class="sr-only" for="search">Search your vault</label><input id="search" type="search" placeholder="Search titles and filenames…" autocomplete="off" maxlength="200"></div>
+        <label class="kind-field"><span class="sr-only">Asset type</span><select id="kind"><option value="">All types</option><option value="script">Scripts</option><option value="image">Images</option><option value="audio">Audio</option><option value="video">Videos</option></select></label>
+      </div>
+      <div class="results-bar"><span id="resultsCount" role="status" aria-live="polite">Loading your library…</span><span>Newest first</span></div>
+      <div id="error" class="error-message" role="alert" hidden></div>
+      <div id="assets" class="asset-grid" aria-busy="true"></div>
+      <div id="empty" class="empty-state" hidden></div>
+      <div class="more-row"><button id="loadMore" hidden>Load more assets</button></div>
+    </section>
+    <p class="footnote">Your vault is private to your account. Successful generations are saved automatically when storage is ready.</p>
+  </main>
+
+  <dialog id="preview" aria-labelledby="previewTitle">
+    <div class="dialog-top"><div><p class="eyebrow" id="previewKind">VAULT PREVIEW</p><h2 id="previewTitle"></h2></div><button id="closePreview" class="icon-button" aria-label="Close preview">✕</button></div>
+    <div id="previewBody" class="preview-body"></div>
+    <div class="dialog-bottom"><span id="previewMeta"></span><button id="previewDownload" class="primary">Download</button></div>
+  </dialog>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="/auth.js"></script>
+  <script src="/vault.js"></script>
+</body>
+</html>

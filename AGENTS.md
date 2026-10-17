@@ -45,18 +45,20 @@ consistency**, generates frame images, animates them via Grok Video / Omni Flash
 - **Seamless Scene Chaining toggle** — when ON (default), each scene's video starts from the last
   frame of the previous scene's video (extracted with ffmpeg and re-hosted to a public URL), so the
   story flows continuously across cuts. Renders scenes sequentially.
-- **📼 Vault — every finished film is archived automatically**. `final_story.mp4` is overwritten by
-  each new combine, so every successful Combine copies the finished film to `vault/film_<ts>.mp4`
-  and indexes it in `vault/index.json` (both gitignored; capped at 100 entries, oldest pruned).
-  `GET /api/vault` lists entries (`file_url` present only when the copy exists on that instance),
-  `POST /api/vault {action:"delete", id}` removes one, and `/vault/<file>` serves the mp4. The
-  archive hook sits AFTER the film is final in all three combine paths: Vercel `/api/combine`
-  (after the film is hosted — the hosted URL is the durable copy across instances), local
-  `/api/combine`, and the run-all pipeline (a final `vault` step AFTER narration, because the
-  narration step rewrites `final_story.mp4`). Failed combines never add entries. The Storyboard
-  SPA's 📼 Vault button plays / downloads / deletes saved films; on Vercel the browser also keeps a
-  localStorage record (`sb_vault`) of every hosted film, merged into the panel so entries survive
-  instance /tmp churn.
+- **Shared asset vault** — /vault automatically stores scripts/storyboard JSON,
+  character references, generated scene images/videos, full narration and final films
+  from Storyboard, Flashloop and SJinn. web/vault.js owns AsyncLocalStorage request
+  ownership, capture hooks, signed provider-task completion and authenticated delivery;
+  web/vault-store.js owns immutable storage and metadata. Local development uses
+  per-account files beneath gitignored vault/v2/; Vercel requires Postgres
+  (DATABASE_URL) + a PRIVATE Vercel Blob store (BLOB_READ_WRITE_TOKEN). It never
+  falls back to /tmp or browser localStorage for durable cloud assets. Saves complete
+  before synchronous responses; failures preserve generation output and surface
+  vault_warning. GET /api/vault lists the signed-in account only; DELETE
+  /api/vault/:id and GET /api/vault/:id/content enforce the same owner, including
+  byte-range reads. All distinct bytes are retained until deleted; exact duplicate
+  polls deduplicate per owner/source/type. The old unowned vault index is left intact
+  and not automatically assigned. Setup and tests: VAULT.md, npm run test:vault.
 - **AquaDevs image models in Storyboard** — the image-model dropdown offers `aqua:nanobanana-pro`
   ("Nano Banana Pro — AquaDevs") and `aqua:agnes-image` ("Agnes Image — AquaDevs").
   `submitTask`/`submitImg2ImgTask` intercept `aqua:` ids before the PaxSenix path and render via

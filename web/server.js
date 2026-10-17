@@ -7,6 +7,20 @@ const path = require('path');
 const crypto = require('crypto');
 const { execFile } = require('child_process');
 const { URL } = require('url');
+const { createVault } = require('./vault');
+const assetVault = createVault({
+  root: process.env.STORYBOARD_DATA_DIR || (process.env.VERCEL ? '/tmp' : path.resolve(__dirname, '..')),
+  isVercel: !!process.env.VERCEL,
+  getDb: async () => { await initAuthStore(); return authMode === 'pg' ? authPool : null; },
+  getSecret: () => SESSION_SECRET,
+  readBody: req => readBody(req),
+  pollImageTask: async taskUrl => {
+    const response = await paxFetch(taskUrl, {}, 20000);
+    const task = await response.json();
+    return response.ok && task.ok && task.status === 'done' ? task.url || task.urls?.[0] || null : null;
+  },
+  log: message => logLine(message)
+});
 // ffmpeg binary resolver. Vercel's Node runtime has NO ffmpeg on PATH, so we ship
 // the platform binary via the `ffmpeg-static` package (installed per-OS at npm
 // install; linux-x64 on Vercel). Local dev falls back to `ffmpeg` on PATH.
@@ -20,11 +34,10 @@ function ffmpegBin() {
 
 const IS_VERCEL = !!process.env.VERCEL;
 const VERCEL_TIMEOUT = IS_VERCEL ? 5000 : 25000;
-const ROOT = IS_VERCEL ? '/tmp' : path.resolve(__dirname, '..');
+const ROOT = process.env.STORYBOARD_DATA_DIR || (IS_VERCEL ? '/tmp' : path.resolve(__dirname, '..'));
 const PUBLIC = path.join(__dirname, 'public');
 const FRAMES_DIR = path.join(ROOT, 'frames');
 const VIDEO_DIR = path.join(ROOT, 'video');
-const VAULT_DIR = path.join(ROOT, 'vault');
 const STORYBOARD_DIR = path.join(ROOT, 'storyboard');
 const FRAMES_JSON = path.join(STORYBOARD_DIR, 'frames.json');
 const CHARS_JSON = path.join(STORYBOARD_DIR, 'characters.json');
@@ -3216,6 +3229,7 @@ async function generateStoryboard(script, model, targetDuration = 120, look = ''
     logLine(`phase 2 keeping ${frames.length} frame(s) of ${frameCount} — models and top-ups exhausted`);
   }
   await writeJson(FRAMES_JSON, frames);
+  await assetVault.captureJSON({ script, characters, frames }, script.slice(0, 100), 'storyboard.json', { stage: 'storyboard', model });
   return { characters, frames };
 }
 
@@ -3262,6 +3276,7 @@ async function generateCharRefs(characters, imageModel = 'seedream-5', style = '
       const url = await waitTask(task, perTaskMin);
       if (job.cancelRequested) return 'cancel';
       if (url && await download(url, out)) {
+        await assetVault.captureFile(out, 'image', (c.name || c.id) + ' — character reference', { stage: 'character-reference', character_id: c.id, model: mdl, prompt: p });
         c.reference_image_url = IS_VERCEL && isLogfareLocal(url) ? await uploadToImageHost(out, logLine) : url;
         delete c.reference_error;
         job.ok++;
@@ -3474,6 +3489,7 @@ async function generateImages(frames, imageModel, ratio, style, consistency = tr
       const url = await waitTask(task, IS_VERCEL ? 4 : 25);
       if (job.cancelRequested) return 'cancel';
       if (url && await download(url, frameFile(f.frame))) {
+        await assetVault.captureFile(frameFile(f.frame), 'image', 'Frame ' + f.frame + ' — ' + (f.summary || 'story image'), { stage: 'frame-image', frame: f.frame, model: mdl, prompt: p });
         // Logfare returns a local marker, which cannot survive a Vercel cold
         // start. Publish the still and send it back to the browser for handoff.
         let storedUrl = url;
@@ -3931,6 +3947,7 @@ async function generateVideos(frames, ratio, videoModel = DEFAULT_VIDEO_MODEL, c
       const url = await waitTask(task, maxMin, logLine, info);
       if (job.cancelRequested) { logLine(`frame ${f.frame}: cancelled by user`); return 'cancel'; }
       if (url && await download(url, videoFile(f.frame))) {
+        await assetVault.captureFile(videoFile(f.frame), 'video', 'Frame ' + f.frame + ' — scene clip', { stage: 'scene-video', frame: f.frame, model: model0, prompt: p });
         job.ok++;
         logLine(`frame ${f.frame}: VIDEO DONE (${model0}${label ? ' — ' + label : ''})`);
         if (chainContinuity) {
@@ -4352,10 +4369,12 @@ async function generateFullNarration(frames, voice = DEFAULT_VOICE, language = D
 
   if (!fs.existsSync(fullAudioPath)) { logLine('full narration: concat failed'); return false; }
   logLine('full narration: audio assembled');
+  await assetVault.captureFile(fullAudioPath, 'audio', 'Full narration', { stage: 'narration', voice, language, engine });
   // Host the track so a combine on ANOTHER instance can still overlay it.
   const narrationUrl = await hostNarrationAudio();
 
   const overlaid = await overlayNarrationOnFinal(path.join(VIDEO_DIR, 'final_story.mp4'), fullAudioPath, opts);
+  if (overlaid) await archiveToVault({ filePath: path.join(VIDEO_DIR, 'final_story.mp4'), title: 'Finished film with narration', frames });
   return { ok: !!overlaid, narrationUrl };
 }
 
@@ -4469,46 +4488,13 @@ function emergencyImageChain(preferred) {
     (IMAGE_MODELS.includes(m) || isLogfareImageModel(m) || isNovitaImageModel(m) || isAquaImageModel(m)));
 }
 
-// ---- Vault: permanent archive of every finished film ----
-// final_story.mp4 is OVERWRITTEN by every new combine, so each finished film is
-// copied here (vault/film_<timestamp>.mp4) and indexed in vault/index.json the
-// moment it is ready. The user can browse/download/delete entries any time.
-const VAULT_INDEX = path.join(VAULT_DIR, 'index.json');
-const VAULT_MAX_ENTRIES = 100;
-function vaultId() {
-  const d = new Date();
-  const p = n => String(n).padStart(2, '0');
-  return `film_${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}_${Math.random().toString(36).slice(2, 6)}`;
-}
-// Copy the finished film into the vault and index it. NEVER throws — a vault
-// failure must not fail the combine that produced the film.
-async function archiveToVault({ title = '', filePath = '', hostedUrl = '', frames = [], ratio = '16:9' } = {}) {
-  try {
-    if (!filePath || !fs.existsSync(filePath) || !fs.statSync(filePath).size) return null;
-    await fsp.mkdir(VAULT_DIR, { recursive: true });
-    const id = vaultId();
-    const file = `${id}.mp4`;
-    await fsp.copyFile(filePath, path.join(VAULT_DIR, file));
-    const entry = {
-      id, file,
-      title: String(title || '').replace(/\s+/g, ' ').trim().slice(0, 80) || 'Story film',
-      created_at: new Date().toISOString(),
-      frames: Array.isArray(frames) ? frames.length : 0,
-      duration_sec: Array.isArray(frames) ? Math.round(frames.reduce((s, f) => s + (f.duration_sec || 6), 0)) : 0,
-      ratio, hosted_url: hostedUrl || '',
-      size_bytes: fs.statSync(path.join(VAULT_DIR, file)).size
-    };
-    const index = (await readJson(VAULT_INDEX)) || [];
-    index.unshift(entry);
-    // Prune the oldest entries beyond the cap (and their files).
-    while (index.length > VAULT_MAX_ENTRIES) {
-      const old = index.pop();
-      if (old && old.file) { try { fs.unlinkSync(path.join(VAULT_DIR, old.file)); } catch {} }
-    }
-    await writeJson(VAULT_INDEX, index);
-    logLine(`vault: film archived as ${file} (${(entry.size_bytes / 1048576).toFixed(1)} MB, ${index.length} saved)`);
-    return entry;
-  } catch (e) { logLine(`vault: archive failed — ${e.message}`); return null; }
+// Finished films use the same immutable, account-scoped vault as every other output.
+async function archiveToVault({ title = '', filePath = '', frames = [], ratio = '16:9' } = {}) {
+  if (!filePath || !fs.existsSync(filePath) || !fs.statSync(filePath).size) return null;
+  return assetVault.captureFile(filePath, 'video', title || 'Finished film', {
+    stage: 'final', frame_count: frames.length, ratio,
+    duration_sec: frames.reduce((sum, f) => sum + (Number(f.duration_sec) || 6), 0)
+  });
 }
 
 // ================================ FINAL FILM CONCATENATION ================================
@@ -4605,7 +4591,7 @@ async function combineFilm(frames, ratio = '16:9', narrationMode = 'tts', opts =
             const task = await submitTask(q);
             const url = task ? await waitTask(task, 10) : null;
             if (url) await download(url, img);
-            if (fs.existsSync(img)) { logLine(`frame ${f.frame}: emergency still generated via ${fbModel}`); break; }
+            if (fs.existsSync(img)) { await assetVault.captureFile(img, 'image', 'Frame ' + f.frame + ' — fallback still', {stage:'frame-image', frame:f.frame, model:fbModel}); logLine(`frame ${f.frame}: emergency still generated via ${fbModel}`); break; }
           } catch (e) { logLine(`frame ${f.frame}: emergency image via ${chainModel} failed: ${e.message}`); }
         }
       }
@@ -5016,7 +5002,11 @@ async function generateInfluencerVideo(infl, contentId, ratio, videoDuration = 6
 // ================================ HTTP SERVER ================================
 
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.png': 'image/png', '.jpg': 'image/jpeg', '.mp4': 'video/mp4', '.mp3': 'audio/mpeg', '.json': 'application/json' };
-function sendJson(res, code, obj) { res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(obj)); }
+async function sendJson(res, code, obj) {
+  obj = await assetVault.prepareResponse(code, obj);
+  res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+  res.end(JSON.stringify(obj));
+}
 
 // ================================ AUTH (login / signup) ================================
 // Zero-framework auth: scrypt password hashing + random session tokens.
@@ -5462,7 +5452,7 @@ async function requireCredits(req, res, amount, label) {
 // API clients can also authenticate with `Authorization: Bearer <token>` (the browser
 // SPA itself authenticates via the HttpOnly sb_session cookie).
 function bearerToken(req) { return (req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim() || null; }
-function readBody(req) { return new Promise((resolve, reject) => { let s = ''; req.on('data', c => { s += c; if (s.length > 15e6) req.destroy(); }); req.on('end', () => { try { resolve(s ? JSON.parse(s) : {}); } catch (e) { reject(e); } }); req.on('error', reject); }); }
+function readBody(req) { return new Promise((resolve, reject) => { let s = ''; req.on('data', c => { s += c; if (s.length > 15e6) req.destroy(); }); req.on('end', () => { try { const body = s ? JSON.parse(s) : {}; assetVault.setBody(body); resolve(body); } catch (e) { reject(e); } }); req.on('error', reject); }); }
 async function runJobOnVercel(res, jobFn, successData = { ok: true }) {
   try {
     // jobFn may return extra response fields (e.g. the hosted narration URL) —
@@ -5516,7 +5506,7 @@ const trendTemplates = require('./trend-template')({
 const trendTemplateBlock = (t) => trendTemplates.trendTemplateBlock(t);
 const enforceTrendTemplate = (prompt, template, kind) => trendTemplates.enforceTrendTemplate(prompt, template, kind);
 
-const requestHandler = async (req, res) => {
+const routeRequest = async (req, res) => {
   // Normalize URL for Vercel (catch-all / rewrites may alter req.url)
   let rawUrl = req.url || '/';
   if (IS_VERCEL) {
@@ -5551,6 +5541,8 @@ const requestHandler = async (req, res) => {
   try {
     // --- API ---
     if (p === '/api/status') {
+      const statusUser = await getUserBySessionToken(authToken(req));
+      if (statusUser) assetVault.setUser(statusUser, p);
       reapStaleJob();
       // A cancelled job stays "cancelling" until it goes quiet, so the UI can say
       // so instead of pretending the run finished. Once nothing has logged for a
@@ -5655,7 +5647,10 @@ const requestHandler = async (req, res) => {
       const user = await requireApiAuth(req, res);
       if (!user) return;
       req.user = user;
+      assetVault.setUser(user, p);
     }
+
+    if (await assetVault.handle(req, res, u)) return;
 
     if (p === '/api/cancel' && req.method === 'POST') {
       reapStaleJob();
@@ -5705,28 +5700,6 @@ const requestHandler = async (req, res) => {
       const finalStat = await fsp.stat(path.join(VIDEO_DIR, 'final_story.mp4')).catch(() => null);
       const hasFinal = !!finalStat && finalStat.size > 0;
       return sendJson(res, 200, { characters: chars, frames, hasFinal, finalVersion: finalStat?.mtimeMs || null });
-    }
-
-    // Vault — every finished film, archived automatically after Combine.
-    // GET lists entries (file_url only when the copy exists on THIS instance);
-    // POST {action:'delete', id} removes an entry and its file.
-    if (p === '/api/vault') {
-      if (req.method === 'POST') {
-        const body = await readBody(req).catch(() => ({}));
-        if (body.action === 'delete' && body.id) {
-          const index = (await readJson(VAULT_INDEX)) || [];
-          const idx = index.findIndex(e => e.id === body.id);
-          if (idx >= 0) {
-            const [gone] = index.splice(idx, 1);
-            if (gone.file) { try { fs.unlinkSync(path.join(VAULT_DIR, gone.file)); } catch {} }
-            await writeJson(VAULT_INDEX, index);
-            logLine(`vault: deleted ${gone.id}`);
-          }
-        }
-      }
-      const index = (await readJson(VAULT_INDEX)) || [];
-      const vault = index.map(e => ({ ...e, file_url: e.file && fs.existsSync(path.join(VAULT_DIR, e.file)) ? '/vault/' + e.file : '' }));
-      return sendJson(res, 200, { vault });
     }
 
     if (p === '/api/storyboard' && req.method === 'POST') {
@@ -6088,6 +6061,7 @@ const requestHandler = async (req, res) => {
                 logLine(`frame ${f.frame}: ${vidModel} submitted (${dur}s, ${useImg ? 'image-to-video' : 'text-to-video'}) — returning task for polling`);
                 return sendJson(res, 202, { ok: true, pending: true, task, frame: f.frame, model: vidModel });
               }
+              await assetVault.captureFile(videoFile(f.frame), 'video', 'Frame ' + f.frame + ' — scene clip', { stage: 'scene-video', frame: f.frame, model: vidModel });
               // ---- shared finish: chain anchor + hosted clip + frame payload ----
               // (identical to the synchronous path so seamless chaining and the
               // clipUrls handoff to combine work unchanged)
@@ -7280,6 +7254,7 @@ RULES:
             logLine('logfare image: ' + selectedModel + ' ' + (refBuf ? 'i2i' : 't2i') + ' @ ' + ratio);
             const local = await generateLogfareImage(selectedModel, p, String(ratio), refBuf);
             const imageUrl = await uploadToImageHost(local, logLine);
+            await assetVault.captureFile(local, 'image', trendName || 'Scene image', { stage: 'scene-image', model: selectedModel, prompt });
             try { fs.unlinkSync(local); } catch {}
             return sendJson(res, 200, { ok: true, imageUrl, model: selectedModel, mode: refBuf ? 'i2i' : 't2i', provider: 'logfare' });
           } catch (e) {
@@ -7292,6 +7267,7 @@ RULES:
                 const p2 = sanitizePrompt(trendPromptPrefix(source, slug, trendName, tagline) + String(prompt));
                 const local2 = await generateLogfareImage(alt, p2, String(ratio), refBuf2);
                 const url2 = await uploadToImageHost(local2, logLine);
+                await assetVault.captureFile(local2, 'image', trendName || 'Scene image', { stage: 'scene-image', model: alt, prompt });
                 try { fs.unlinkSync(local2); } catch {}
                 return sendJson(res, 200, { ok: true, imageUrl: url2, model: alt, mode: refBuf2 ? 'i2i' : 't2i', provider: 'logfare' });
               } catch (e2) { logLine('logfare alternative ' + alt + ' failed: ' + e2.message); aquaFailureNote = e2.message; }
@@ -7360,6 +7336,7 @@ RULES:
             try {
               const localPath = taskUrl.slice(LOGFARE_LOCAL_PREFIX.length);
               const hosted = await uploadToImageHost(localPath, logLine);
+              await assetVault.captureFile(localPath, 'image', trendName || 'Scene image', { stage: 'scene-image', model: selectedModel, prompt });
               try { fs.unlinkSync(localPath); } catch {}
               return sendJson(res, 200, { ok: true, imageUrl: hosted, model: selectedModel, mode: 't2i', provider: 'logfare' });
             } catch (e) { logLine('logfare-local host failed: ' + e.message); }
@@ -7555,6 +7532,7 @@ RULES:
             if (!ok) { logLine(`flashloop video scene ${sceneN}: i2v failed — retrying as text-to-video`); ok = await attempt(false); }
             if (!ok) return sendJson(res, 500, { error: `${MODEL} failed for scene ${sceneN}` });
           }
+          await assetVault.captureFile(out, 'video', 'Scene ' + sceneN + ' — video clip', { stage: 'scene-video', scene: sceneN, model: MODEL, prompt });
           // Extract the final frame → host it as the chain anchor for the NEXT scene.
           let chainUrl = '';
           try {
@@ -7674,6 +7652,7 @@ await new Promise((resolve) => {
           let finalUrl = '';
           try { finalUrl = await uploadVideoClip(finalPath, logLine); }
           catch (e) { logLine(`flashloop combine: final upload failed (${e.message}) — local path only`); }
+          await assetVault.captureFile(finalPath, 'video', body.title || 'Finished film', { stage: 'final', scene_count: normClips.length, ratio });
           logLine(`flashloop combine: final video ready (${normClips.length} clips, ${(fs.statSync(finalPath).size / 1048576).toFixed(1)} MB)${finalUrl ? ', hosted' : ''}`);
           return sendJson(res, 200, { ok: true, video_path: '/video/flash_final.mp4', clip_url: finalUrl, hosted_url: finalUrl, clips: normClips.length });
         } catch (e) { return sendJson(res, 500, { error: String(e.message || e) }); }
@@ -8428,7 +8407,8 @@ ${infl.description || '(no description - describe a beautiful confident influenc
     let filePath;
     if (p.startsWith('/frames/')) filePath = path.join(FRAMES_DIR, decodeURIComponent(p.slice('/frames/'.length)));
     else if (p.startsWith('/video/')) filePath = path.join(VIDEO_DIR, decodeURIComponent(p.slice('/video/'.length)));
-    else if (p.startsWith('/vault/')) filePath = path.join(VAULT_DIR, decodeURIComponent(p.slice('/vault/'.length)));
+    else if (p.startsWith('/vault/')) { res.writeHead(404); return res.end('Use the authenticated vault library.'); }
+    else if (p === '/vault') filePath = path.join(PUBLIC, 'vault.html');
     else if (p === '/' || p === '/home') filePath = path.join(PUBLIC, 'home.html');
     else if (p === '/login' || p === '/signup') filePath = path.join(PUBLIC, 'login.html');
     else if (p === '/storyboard' || p === '/index') filePath = path.join(PUBLIC, 'storyboard.html');
@@ -8440,7 +8420,7 @@ ${infl.description || '(no description - describe a beautiful confident influenc
     // Protect tool pages (local server): require a valid session, redirect to /login.
     // The landing page (/) is PUBLIC so new visitors can see the product first.
     // On Vercel the static pages are gated client-side via /api/auth/me instead.
-    if (!IS_VERCEL && (p === '/storyboard' || p === '/index' || p === '/influencer' || p === '/trends' || p === '/flashloop-studio' || /^\/effects\/[^/]+$/.test(p))) {
+    if (!IS_VERCEL && (p === '/vault' || p === '/vault.html' || p === '/storyboard' || p === '/index' || p === '/influencer' || p === '/trends' || p === '/flashloop-studio' || /^\/effects\/[^/]+$/.test(p))) {
       const pageUser = await requirePageAuth(req, res);
       if (!pageUser) return;
     }
@@ -8458,9 +8438,11 @@ ${infl.description || '(no description - describe a beautiful confident influenc
   }
 };
 
+const requestHandler = (req, res) => assetVault.run(() => routeRequest(req, res));
 module.exports = requestHandler;
 // Exposed for the pipeline/test-*.js regression tests.
 module.exports.__internal = {
+  assetVault,
   flashloopScenePlan,
   storyboardFrameCount, emergencyImageChain, vocalizeAnimationPrompts,
   capProviderImagePrompt, lockSacredCharacter, secularizeForImageFilter,
@@ -8487,7 +8469,7 @@ module.exports.__internal = {
   TREND_TEMPLATES_FILE: trendTemplates.TREND_TEMPLATES_FILE
 };
 
-if (!IS_VERCEL) {
+if (!IS_VERCEL && require.main === module) {
   const server = http.createServer(requestHandler);
   server.on('error', (err) => {
     if (err.code === 'EADDRINUSE') {

@@ -90,6 +90,7 @@
   <span class="sub">AI FORMAT PROMPT ENGINE</span>
   <div class="right">
     <a href="/trends" class="back-btn">← Trends</a>
+    <a href="/vault" class="back-btn">▣ Vault</a>
     <a href="/" class="back-btn">🎬 Storyboard</a>
     <span id="authName" style="display:none;font-size:11px;color:#fbbf24">👤 </span>
     <button id="btnLogout" style="display:none;font-size:11px;padding:5px 12px" onclick="logout()">Log out</button>
@@ -398,6 +399,22 @@ if (trendThumbnail) {
 let scenes = [];
 let scriptTitle = '';
 let sceneLen = 8; // seconds per scene (from the dropdown / server response)
+
+// Carry the creating studio through every request, including serverless polls.
+function vaultPayload(payload) {
+  return { ...payload, source: source === 'sjinn' ? 'sjinn' : 'flashloop', title: payload.title || scriptTitle || name || ($('idea').value || '').trim().slice(0, 100) || 'Studio creation' };
+}
+async function captureVaultTask(ticket) {
+  if (!ticket) return;
+  try {
+    const response = await fetch('/api/vault/capture-task', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ticket }) });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok && !result.vault_warning && window.SBVaultWarnings) SBVaultWarnings.show(result.error || 'The generated image could not be saved. Download it now to keep a copy.');
+  } catch (_) {
+    if (window.SBVaultWarnings) SBVaultWarnings.show('The generated image could not be saved. Download it now to keep a copy.');
+  }
+}
+
 // Each reference is { name, description, imageUrl }. The photo is optional: with
 // one, the character becomes the i2i anchor for scene images (so the face stays
 // the same); without one only the description text is injected into the prompts.
@@ -560,7 +577,7 @@ $('btnGenerate').onclick = async () => {
       try {
         const ro = await fetch('/api/flashloop/generate-outline', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ slug, name, tagline, idea, totalScenes: planned, duration: sceneDuration, sceneLength, ratio, model: $('model').value, references: getRefs(), trendThumbnail, source })
+          body: JSON.stringify(vaultPayload({ slug, name, tagline, idea, totalScenes: planned, duration: sceneDuration, sceneLength, ratio, model: $('model').value, references: getRefs(), trendThumbnail, source }))
         });
         const rawO = await ro.text();
         let jo; try { jo = JSON.parse(rawO); } catch { jo = { error: rawO ? rawO.slice(0, 180) : ('HTTP ' + ro.status) }; }
@@ -585,7 +602,7 @@ $('btnGenerate').onclick = async () => {
           try {
             const r2 = await fetch('/api/flashloop/generate-scene', {
               method: 'POST', headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ slug, name, tagline, idea, sceneIndex: i + 1, totalScenes: planned, sceneBeat: beat.summary || beat.title || '', prevBeat, sceneTitle: beat.title || '', duration: sceneDuration, sceneLength, ratio, model: $('model').value, references: getRefs(), trendThumbnail, source })
+              body: JSON.stringify(vaultPayload({ slug, name, tagline, idea, sceneIndex: i + 1, totalScenes: planned, sceneBeat: beat.summary || beat.title || '', prevBeat, sceneTitle: beat.title || '', duration: sceneDuration, sceneLength, ratio, model: $('model').value, references: getRefs(), trendThumbnail, source }))
             });
             const raw2 = await r2.text();
             let j2; try { j2 = JSON.parse(raw2); } catch { j2 = { error: raw2 ? raw2.slice(0, 180) : ('HTTP ' + r2.status) }; }
@@ -613,7 +630,7 @@ $('btnGenerate').onclick = async () => {
         try {
         const r2 = await fetch('/api/flashloop/generate-scene', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ slug, name, tagline, idea, sceneIndex: i, totalScenes: planned, prevEnd, duration: sceneDuration, sceneLength, ratio, model: $('model').value, references: getRefs(), trendThumbnail, source })
+          body: JSON.stringify(vaultPayload({ slug, name, tagline, idea, sceneIndex: i, totalScenes: planned, prevEnd, duration: sceneDuration, sceneLength, ratio, model: $('model').value, references: getRefs(), trendThumbnail, source }))
         });
         const raw2 = await r2.text();
         let j2; try { j2 = JSON.parse(raw2); } catch { j2 = { error: raw2 ? raw2.slice(0, 180) : ('HTTP ' + r2.status) }; }
@@ -636,7 +653,7 @@ $('btnGenerate').onclick = async () => {
       const res = await fetch('/api/flashloop/generate-prompt', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ slug, name, tagline, idea, sceneDuration, duration: sceneDuration, sceneLength, ratio, model: $('model').value, references: getRefs(), trendThumbnail, source })
+        body: JSON.stringify(vaultPayload({ slug, name, tagline, idea, sceneDuration, duration: sceneDuration, sceneLength, ratio, model: $('model').value, references: getRefs(), trendThumbnail, source }))
       });
       const rawText = await res.text();
       let j; try { j = JSON.parse(rawText); } catch { j = { error: rawText ? rawText.slice(0, 180) : ('HTTP ' + res.status) }; }
@@ -735,7 +752,7 @@ function renderScript(){
     if (!instr) { st.textContent = 'Type what to edit first.'; return; }
     editBtn.disabled = true; st.textContent = 'AI is rewriting the script…';
     try {
-      const r = await fetch('/api/flashloop/edit-prompt', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ script: box.value, instruction: instr, model: $('model').value }) });
+      const r = await fetch('/api/flashloop/edit-prompt', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(vaultPayload({ script: box.value, instruction: instr, model: $('model').value })) });
       const j = await r.json();
       if (!r.ok || j.error) throw new Error(j.error || ('HTTP ' + r.status));
       box.value = j.script || box.value;
@@ -793,7 +810,7 @@ $('btnGenerateImage').onclick = async () => {
     const res = await fetch('/api/flashloop/generate-i2i', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+      body: JSON.stringify(vaultPayload({
         prompt: (($('i2iPrompt') && $('i2iPrompt').value.trim()) || sceneImageText(Number(($('i2iScene') && $('i2iScene').value) || 0))),
         refImageUrl: refAnchorUrl() || trendThumbnail,
         ratio: $('ratio').value,
@@ -802,7 +819,7 @@ $('btnGenerateImage').onclick = async () => {
         tagline: tagline,
         slug: slug,
         source: source
-      })
+      }))
     });
     const j = await res.json().catch(() => ({ error: 'Invalid response from server' }));
     if (!res.ok || j.error) throw new Error(j.error || 'Failed to start i2i generation');
@@ -810,6 +827,7 @@ $('btnGenerateImage').onclick = async () => {
     // AquaDevs returns the image URL directly; PaxSenix returns a task to poll.
     const imageUrl = j.imageUrl ? j.imageUrl : await pollTask(j.taskUrl);
     if (!imageUrl) throw new Error('Image generation timed out or failed');
+    if (!j.imageUrl && j.vault_ticket) await captureVaultTask(j.vault_ticket);
     $('i2iImage').src = imageUrl;
     $('i2iDownload').href = imageUrl;
     $('i2iDownload').download = `${slug || 'flashloop'}_i2i.png`;
@@ -942,7 +960,7 @@ $('btnMakeVideo').onclick = async () => {
     const ratio = $('ratio').value;
     const results = new Array(n).fill(null);   // scene index -> {clip_url, chain_image_url}
     const postScene = payload => fetch('/api/flashloop/generate-video', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(vaultPayload(payload))
     });
     // Poll a submitted cloud render until it settles. A wan clip can take 4-30
     // minutes, so the cap is generous; each poll is a fresh serverless invocation.
@@ -967,14 +985,17 @@ $('btnMakeVideo').onclick = async () => {
       mvLog(`scene ${i + 1}/${n}: generating first-frame image…`);
       const r = await fetch('/api/flashloop/generate-i2i', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: sceneImageText(i), refImageUrl: refAnchorUrl() || trendThumbnail, ratio, model: $('i2iModel').value, trendName: name, tagline })
+        body: JSON.stringify(vaultPayload({ prompt: sceneImageText(i), refImageUrl: refAnchorUrl() || trendThumbnail, ratio, model: $('i2iModel').value, trendName: name, tagline }))
       });
       const j = await r.json().catch(() => ({}));
       if (!r.ok || j.error) { mvLog(`scene ${i + 1} image FAILED — ${j.error || 'HTTP ' + r.status}`, true); return false; }
       // Direct-URL providers (AquaDevs, Logfare, Novita) answer with the finished
       // image; task-based providers (PaxSenix) answer with a taskUrl to poll.
       if (j.imageUrl) sceneImages[i] = j.imageUrl;
-      else if (j.taskUrl) sceneImages[i] = await pollTask(j.taskUrl);
+      else if (j.taskUrl) {
+        sceneImages[i] = await pollTask(j.taskUrl);
+        if (sceneImages[i] && j.vault_ticket) await captureVaultTask(j.vault_ticket);
+      }
       if (!sceneImages[i]) { mvLog(`scene ${i + 1} image: no image URL returned`, true); return false; }
       mvLog(`scene ${i + 1}/${n}: image done`);
       return true;
@@ -1046,7 +1067,7 @@ $('btnMakeVideo').onclick = async () => {
     mvLog(`combining ${rendered.length} clip(s) into the final video…`);
     const cr = await fetch('/api/flashloop/combine', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ scenes: rendered, clipUrls, ratio })
+      body: JSON.stringify(vaultPayload({ scenes: rendered, clipUrls, ratio }))
     });
     const cj = await cr.json().catch(() => ({}));
     if (!cr.ok || cj.error) throw new Error('combine: ' + (cj.error || 'HTTP ' + cr.status));

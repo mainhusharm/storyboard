@@ -3,23 +3,94 @@
   "buildCommand": "npm run build",
   "outputDirectory": "public",
   "headers": [
-    { "source": "/storyboard", "headers": [{ "key": "Cache-Control", "value": "no-store, max-age=0" }] },
-    { "source": "/storyboard.html", "headers": [{ "key": "Cache-Control", "value": "no-store, max-age=0" }] }
+    {
+      "source": "/storyboard",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-store, max-age=0"
+        }
+      ]
+    },
+    {
+      "source": "/storyboard.html",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-store, max-age=0"
+        }
+      ]
+    },
+    {
+      "source": "/vault",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-store, max-age=0"
+        }
+      ]
+    }
   ],
   "rewrites": [
-    { "source": "/", "destination": "/home.html" },
-    { "source": "/login", "destination": "/login.html" },
-    { "source": "/signup", "destination": "/login.html" },
-    { "source": "/storyboard", "destination": "/storyboard.html" },
-    { "source": "/influencer", "destination": "/influencer.html" },
-    { "source": "/trends", "destination": "/trends.html" },
-    { "source": "/flashloop-studio", "destination": "/flashloop-studio.html" },
-    { "source": "/shorts", "destination": "/shorts.html" },
-    { "source": "/effects/:slug", "destination": "/flashloop-studio.html" },
-    { "source": "/frames/:path*", "destination": "/api/_route?p=/frames/:path*" },
-    { "source": "/video/:path*", "destination": "/api/_route?p=/video/:path*" },
-    { "source": "/api/:a/:b", "destination": "/api/_route?p=/api/:a/:b" },
-    { "source": "/api/:a/:b/:c", "destination": "/api/_route?p=/api/:a/:b/:c" },
-    { "source": "/api/:a/:b/:c/:d", "destination": "/api/_route?p=/api/:a/:b/:c/:d" }
+    {
+      "source": "/",
+      "destination": "/home.html"
+    },
+    {
+      "source": "/login",
+      "destination": "/login.html"
+    },
+    {
+      "source": "/signup",
+      "destination": "/login.html"
+    },
+    {
+      "source": "/storyboard",
+      "destination": "/storyboard.html"
+    },
+    {
+      "source": "/vault",
+      "destination": "/vault.html"
+    },
+    {
+      "source": "/influencer",
+      "destination": "/influencer.html"
+    },
+    {
+      "source": "/trends",
+      "destination": "/trends.html"
+    },
+    {
+      "source": "/flashloop-studio",
+      "destination": "/flashloop-studio.html"
+    },
+    {
+      "source": "/shorts",
+      "destination": "/shorts.html"
+    },
+    {
+      "source": "/effects/:slug",
+      "destination": "/flashloop-studio.html"
+    },
+    {
+      "source": "/frames/:path*",
+      "destination": "/api/_route?p=/frames/:path*"
+    },
+    {
+      "source": "/video/:path*",
+      "destination": "/api/_route?p=/video/:path*"
+    },
+    {
+      "source": "/api/:a/:b",
+      "destination": "/api/_route?p=/api/:a/:b"
+    },
+    {
+      "source": "/api/:a/:b/:c",
+      "destination": "/api/_route?p=/api/:a/:b/:c"
+    },
+    {
+      "source": "/api/:a/:b/:c/:d",
+      "destination": "/api/_route?p=/api/:a/:b/:c/:d"
+    }
   ]
 }

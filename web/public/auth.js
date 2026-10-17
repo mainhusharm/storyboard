@@ -26,6 +26,37 @@
     try { localStorage.removeItem(TOKEN_KEY); } catch (e) {}
   }
 
+  // A successful render can still fail to reach durable storage. Keep this
+  // separate from render success, and visible until the user dismisses it.
+  function showVaultWarning(warning) {
+    var message = typeof warning === 'string' ? warning : warning && (warning.message || warning.error);
+    if (!message) message = 'The generated result could not be saved to your vault. Download it now to keep a copy.';
+    var banner = document.getElementById('sbVaultWarning');
+    if (!banner) {
+      banner = document.createElement('aside');
+      banner.id = 'sbVaultWarning';
+      banner.setAttribute('role', 'status');
+      banner.setAttribute('aria-live', 'polite');
+      banner.style.cssText = 'position:fixed;bottom:18px;left:18px;z-index:10000;width:calc(100% - 36px);max-width:550px;padding:15px 17px;background:#282014;color:#ffe0a3;border:1px solid #ac8544;border-radius:10px;box-shadow:0 10px 35px #0008;font:12px/1.6 system-ui,sans-serif;display:flex;align-items:flex-start;gap:14px;box-sizing:border-box';
+      var copy = document.createElement('div');
+      copy.style.cssText = 'flex:1;min-width:0;overflow-wrap:anywhere';
+      var heading = document.createElement('strong');
+      heading.textContent = 'Vault save incomplete';
+      heading.style.cssText = 'display:block;margin-bottom:3px';
+      var text = document.createElement('span');
+      text.id = 'sbVaultWarningText';
+      copy.appendChild(heading); copy.appendChild(text); banner.appendChild(copy);
+      var close = document.createElement('button');
+      close.type = 'button'; close.textContent = '✕'; close.setAttribute('aria-label', 'Dismiss vault warning');
+      close.style.cssText = 'padding:3px 7px;border:1px solid #8c6e3d;border-radius:5px;background:transparent;color:inherit;cursor:pointer;font:inherit';
+      close.onclick = function () { banner.remove(); };
+      banner.appendChild(close);
+      (document.body || document.documentElement).appendChild(banner);
+    }
+    document.getElementById('sbVaultWarningText').textContent = message;
+  }
+  window.SBVaultWarnings = { show: showVaultWarning };
+
   // fetch with the Bearer fallback attached (cookie still takes priority server-side).
   function authFetch(url, opts) {
     opts = opts || {};
@@ -55,7 +86,16 @@
           init.headers = headers;
         }
       } catch (e) {}
-      return nativeFetch(input, init);
+      return nativeFetch(input, init).then(function (response) {
+        // Inspect a clone so callers retain the original response body and
+        // generation timing. Never parse third-party responses or binary media.
+        if (isApi && /application\/json/i.test(response.headers.get('content-type') || '')) {
+          response.clone().json().then(function (body) {
+            if (body && body.vault_warning) showVaultWarning(body.vault_warning);
+          }).catch(function () {});
+        }
+        return response;
+      });
     };
   })();
 
@@ -98,12 +138,12 @@
   function showUser(user) {
     var name = (user && (user.name || user.email)) || '';
     var el = document.getElementById('authName');
-    if (el) { el.style.display = ''; el.textContent = '👤 ' + name; }
+    if (el) { el.hidden = false; el.style.display = ''; el.textContent = '👤 ' + name; }
     var pill = document.getElementById('userPill');
     var pname = document.getElementById('userName');
     if (pill && pname) { pill.style.display = ''; pname.textContent = name; }
     var lo = document.getElementById('btnLogout');
-    if (lo) lo.style.display = '';
+    if (lo) { lo.hidden = false; lo.style.display = ''; }
     return user;
   }
 
