@@ -62,10 +62,10 @@ check('novita image models pass through', emergencyImageChain('novita:qwen-image
 
 console.log('\n[3] imageModel travels from the client to combine');
 check('run-all combine step threads imageModel', /clipUrls: body\.clipUrls, imageModel: body\.imageModel/.test(src));
-check('/api/combine (vercel) threads imageModel', /const fp = await combineFilm\(frames, body\.ratio \|\| '16:9', body\.narrationMode, \{ narrVol: body\.narrVolume, origVol: body\.origVolume, clipUrls: body\.clipUrls, imageModel: body\.imageModel, narrationUrl: body\.narrationUrl \}\)/.test(src));
+check('/api/combine (vercel) threads imageModel', /const fp = await combineFilm\(frames, body\.ratio \|\| '16:9', body\.narrationMode, \{ (?:resolution: body\.resolution, )?narrVol: body\.narrVolume, origVol: body\.origVolume, clipUrls: body\.clipUrls, imageModel: body\.imageModel, narrationUrl: body\.narrationUrl \}\)/.test(src));
 check('/api/combine (vercel) threads narrationUrl (cross-instance voice track)', /narrationUrl: body\.narrationUrl/.test(src));
 check('/api/combine (vercel) still hosts the finished film (remote fix kept)', /final film hosted: \$\{finalUrl\}/.test(src));
-check('/api/combine (local) threads imageModel', /combineFilm\(frames, body\.ratio \|\| '16:9', body\.narrationMode, \{ narrVol: body\.narrVolume, origVol: body\.origVolume, clipUrls: body\.clipUrls, imageModel: body\.imageModel, narrationUrl: body\.narrationUrl \}\)\.then/.test(src));
+check('/api/combine (local) threads imageModel', /combineFilm\(frames, body\.ratio \|\| '16:9', body\.narrationMode, \{ (?:resolution: body\.resolution, )?narrVol: body\.narrVolume, origVol: body\.origVolume, clipUrls: body\.clipUrls, imageModel: body\.imageModel, narrationUrl: body\.narrationUrl \}\)\.then/.test(src));
 check('auto pipeline combine sends imageModel', /origVolume:opts\.origVolume,clipUrls,imageModel:opts\.imageModel/.test(client));
 check('manual combine button sends imageModel', /origVolume:Number\(\$\('origVolume'\)\.value\),imageModel:\$\('imageModel'\)\.value/.test(src) || /origVolume:Number\(\$\('origVolume'\)\.value\),imageModel:\$\('imageModel'\)\.value[,}]/.test(client));
 check('manual combine button sends clipUrls + narrationUrl (cross-instance audio/clips)', /imageModel:\$\('imageModel'\)\.value,clipUrls,narrationUrl,title:/.test(client));
@@ -112,7 +112,7 @@ check('/api/run-all uses the same helper', /videoFrames = vocalizeAnimationPromp
 check('no leftover inline embedding in run-all', !/clone\.animation_prompt = `\$\{clone\.animation_prompt\} The character narrates aloud/.test(src));
 check('client auto pipeline sends narrationMode with /videos', /chainContinuity:opts\.chainContinuity,narrationMode:opts\.narrationMode/.test(client));
 check('client Vercel per-frame render sends narrationMode', /chainAnchor:prevChain,narrationMode:\$\('narrationMode'\)\.value/.test(client));
-check('client manual Videos button sends narrationMode', /postJob\('\/videos',sbPayload\(\{ratio:\$\('ratio'\)\.value,videoModel:\$\('videoModel'\)\.value,force:true,chainContinuity:\$\('chainContinuity'\)\.checked,narrationMode:\$\('narrationMode'\)\.value\}\)\)/.test(client));
+check('client manual Videos button sends narrationMode', /postJob\('\/videos',sbPayload\(\{ratio:\$\('ratio'\)\.value,(?:resolution:\$\('videoResolution'\)\.value,)?videoModel:\$\('videoModel'\)\.value,force:true,chainContinuity:\$\('chainContinuity'\)\.checked,narrationMode:\$\('narrationMode'\)\.value\}\)\)/.test(client));
 // Behavioural: the helper embeds narration + dialogue, leaves speechless frames
 // alone, and never double-embeds when a poll re-sends the same frames.
 const vInput = [

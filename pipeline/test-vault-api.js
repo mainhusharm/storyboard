@@ -195,3 +195,39 @@ test('an unsupported provider task still returns its generation result with an a
     assert.match(result.vault_warning, /Unsupported image task/);
   });
 });
+
+
+test('daily cleanup rejects public/session requests and deletes only expired files with cron authorization', async () => {
+  const crypto = require('node:crypto');
+  const old = [];
+  for (const user of [alice,bob]) {
+    const saved = await vault.store.save({ userId:user.user.id, source:'storyboard', kind:'video', title:'Expired cron fixture', filename:'old.mp4', mimeType:'video/mp4', buffer:Buffer.from('expired '+user.user.id) });
+    const hash = crypto.createHash('sha256').update(user.user.id).digest('hex');
+    const indexPath = path.join(root,'vault/v2',hash,'index.json');
+    const entries = JSON.parse(await fs.readFile(indexPath,'utf8'));
+    entries.find(row=>row.id===saved.id).created_at = new Date(Date.now()-8*86400000).toISOString();
+    await fs.writeFile(indexPath,JSON.stringify(entries));
+    old.push({user,saved,assetPath:path.join(root,'vault/v2',hash,saved.id+'.asset')});
+  }
+  delete process.env.CRON_SECRET;
+  assert.equal((await request('/api/vault-cleanup')).status, 401);
+  process.env.CRON_SECRET = 'offline-cron-secret';
+  try {
+    assert.equal((await request('/api/vault-cleanup',alice)).status, 401);
+    assert.equal((await request('/api/vault-cleanup',null,{headers:{Authorization:'Bearer wrong'}})).status, 401);
+    assert.equal((await request('/api/vault-cleanup',null,{method:'POST',headers:{Authorization:'Bearer offline-cron-secret'}})).status, 405);
+    const response = await request('/api/vault-cleanup?days=0',null,{headers:{Authorization:'Bearer offline-cron-secret'}});
+    assert.equal(response.status,200);
+    const result = await response.json();
+    assert.equal(result.deleted,2); assert.equal(result.retention_days,7);
+    for(const item of old) {
+      assert.equal(await vault.store.get(item.user.user.id,item.saved.id),null);
+      await assert.rejects(fs.access(item.assetPath), {code:'ENOENT'});
+    }
+    const remaining = await (await request('/api/vault',alice)).json();
+    assert.ok(remaining.vault.length>0,'Keep files younger than seven days');
+    assert.equal(remaining.retention_days,7);
+    assert.equal(remaining.background_cleanup,false,'Local development has no Vercel scheduler');
+    assert.ok(remaining.usage.bytes>0);
+  } finally { delete process.env.CRON_SECRET; }
+});

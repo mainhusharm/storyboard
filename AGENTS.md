@@ -57,7 +57,10 @@ consistency**, generates frame images, animates them via Grok Video / Omni Flash
   before synchronous responses; failures preserve generation output and surface
   vault_warning. GET /api/vault lists the signed-in account only; DELETE
   /api/vault/:id and GET /api/vault/:id/content enforce the same owner, including
-  byte-range reads. All distinct bytes are retained until deleted; exact duplicate
+  byte-range reads. Files expire seven days after creation; owner-scoped list/save
+  cleanup and the CRON_SECRET-protected daily /api/vault-cleanup job delete actual
+  stored bytes and metadata. Keep younger assets. The UI shows expiry, usage and
+  explicit Delete buttons. Failed deletes retain metadata for retry. Exact duplicate
   polls deduplicate per owner/source/type. The old unowned vault index is left intact
   and not automatically assigned. Setup and tests: VAULT.md, npm run test:vault.
 - **AquaDevs image models in Storyboard** — the image-model dropdown offers `aqua:nanobanana-pro`

@@ -177,6 +177,20 @@ function createVault(options) {
     return true;
   }
 
+  async function handleCleanup(req, res) {
+    if (req.method !== 'GET') { json(res, 405, { error: 'Method not allowed.' }); return; }
+    const secret = process.env.CRON_SECRET || '';
+    const expected = Buffer.from('Bearer ' + secret);
+    const supplied = Buffer.from(typeof req.headers.authorization === 'string' ? req.headers.authorization : '');
+    if (!secret || supplied.length !== expected.length || !crypto.timingSafeEqual(supplied, expected)) {
+      json(res, 401, { error: 'Unauthorized cleanup request.' }); return;
+    }
+    try {
+      const result = await store.purgeExpired(undefined, { limit: 2000, deadline: Date.now() + 240000 });
+      json(res, result.failed || result.has_more ? 503 : 200, { ok: !result.failed && !result.has_more, ...result });
+    } catch { json(res, 503, { error: 'Vault cleanup could not finish. It will retry on the next scheduled run.' }); }
+  }
+
   async function prepareResponse(code, data) {
     const scope = context.getStore();
     if (!scope || !scope.userId || !data || typeof data !== 'object') return data;
@@ -203,7 +217,7 @@ function createVault(options) {
     return data;
   }
 
-  return { store, context, handle, capture, captureFile, captureJSON, captureImage, ticket, verifyTicket, prepareResponse,
+  return { store, context, handle, handleCleanup, capture, captureFile, captureJSON, captureImage, ticket, verifyTicket, prepareResponse,
     run: fn => context.run({ userId: null, source: 'storyboard', title: '', saved: [], deadline: Date.now() + 285000 }, fn),
     setUser(user, route) { Object.assign(context.getStore(), { userId: user.id, route, source: route.startsWith('/api/flashloop/') ? 'flashloop' : 'storyboard' }); },
     setBody(body) {

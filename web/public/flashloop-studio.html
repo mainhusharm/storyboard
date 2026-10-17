@@ -319,6 +319,14 @@
           <div class="hint">Wan 3.0 allows 1-30s in these steps; Wan 2.x caps at 15s; Omni Flash is fixed 8s (the picker snaps it).</div>
         </div>
       </div>
+      <div class="field" style="max-width:260px;margin:0 0 12px">
+        <label for="mvResolution">④ Wan Resolution</label>
+        <select id="mvResolution">
+          <option value="720P">720P — faster</option>
+          <option value="1080P" selected>1080P — higher detail</option>
+        </select>
+        <div class="hint">Used by Novita Wan engines. Omni Flash keeps its provider resolution.</div>
+      </div>
       <div id="mvSummary" style="font-size:12px;color:var(--teal);margin:0 0 12px;padding:8px 10px;background:var(--panel2);border:1px solid var(--line2);border-radius:8px"></div>
       <div style="display:flex;align-items:center;gap:8px;margin:0 0 12px;font-size:12px;color:var(--dim);cursor:pointer">
         <input type="checkbox" id="mvChained" checked style="accent-color:var(--amber)">
@@ -964,8 +972,9 @@ $('btnMakeVideo').onclick = async () => {
     });
     // Poll a submitted cloud render until it settles. A wan clip can take 4-30
     // minutes, so the cap is generous; each poll is a fresh serverless invocation.
-    const renderScene = async (i, chainAnchor) => {
-      let res = await postScene({ scene: i + 1, prompt: sceneVideoText(i), imageUrl: sceneImages[i], ratio, chainAnchor, model: engine, duration: perScene });
+     const resolution = $('mvResolution').value;
+     const renderScene = async (i, chainAnchor) => {
+       let res = await postScene({ scene: i + 1, prompt: sceneVideoText(i), imageUrl: sceneImages[i], ratio, resolution, chainAnchor, model: engine, duration: perScene });
       let v = await res.json().catch(() => ({}));
       if (v && v.pending && v.task) {
         let waited = 0;
@@ -973,7 +982,7 @@ $('btnMakeVideo').onclick = async () => {
           mvLog(`scene ${i + 1}/${n}: ${engineName} rendering in the cloud (${Math.round(waited / 1000)}s of ~${perScene}s clip)…`);
           await new Promise(r => setTimeout(r, 15000));
           waited += 15000;
-          res = await postScene({ scene: i + 1, pollTask: v.task, model: engine });
+           res = await postScene({ scene: i + 1, pollTask: v.task, model: engine, resolution });
           v = await res.json().catch(() => ({}));
           if (!v || !v.pending) break;        // settled (done or hard failure)
         }
@@ -1067,7 +1076,7 @@ $('btnMakeVideo').onclick = async () => {
     mvLog(`combining ${rendered.length} clip(s) into the final video…`);
     const cr = await fetch('/api/flashloop/combine', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(vaultPayload({ scenes: rendered, clipUrls, ratio }))
+       body: JSON.stringify(vaultPayload({ scenes: rendered, clipUrls, ratio, resolution }))
     });
     const cj = await cr.json().catch(() => ({}));
     if (!cr.ok || cj.error) throw new Error('combine: ' + (cj.error || 'HTTP ' + cr.status));

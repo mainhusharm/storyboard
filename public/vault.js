@@ -66,6 +66,9 @@
       const data = await jsonRequest('/api/vault?' + query, { cache: 'no-store', signal: controller.signal });
       if (revision !== state.revision) return;
       setStorage(data.storage);
+      if (data.usage) $('usageSummary').textContent = 'Your saved files: ' + sizeLabel(data.usage.bytes) + ' · ' + Number(data.usage.assets) + ' assets across all studios';
+      $('retentionNotice').textContent = 'Files are kept for 7 days. Download anything you want to keep. Use Delete to free storage sooner. ' + (data.background_cleanup ? 'Daily background cleanup is active.' : data.storage?.mode === 'cloud' ? 'Background cleanup needs setup; expired files are still removed when you use the vault.' : 'Expired files are removed when you use the vault.');
+      if (data.cleanup_warning) toast(data.cleanup_warning);
       if (data.last_warning && window.SBVaultWarnings) SBVaultWarnings.show(data.last_warning);
       const previousIds = new Set(state.items.map(item => item.id));
       const added = (Array.isArray(data.vault) ? data.vault : []).filter(item => item && typeof item.id === 'string' && !previousIds.has(item.id));
@@ -91,7 +94,7 @@
   }
   function render() {
     if (observer) observer.disconnect();
-    $('assets').innerHTML = state.items.map(item => '<article class="asset-card" data-id="' + escape(item.id) + '"><button class="asset-cover" data-action="preview" data-kind="' + escape(item.kind) + '" aria-label="Preview ' + escape(item.title || item.filename || 'asset') + '"><span class="cover-icon" aria-hidden="true">' + (icons[item.kind] || '◇') + '</span>' + (item.kind === 'image' ? '<img hidden alt="" loading="lazy" data-thumbnail="' + escape(item.id) + '">' : '') + '<span class="kind-badge">' + escape(kinds[item.kind] || 'File') + '</span><span class="cover-hint">Preview ↗</span></button><div class="asset-info"><h2 class="asset-title" title="' + escape(item.title || item.filename) + '">' + escape(item.title || item.filename || 'Untitled asset') + '</h2><div class="asset-details"><span class="studio-label" data-source="' + escape(item.source) + '">' + escape(sources[item.source] || 'Studio') + '</span><span>· ' + escape(dateLabel(item.created_at)) + '</span>' + (item.size_bytes != null ? '<span>· ' + escape(sizeLabel(item.size_bytes)) + '</span>' : '') + '</div><div class="asset-actions"><button data-action="preview">Preview</button><button class="download" data-action="download">↓ Download</button><button class="delete" data-action="delete" aria-label="Delete ' + escape(item.title || item.filename || 'asset') + '" title="Delete asset">✕</button></div></div></article>').join('');
+    $('assets').innerHTML = state.items.map(item => '<article class="asset-card" data-id="' + escape(item.id) + '"><button class="asset-cover" data-action="preview" data-kind="' + escape(item.kind) + '" aria-label="Preview ' + escape(item.title || item.filename || 'asset') + '"><span class="cover-icon" aria-hidden="true">' + (icons[item.kind] || '◇') + '</span>' + (item.kind === 'image' ? '<img hidden alt="" loading="lazy" data-thumbnail="' + escape(item.id) + '">' : '') + '<span class="kind-badge">' + escape(kinds[item.kind] || 'File') + '</span><span class="cover-hint">Preview ↗</span></button><div class="asset-info"><h2 class="asset-title" title="' + escape(item.title || item.filename) + '">' + escape(item.title || item.filename || 'Untitled asset') + '</h2><div class="asset-details"><span class="studio-label" data-source="' + escape(item.source) + '">' + escape(sources[item.source] || 'Studio') + '</span><span>· ' + escape(dateLabel(item.created_at)) + '</span>' + (item.size_bytes != null ? '<span>· ' + escape(sizeLabel(item.size_bytes)) + '</span>' : '') + '</div><p class="asset-details">Expires ' + escape(dateLabel(item.expires_at)) + '</p><div class="asset-actions"><button data-action="preview">Preview</button><button class="download" data-action="download">↓ Download</button><button class="delete" data-action="delete" aria-label="Delete ' + escape(item.title || item.filename || 'asset') + '" title="Delete asset">Delete</button></div></div></article>').join('');
     $('resultsCount').textContent = state.items.length + (state.cursor ? '+' : '') + ' asset' + (state.items.length === 1 ? '' : 's') + (state.source ? ' in ' + sources[state.source] : ' in your vault');
     $('empty').hidden = true; $('loadMore').hidden = !state.cursor;
     if (!state.items.length) showEmpty(state.source || state.kind || state.q ? 'No matching creations' : 'Your next creation starts here', state.source || state.kind || state.q ? 'Try a different studio, asset type or search term.' : 'Generate a script, image, narration or video in any studio. Your saved creations will appear here automatically.');
@@ -131,7 +134,7 @@
     cleanupPreview(); currentItem = item;
     $('previewTitle').textContent = item.title || item.filename || 'Untitled asset';
     $('previewKind').textContent = (sources[item.source] || 'STUDIO') + ' / ' + (kinds[item.kind] || 'FILE');
-    $('previewMeta').textContent = [item.filename, sizeLabel(item.size_bytes), dateLabel(item.created_at)].filter(Boolean).join(' · ');
+    $('previewMeta').textContent = [item.filename, sizeLabel(item.size_bytes), dateLabel(item.created_at), 'Expires ' + dateLabel(item.expires_at)].filter(Boolean).join(' · ');
     $('previewBody').innerHTML = '<p role="status">Loading preview…' + (item.kind === 'video' ? ' Large videos may take a moment.' : '') + '</p>';
     $('previewDownload').disabled = false;
     if (!$('preview').open) $('preview').showModal();
@@ -172,7 +175,7 @@
       if (currentItem && currentItem.id === item.id) $('preview').close();
       const pending = thumbnailRequests.get(item.id); if (pending) pending.abort();
       const url = thumbnails.get(item.id); if (url) URL.revokeObjectURL(url); thumbnails.delete(item.id);
-      state.items = state.items.filter(value => value.id !== item.id); render(); toast('Asset deleted.');
+      state.items = state.items.filter(value => value.id !== item.id); await load(false); toast('Asset deleted. Storage freed.');
     } catch (error) { button.disabled = false; toast(error.message || 'Could not delete this asset.'); }
   }
   $('assets').addEventListener('click', event => {

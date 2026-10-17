@@ -87,7 +87,7 @@ function isolatedRequire(name) {
 }
 vm.runInNewContext(source.replace("const ROOT = IS_VERCEL ? '/tmp' : path.resolve(__dirname, '..');", `const ROOT = ${JSON.stringify(tmp)};`), {
   module: mod, exports: mod.exports, require: isolatedRequire, __dirname: path.dirname(serverFile),
-  process: { env: { VERCEL: '1', NOVITA_API_KEY: 'fake', NOVITA_BASE_URL: 'https://novita.example.test',
+  process: { env: { VERCEL: '1', STORYBOARD_DATA_DIR: tmp, NOVITA_API_KEY: 'fake', NOVITA_BASE_URL: 'https://novita.example.test',
     LOGFARE_API_KEY: 'fake', AQUA_API_KEY: 'fake', SESSION_SECRET: 'offline-test-session-secret' } },
   Buffer, URL, fetch: upstream, AbortController, AbortSignal, Blob, FormData,
   setTimeout, clearTimeout, setInterval, clearInterval, console
@@ -132,7 +132,11 @@ async function main() {
     if (res.headers.get('set-cookie')) cookie = res.headers.get('set-cookie').split(';')[0];
     return { status: res.status, body: await res.json() };
   }
-  assert.equal((await api('/auth/signup', { email: 'offline@example.test', password: 'secret123', name: 'Offline' })).status, 200);
+  assert.equal((await api('/auth/signup', { email: `offline-${path.basename(tmp)}@example.test`, password: 'secret123', name: 'Offline' })).status, 200);
+  fs.mkdirSync(path.join(tmp, 'storyboard'), { recursive: true });
+  fs.mkdirSync(path.join(tmp, 'frames'), { recursive: true });
+  fs.mkdirSync(path.join(tmp, 'video'), { recursive: true });
+  fs.mkdirSync(path.join(tmp, 'vault'), { recursive: true });
   fs.writeFileSync(path.join(tmp, 'storyboard/characters.json'), JSON.stringify([{ id: 'Old A', name: 'Unrelated older man' }]));
   fs.writeFileSync(path.join(tmp, 'storyboard/frames.json'), JSON.stringify([{ frame: 99, animation_prompt: 'Old story' }]));
   assert.equal((await api('/frames')).body.frames.length, 0, 'serverless GET must not return another run from /tmp');
@@ -250,8 +254,13 @@ async function main() {
   result = await api('/videos', videoBody);
   assert.equal(result.status, 202);
   assert.equal(result.body.pending, true);
+  assert.equal(submitted.parameters.resolution, '720P', 'wan renders default to 720P when no resolution is chosen');
   assert.ok(submitted.input.prompt.startsWith(frame.animation_prompt));
   assert.ok(submitted.input.prompt.includes('The character narrates aloud: "A quiet morning."'), 'Wan receives the narration inside the prompt');
+  result = await api('/videos', { ...videoBody, frames: [4], framesData: [{ ...frame, frame: 4 }], resolution: '1080P' });
+  assert.equal(result.status, 202);
+  assert.equal(submitted.parameters.resolution, '1080P', 'the selected resolution reaches the Novita submit body');
+  submits = 1;
   const pollBody = { ...videoBody, pollTask: result.body.task, force: true };
   const existingClip = path.join(tmp, 'video/frame_02.mp4');
   fs.writeFileSync(existingClip, clip);
@@ -264,7 +273,7 @@ async function main() {
   assert.equal((await api('/credits')).body.credits, before, 'polls are free');
   assert.equal(submits, 1, 'polls never submit another paid render');
   const log = (await api('/status')).body.log.join('\n');
-  assert.equal(log.split('prompt-vocalized mode').length-1, 1, 'narration is embedded on submit only, never repeated on polls');
+  assert.equal(log.split('prompt-vocalized mode').length-1, 2, 'each of the two submits embeds narration once; polls never re-embed');
   statusBody = { status: 'SUCCEEDED', output: { results: [{ url: 'https://cdn.example.test/clip.mp4' }] } };
   result = await api('/videos', pollBody);
   assert.equal(result.body.ok, true);
@@ -302,6 +311,10 @@ async function main() {
   assert.equal(fallbackCount, 1, 'copy failure must successfully re-encode using the retained manifest');
   assert.ok(fs.statSync(path.join(tmp, 'video/final_story.mp4')).size > 0);
   assert.equal(fs.existsSync(path.join(tmp, 'video/concat_list.txt')), false, 'manifest is cleaned up after both attempts');
+  result = await api('/combine', { ...combineBody, framesData: [{ ...frame, frame: 3, clip_url: 'https://cdn.example.test/clip.mp4' }], resolution: '1080P' });
+  assert.match((await api('/status')).body.log.join('\n'), /target resolution 1920x1080/, 'a 1080P combine keeps wan renders at full resolution instead of downscaling to 720P');
+  result = await api('/combine', { ...combineBody, framesData: [{ ...frame, frame: 3, clip_url: 'https://cdn.example.test/clip.mp4' }], resolution: '1080P', ratio: '4:3' });
+  assert.match((await api('/status')).body.log.join('\n'), /target resolution 1536x1152/, '4:3 boards keep their exact ratio at 1080P instead of flattening to 16:9');
   failUploads = true;
   result = await api('/combine', combineBody);
   assert.equal(result.status, 502);
@@ -320,22 +333,10 @@ async function main() {
   assert.equal(result.body.ok, false);
   console.log('ok: real ffmpeg combine, concat fallback, failed publishing, and absent output return truthful results');
 
-  // Vault: only SUCCESSFUL combines are archived (the upload-failed and
-  // concat-failed combines above must not have added entries), entries carry the
-  // hosted URL plus a downloadable local copy, and delete removes both.
-  let vaultList = (await api('/vault')).body.vault;
-  assert.equal(vaultList.length, 1, 'exactly one film archived — failed combines never add entries');
-  assert.equal(vaultList[0].hosted_url, 'https://cdn.example.test/clip.mp4', 'entry carries the hosted final URL for cross-instance retrieval');
-  assert.equal(vaultList[0].duration_sec, 2, 'duration is summed from the combined frames');
-  assert.equal(vaultList[0].frames, 2);
-  assert.ok(vaultList[0].file_url.startsWith('/vault/'), 'the archived file is served for download');
-  assert.ok(fs.existsSync(path.join(tmp, 'vault', vaultList[0].file)), 'the archived copy exists on disk');
-  assert.equal(vaultList[0].title.length > 0, true);
-  result = await api('/vault', { action: 'delete', id: vaultList[0].id });
-  assert.equal(result.body.vault.length, 0, 'delete removes the entry');
-  assert.equal(fs.existsSync(path.join(tmp, 'vault', vaultList[0].file)), false, 'delete removes the file');
-  assert.ok(client.includes('btnVault') && client.includes('sb_vault') && client.includes('addVaultLocal(url)'), 'the SPA records and lists every finished film');
-  console.log('ok: the vault archives successful films and serves/deletes them');
+  // Vault storage itself is owned by web/vault.js and covered by
+  // pipeline/test-vault-api.js — here we only pin the SPA wiring.
+  assert.ok(client.includes('href="/vault"'), 'the SPA links to the shared vault page');
+  console.log('ok: the vault-backed film archive keeps its client wiring');
 
   // Execute the real browser poll loop with a virtual clock. A healthy long
   // render must refresh the watchdog, log only transitions, and count request time.

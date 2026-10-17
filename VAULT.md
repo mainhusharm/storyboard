@@ -10,7 +10,9 @@ that account on the server. Source labels and filenames cannot grant access to
 another account's content. Every file is copied before it is indexed; generating
 again or cleaning working outputs cannot overwrite an archived version. Exact
 duplicate bytes from the same tool and file type share one entry, including
-repeated completion polls. Files are retained until explicitly deleted.
+repeated completion polls. Files are kept for **7 days from creation** and can be deleted manually sooner.
+The UI shows expiry dates and the total bytes belonging to your account. This is
+not the total usage of a Blob store shared with other accounts or applications.
 
 ## Local development
 
@@ -62,6 +64,42 @@ Existing unscoped `vault/index.json` records and browser `sb_vault` history are
 left intact but are not assigned to an account automatically: the old format has
 no reliable ownership information. The new library automatically captures new
 outputs; it does not scan unrelated files or recover expired temporary links.
+
+## Seven-day retention and freeing storage
+
+Every asset has a seven-day lifetime, including existing v2 assets. Cleanup deletes
+both the stored Blob/file bytes and metadata; removing a card is not the cleanup.
+Newer files are retained. Identical bytes generated again after expiration receive
+a new entry and seven-day lifetime.
+
+Expired files are removed when you open the vault or save a new generation.
+The application also declares a daily Vercel Cron job at /api/vault-cleanup.
+Daily execution works on the Hobby plan. Files become eligible after seven days
+and the daily run removes them afterwards, so physical deletion can occur on the
+next day's run. Failed deletions keep their records and retry on later cleanup.
+Requests and batches are bounded so large backlogs resume across runs.
+
+**Enable cleanup while the app is closed:**
+
+1. In Vercel, open Project → Settings → Environment Variables.
+2. Add **CRON_SECRET** for **Production**, using a random value of at least 16
+   characters. Do not use an account password or a provider API key.
+3. Redeploy. Vercel automatically sends the secret to its daily cleanup invocation.
+4. The vault will show that daily background cleanup is active. Scheduled runs
+   appear under Project Settings → Cron Jobs.
+
+Without CRON_SECRET the cleanup endpoint rejects every request; opening/saving
+still clears expired assets for the signed-in account. A normal login/session
+cannot call the cross-account cleanup route. Its cutoff is fixed on the server;
+callers cannot provide a shorter age or delete younger files through query inputs.
+
+Use the visible **Delete** button on a card to free storage immediately. Download
+anything you want to keep before its expiry. Manual deletion updates the displayed
+usage. This policy does not guarantee that every workload fits within 1 GB during
+the seven-day window; you can delete larger items earlier.
+
+Vercel references: [securing cron jobs](https://vercel.com/docs/cron-jobs/manage-cron-jobs#securing-cron-jobs)
+and [Hobby scheduling limits](https://vercel.com/docs/cron-jobs/usage-and-pricing).
 
 ## Verification
 

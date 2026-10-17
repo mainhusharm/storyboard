@@ -15,6 +15,8 @@ const KINDS = new Set(['script', 'image', 'audio', 'video']);
 const ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const MIME = /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+(?:; ?charset=[a-z0-9-]+)?$/i;
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+const RETENTION_DAYS = 7;
+const RETENTION_MS = RETENTION_DAYS * 86400000;
 
 async function ensureDirectory(directory) {
   for (let attempt = 0; ; attempt++) {
@@ -59,6 +61,7 @@ function publicEntry(entry) {
     id: entry.id, source: entry.source, kind: entry.kind, title: entry.title,
     filename: entry.filename, mime_type: entry.mime_type, size_bytes: Number(entry.size_bytes),
     created_at: new Date(entry.created_at).toISOString(), metadata: entry.metadata || {},
+    expires_at: new Date(new Date(entry.created_at).getTime() + RETENTION_MS).toISOString(),
     url: `/api/vault/${entry.id}/content`, download_url: `/api/vault/${entry.id}/content?download=1`,
   };
 }
@@ -140,7 +143,7 @@ function sliceStream(stream, start, length) {
   })());
 }
 
-function createVaultStore({ root, isVercel = false, getDb = async () => null, blob: injectedBlob } = {}) {
+function createVaultStore({ root, isVercel = false, getDb = async () => null, blob: injectedBlob, now = () => Date.now() } = {}) {
   if (!root) throw new Error('Vault root is required.');
   const base = path.resolve(root, 'vault', 'v2');
   let databaseReady;
@@ -180,6 +183,7 @@ function createVaultStore({ root, isVercel = false, getDb = async () => null, bl
         )`);
         await db.query('CREATE INDEX IF NOT EXISTS sb_vault_owner_created ON sb_vault_assets (owner_id, created_at DESC, id DESC)');
         await db.query('CREATE UNIQUE INDEX IF NOT EXISTS sb_vault_owner_content ON sb_vault_assets (owner_id, source, kind, sha256)');
+        await db.query('CREATE INDEX IF NOT EXISTS sb_vault_expiry ON sb_vault_assets (created_at, id)');
         return { db, api };
       })().catch(error => { databaseReady = null; throw error; });
     }
@@ -254,14 +258,15 @@ function createVaultStore({ root, isVercel = false, getDb = async () => null, bl
     // working filename while its previous version is still being archived.
     let temporary;
     try {
+      owner(input.userId);
       if (input.filePath) {
         owner(input.userId);
-        if (isVercel) await cloud();
         temporary = await fsp.mkdtemp(path.join(os.tmpdir(), 'sb-vault-'));
         const snapshot = path.join(temporary, 'asset');
         await fsp.copyFile(input.filePath, snapshot, fs.constants.COPYFILE_EXCL);
         input = { ...input, filePath: snapshot };
       }
+      await purgeExpired(input.userId, { limit: 100, deadline: Date.now() + 8000 });
       return await saveSnapshot(input);
     } finally {
       if (temporary) {
@@ -281,7 +286,7 @@ function createVaultStore({ root, isVercel = false, getDb = async () => null, bl
       id: crypto.randomUUID(), source: input.source, kind: input.kind,
       title: String(input.title || 'Untitled creation').replace(/[\u0000-\u001f]/g, ' ').slice(0, 240),
       filename: filename(input.filename, input.kind), mime_type: input.mimeType || 'application/octet-stream',
-      created_at: new Date().toISOString(), metadata: metadata(input.metadata),
+      created_at: new Date(now()).toISOString(), metadata: metadata(input.metadata),
     };
     let buffer;
     const hash = crypto.createHash('sha256');
@@ -353,6 +358,11 @@ function createVaultStore({ root, isVercel = false, getDb = async () => null, bl
   async function list(userId, options = {}) {
     owner(userId);
     const filter = filters(options);
+    const cleanup = await purgeExpired(userId, { limit: 100, deadline: Date.now() + 8000 });
+    const summary = await usage(userId);
+    const decorate = result => ({ ...result, usage: summary, retention_days: RETENTION_DAYS,
+      background_cleanup: isVercel && !!process.env.CRON_SECRET,
+      cleanup_warning: cleanup.failed ? 'Some expired files could not be removed. Cleanup will retry; you can also use Delete.' : undefined });
     if (isVercel) {
       const { db } = await cloud();
       const clauses = ['owner_id = $1']; const values = [userId];
@@ -368,7 +378,7 @@ function createVaultStore({ root, isVercel = false, getDb = async () => null, bl
       }
       values.push(filter.limit + 1);
       const result = await db.query(`SELECT * FROM sb_vault_assets WHERE ${clauses.join(' AND ')} ORDER BY created_at DESC, id DESC LIMIT $${values.length}`, values);
-      return page(result.rows, filter.limit, { mode: 'cloud', ready: true });
+      return decorate(page(result.rows, filter.limit, { mode: 'cloud', ready: true }));
     }
     const query = filter.q.toLowerCase();
     const entries = (await readIndex(userDir(userId))).filter(entry =>
@@ -376,10 +386,10 @@ function createVaultStore({ root, isVercel = false, getDb = async () => null, bl
       && (!query || `${entry.title} ${entry.filename}`.toLowerCase().includes(query))
       && (!filter.cursor || entry.created_at < filter.cursor.at || (entry.created_at === filter.cursor.at && entry.id < filter.cursor.id)))
       .sort((a, b) => b.created_at.localeCompare(a.created_at) || b.id.localeCompare(a.id));
-    return page(entries, filter.limit, { mode: 'local', ready: true });
+    return decorate(page(entries, filter.limit, { mode: 'local', ready: true }));
   }
 
-  async function remove(userId, id) {
+  async function remove(userId, id, options = {}) {
     owner(userId);
     if (!ID.test(String(id))) return false;
     if (isVercel) {
@@ -388,7 +398,7 @@ function createVaultStore({ root, isVercel = false, getDb = async () => null, bl
       if (!privateBlobUrl(entry.blob_url)) throw new Error('Vault content location is invalid.');
       const { db, api } = await cloud();
       // Keep the row on storage failure so a user can retry rather than lose access.
-      await api.del(entry.blob_url, blobOptions());
+      await api.del(entry.blob_url, { ...blobOptions(), ...(options.abortSignal ? { abortSignal: options.abortSignal } : {}) });
       const result = await db.query('DELETE FROM sb_vault_assets WHERE owner_id = $1 AND id = $2 RETURNING id', [userId, id]);
       return result.rows.length > 0;
     }
@@ -396,8 +406,8 @@ function createVaultStore({ root, isVercel = false, getDb = async () => null, bl
     return locked(directory, async () => {
       const entries = await readIndex(directory);
       if (!entries.some(item => item.id === id)) return false;
-      await writeIndex(directory, entries.filter(item => item.id !== id));
       await fsp.unlink(path.join(directory, `${id}.asset`)).catch(error => { if (error.code !== 'ENOENT') throw error; });
+      await writeIndex(directory, entries.filter(item => item.id !== id));
       return true;
     });
   }
@@ -429,7 +439,83 @@ function createVaultStore({ root, isVercel = false, getDb = async () => null, bl
     return result;
   }
 
-  return { status, save, list, get, remove, open };
+  async function usage(userId) {
+    owner(userId);
+    if (isVercel) {
+      const { db } = await cloud();
+      const result = await db.query('SELECT COALESCE(SUM(size_bytes), 0) AS bytes, COUNT(*) AS assets FROM sb_vault_assets WHERE owner_id = $1', [userId]);
+      return { bytes: Number(result.rows[0]?.bytes || 0), assets: Number(result.rows[0]?.assets || 0) };
+    }
+    const entries = await readIndex(userDir(userId));
+    return { bytes: entries.reduce((sum, item) => sum + Number(item.size_bytes || 0), 0), assets: entries.length };
+  }
+
+  // Only the authenticated cron handler may call without userId. Normal list/save
+  // operations prune their own account. Failures keep metadata for a later retry.
+  async function purgeExpired(userId, options = {}) {
+    if (userId !== undefined) owner(userId);
+    const cutoff = new Date(now() - RETENTION_MS).toISOString();
+    const limit = Math.max(1, Math.min(2000, Number(options.limit) || 1000));
+    const deadline = options.deadline || Date.now() + 240000;
+    const result = { deleted: 0, bytes_freed: 0, failed: 0, has_more: false, retention_days: RETENTION_DAYS };
+    if (isVercel) {
+      const { db } = await cloud();
+      const params = [cutoff];
+      let sql = 'SELECT id, owner_id, created_at, size_bytes FROM sb_vault_assets WHERE created_at <= $1';
+      if (userId !== undefined) { params.push(userId); sql += ' AND owner_id = $2'; }
+      params.push(limit + 1);
+      sql += ' ORDER BY created_at ASC, id ASC LIMIT $' + params.length;
+      const rows = (await db.query(sql, params)).rows;
+      const candidates = rows.slice(0, limit);
+      result.has_more = rows.length > limit;
+      let index = 0;
+      await Promise.all(Array.from({ length: Math.min(4, candidates.length) }, async () => {
+        while (index < candidates.length) {
+          if (Date.now() >= deadline) { result.has_more = true; break; }
+          const entry = candidates[index++];
+          try {
+            const removed = await remove(entry.owner_id, entry.id, {
+              abortSignal: AbortSignal.timeout(Math.max(1, Math.min(10000, deadline - Date.now())))
+            });
+            if (removed) { result.deleted++; result.bytes_freed += Number(entry.size_bytes); }
+          } catch { result.failed++; }
+        }
+      }));
+      return result;
+    }
+    let directories;
+    if (userId !== undefined) directories = [userDir(userId)];
+    else {
+      const children = await fsp.readdir(base, { withFileTypes: true }).catch(error => { if (error.code === 'ENOENT') return []; throw error; });
+      directories = children.filter(item => item.isDirectory() && /^[a-f0-9]{64}$/.test(item.name)).map(item => path.join(base, item.name));
+    }
+    let attempted = 0;
+    for (const directory of directories) {
+      if (Date.now() >= deadline || attempted >= limit) { result.has_more = true; break; }
+      if (!(await fsp.stat(directory).catch(() => null))?.isDirectory()) continue;
+      await locked(directory, async () => {
+        const entries = await readIndex(directory); const keep = [];
+        for (const entry of entries) {
+          if (new Date(entry.created_at).toISOString() > cutoff || Date.now() >= deadline || attempted >= limit) {
+            keep.push(entry);
+            if (new Date(entry.created_at).toISOString() <= cutoff) result.has_more = true;
+            continue;
+          }
+          attempted++;
+          try {
+            if (!ID.test(String(entry.id))) throw new Error('Invalid vault id');
+            await fsp.unlink(path.join(directory, entry.id + '.asset')).catch(error => { if (error.code !== 'ENOENT') throw error; });
+            result.deleted++; result.bytes_freed += Number(entry.size_bytes);
+          } catch { result.failed++; keep.push(entry); }
+        }
+        if (keep.length !== entries.length) await writeIndex(directory, keep);
+      });
+    }
+    return result;
+  }
+
+  return { status, save, list, get, remove, open, usage, purgeExpired };
+
 }
 
 module.exports = { createVaultStore };

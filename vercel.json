@@ -92,5 +92,11 @@
       "source": "/api/:a/:b/:c/:d",
       "destination": "/api/_route?p=/api/:a/:b/:c/:d"
     }
+  ],
+  "crons": [
+    {
+      "path": "/api/vault-cleanup",
+      "schedule": "0 0 * * *"
+    }
   ]
 }

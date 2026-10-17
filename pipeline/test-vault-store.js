@@ -52,6 +52,18 @@ function fakeDatabase() {
         const row = { id, owner_id, source, kind, title, filename, mime_type, size_bytes, created_at, metadata: JSON.parse(metadata), sha256, blob_url };
         rows.set(id, row); return { rows: [row] };
       }
+      if (sql.startsWith('SELECT id, owner_id, created_at, size_bytes')) {
+        assert.match(sql, /WHERE created_at <= \$1/, 'Global retention queries must have a server-controlled cutoff');
+        const own = /AND owner_id = \$2/.test(sql);
+        const result = [...rows.values()].filter(row => row.created_at <= params[0] && (!own || row.owner_id === params[1]));
+        result.sort((a,b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id));
+        return { rows: result.slice(0, params[params.length - 1]) };
+      }
+      if (sql.startsWith('SELECT COALESCE(SUM(size_bytes)')) {
+        assert.match(sql, /WHERE owner_id = \$1/);
+        const own = [...rows.values()].filter(row => row.owner_id === params[0]);
+        return { rows: [{ bytes: own.reduce((sum,row) => sum + Number(row.size_bytes), 0), assets: own.length }] };
+      }
       assert.match(sql, /WHERE owner_id = \$1/, 'Every metadata read/delete must be owner scoped');
       let result = [...rows.values()].filter(row => row.owner_id === params[0]);
       if (sql.startsWith('DELETE ')) {
@@ -368,3 +380,78 @@ for (const variable of ['BLOB_STORE_ID', 'BLOB_READ_WRITE_TOKEN_STORE_ID']) {
     assert.equal((await store.status()).ready, false, 'Do not reuse credentials outside their request');
   });
 }
+
+const DAY = 86400000;
+test('local retention removes only files at least seven days old and tracks owned bytes', async t => {
+  const root = await temporary(t); let clock = Date.now(); const start = clock;
+  const store = createVaultStore({ root, now: () => clock });
+  const old = await store.save(asset({ buffer: 'old alice' }));
+  const oldBob = await store.save(asset({ userId: 'bob', buffer: 'old bob' }));
+  assert.equal(Date.parse(old.expires_at), start + 7 * DAY);
+  clock += DAY;
+  const young = await store.save(asset({ source: 'sjinn', buffer: 'young alice' }));
+  assert.deepEqual(await store.usage('alice'), { bytes: 20, assets: 2 });
+  clock = start + 7 * DAY - 1;
+  assert.equal((await store.purgeExpired('alice')).deleted, 0);
+  clock++;
+  const cleaned = await store.purgeExpired('alice');
+  assert.equal(cleaned.deleted, 1); assert.equal(cleaned.bytes_freed, 9);
+  assert.equal(await store.open('alice', old.id), null);
+  assert.equal(await contents(await store.open('alice', young.id)), 'young alice');
+  assert.ok(await store.get('bob', oldBob.id), 'Account cleanup cannot delete another owner');
+  const global = await store.purgeExpired();
+  assert.equal(global.deleted, 1);
+  assert.equal(await store.get('bob', oldBob.id), null);
+  const listed = await store.list('alice');
+  assert.deepEqual(listed.usage, { bytes: 11, assets: 1 });
+  assert.equal(listed.retention_days, 7); assert.equal(listed.vault[0].id, young.id);
+});
+
+test('expired duplicate is replaced with a new seven-day copy when generated again', async t => {
+  const root = await temporary(t); let clock = Date.now();
+  const store = createVaultStore({ root, now: () => clock });
+  const old = await store.save(asset());
+  clock += 7 * DAY;
+  const fresh = await store.save(asset());
+  assert.notEqual(old.id, fresh.id);
+  assert.equal(await store.get('alice', old.id), null);
+  assert.equal(Date.parse(fresh.expires_at), clock + 7 * DAY);
+  assert.equal((await store.usage('alice')).assets, 1);
+});
+
+test('cloud cleanup deletes real Blob bytes, preserves failures for retry, and scopes account cleanup', async t => {
+  process.env.BLOB_READ_WRITE_TOKEN = 'test-only-token';
+  const root = await temporary(t); const db = fakeDatabase(); const blob = fakeBlob(); let clock = Date.now(); const start = clock;
+  const store = createVaultStore({ root, isVercel: true, getDb: async () => db, blob, now: () => clock });
+  const old = await store.save(asset({ buffer: 'old alice' }));
+  const oldBob = await store.save(asset({ userId: 'bob', buffer: 'old bob' }));
+  clock += DAY;
+  const young = await store.save(asset({ buffer: 'young alice' }));
+  clock = start + 7 * DAY;
+  blob.failDelete = true;
+  const failed = await store.purgeExpired('alice');
+  assert.equal(failed.failed, 1); assert.equal(failed.deleted, 0);
+  assert.equal(db.rows.size, 3); assert.equal(blob.blobs.size, 3);
+  assert.ok(await store.get('alice', old.id), 'Keep metadata until Blob deletion succeeds');
+  blob.failDelete = false;
+  assert.equal((await store.purgeExpired('alice')).bytes_freed, 9);
+  assert.equal(blob.blobs.size, 2); assert.ok(await store.get('bob', oldBob.id));
+  assert.equal((await store.purgeExpired()).deleted, 1);
+  assert.equal(blob.blobs.size, 1); assert.ok(await store.get('alice', young.id));
+  assert.deepEqual(await store.usage('alice'), { bytes: 11, assets: 1 });
+  await store.remove('alice', young.id);
+  assert.equal(blob.blobs.size, 0); assert.deepEqual(await store.usage('alice'), { bytes: 0, assets: 0 });
+});
+
+test('cleanup respects its batch limit and resumes safely', async t => {
+  process.env.BLOB_READ_WRITE_TOKEN = 'test-only-token';
+  const root = await temporary(t); const db = fakeDatabase(); const blob = fakeBlob(); let clock = Date.now();
+  const store = createVaultStore({ root, isVercel: true, getDb: async () => db, blob, now: () => clock });
+  for (let n=0;n<3;n++) await store.save(asset({ buffer:'old-'+n }));
+  clock += 7 * DAY;
+  const first = await store.purgeExpired(undefined, { limit: 1 });
+  assert.equal(first.deleted, 1); assert.equal(first.has_more, true);
+  assert.equal((await store.purgeExpired()).deleted, 2);
+  assert.equal((await store.purgeExpired()).deleted, 0);
+  assert.equal(blob.blobs.size, 0);
+});

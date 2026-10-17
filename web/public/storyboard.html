@@ -271,6 +271,12 @@ The Director AI will:
         <option value="4:3">4:3 — classic TV (Novita only; others snap to 16:9)</option>
         <option value="3:4">3:4 — portrait (Novita only; others snap to 16:9)</option>
       </select>
+      <label class="f">Wan video resolution</label>
+      <select id="videoResolution">
+        <option value="720P">720P — faster</option>
+        <option value="1080P" selected>1080P — higher detail</option>
+      </select>
+      <div style="font-size:10.5px;color:var(--dim);margin:-4px 0 6px;line-height:1.5">Used by Novita Wan video models. PaxSenix video models keep their provider resolution.</div>
       <label class="f">Narration voice</label>
       <select id="voice"></select>
       <label class="f">Narration mode</label>
@@ -865,7 +871,7 @@ $('btnAuto').onclick=async()=>{
   const r=await api('/run-all',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
     script,model:$('chatModel').value,duration:Number($('duration').value),look:$('look').value,
     style:$('style').value,imageModel:$('imageModel').value,videoModel:$('videoModel').value,ratio:$('ratio').value,
-    voice:$('voice').value,consistency:$('consistency').checked,language:$('language').value,narrationMode:$('narrationMode').value,narrationEngine:$('narrationEngine').value,narrVolume:Number($('narrVolume').value),origVolume:Number($('origVolume').value),chainContinuity:$('chainContinuity').checked,clipDuration:Number($('clipDuration').value)
+    voice:$('voice').value,consistency:$('consistency').checked,language:$('language').value,narrationMode:$('narrationMode').value,narrationEngine:$('narrationEngine').value,narrVolume:Number($('narrVolume').value),origVolume:Number($('origVolume').value),chainContinuity:$('chainContinuity').checked,clipDuration:Number($('clipDuration').value),resolution:$('videoResolution').value
   })}).catch(e=>{alert('Error: '+e.message);return{error:e.message}});
   if(r.error)alert(r.error);
 };
@@ -918,7 +924,7 @@ async function callPhase(path, body, opts = {}) {
 // storyboard → char-refs → images → videos (one frame per request) → narration → combine.
 async function runAutoVercel(script){
   SUBMITTING=true;LOCAL_BUSY=true;clearLocalLog();LOCAL_PHASE='STORYBOARD';LOCAL_RESULT='running';USER_CANCELLED=false;PHASE_ABORT=null;poll();
-  const opts={ratio:$('ratio').value,imageModel:$('imageModel').value,videoModel:$('videoModel').value,style:$('style').value,voice:$('voice').value,consistency:$('consistency').checked,language:$('language').value,narrationMode:$('narrationMode').value,narrationEngine:$('narrationEngine').value,narrVolume:Number($('narrVolume').value),origVolume:Number($('origVolume').value),chainContinuity:$('chainContinuity').checked,clipDuration:Number($('clipDuration').value)};
+  const opts={ratio:$('ratio').value,imageModel:$('imageModel').value,videoModel:$('videoModel').value,style:$('style').value,voice:$('voice').value,consistency:$('consistency').checked,language:$('language').value,narrationMode:$('narrationMode').value,narrationEngine:$('narrationEngine').value,narrVolume:Number($('narrVolume').value),origVolume:Number($('origVolume').value),chainContinuity:$('chainContinuity').checked,clipDuration:Number($('clipDuration').value),resolution:$('videoResolution').value};
   try{
     // ---- Phase 1: storyboard ----
     // Generated SYNCHRONOUSLY by one request and returned inline. The old design
@@ -1026,7 +1032,7 @@ async function runAutoVercel(script){
       let j=null;
       for(let attempt=1;attempt<=3;attempt++){
         try{
-          const body=sbPayload({frames:[f.frame],ratio:opts.ratio,videoModel:opts.videoModel,chainContinuity:opts.chainContinuity,narrationMode:opts.narrationMode});
+          const body=sbPayload({frames:[f.frame],ratio:opts.ratio,videoModel:opts.videoModel,chainContinuity:opts.chainContinuity,narrationMode:opts.narrationMode,resolution:opts.resolution});
           if(prevChain)body.chainAnchor=prevChain;
           j=await callPhase('/videos',body);
           // Wan (Novita) renders run 4-30 minutes — far longer than any single
@@ -1037,7 +1043,7 @@ async function runAutoVercel(script){
           // retry re-submitted a NEW paid render.
           if(j&&j.pending&&j.task){
             logLocal(`frame ${f.frame}: rendering in the background — wan clips can take a while, no need to watch this screen`);
-            j=await pollVideoTask(f.frame,j.task,{frames:[f.frame],ratio:opts.ratio,videoModel:opts.videoModel,chainContinuity:opts.chainContinuity,narrationMode:opts.narrationMode},i+1,targets.length);
+            j=await pollVideoTask(f.frame,j.task,{frames:[f.frame],ratio:opts.ratio,videoModel:opts.videoModel,chainContinuity:opts.chainContinuity,narrationMode:opts.narrationMode,resolution:opts.resolution},i+1,targets.length);
             break; // a submitted render settles either way — never auto-resubmit a paid render
           }
         }catch(e){j={error:e.message}}
@@ -1064,7 +1070,7 @@ async function runAutoVercel(script){
     // ---- Phase 6: combine ----
     LOCAL_PHASE='COMBINING';
     logLocal('phase 6/6: combining final film…','');
-    const cb=await callPhase('/combine',sbPayload({ratio:opts.ratio,narrationMode:opts.narrationMode,narrVolume:opts.narrVolume,origVolume:opts.origVolume,clipUrls,imageModel:opts.imageModel,narrationUrl:narrUrl||localStorage.getItem('sb_narr_url')||'',title:(($('script').value||'').replace(/\s+/g,' ').trim().slice(0,80)||'Story film')}));
+    const cb=await callPhase('/combine',sbPayload({ratio:opts.ratio,resolution:opts.resolution,narrationMode:opts.narrationMode,narrVolume:opts.narrVolume,origVolume:opts.origVolume,clipUrls,imageModel:opts.imageModel,narrationUrl:narrUrl||localStorage.getItem('sb_narr_url')||'',title:(($('script').value||'').replace(/\s+/g,' ').trim().slice(0,80)||'Story film')}));
     if(!cb||cb.error||cb.ok===false)throw new Error((cb&&cb.error)||'Combine failed');
     rememberFinalFilm(cb.finalUrl);
     LOCAL_RESULT='complete';
@@ -1126,7 +1132,7 @@ async function pollVideoTask(frameNum, task, body, idx, total){
 // next frame can anchor across separate invocations.
 $('btnVideos').onclick=async()=>{
   if(IS_VERCEL_CLIENT) return runVideosVercel();
-  await postJob('/videos',sbPayload({ratio:$('ratio').value,videoModel:$('videoModel').value,force:true,chainContinuity:$('chainContinuity').checked,narrationMode:$('narrationMode').value}));
+  await postJob('/videos',sbPayload({ratio:$('ratio').value,resolution:$('videoResolution').value,videoModel:$('videoModel').value,force:true,chainContinuity:$('chainContinuity').checked,narrationMode:$('narrationMode').value}));
 };
 async function runVideosVercel(){
   if(SUBMITTING) return;
@@ -1152,14 +1158,14 @@ async function runVideosVercel(){
         try{
           // 320s client-side timeout: Vercel kills the function at 300s — if that
           // happens mid-render the connection drops, so never let the loop hang.
-          r=await api('/videos',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sbPayload({frames:[f.frame],ratio:$('ratio').value,videoModel:$('videoModel').value,force:true,chainContinuity:chained,chainAnchor:prevChain,narrationMode:$('narrationMode').value})),signal:AbortSignal.timeout(320000)});
+          r=await api('/videos',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sbPayload({frames:[f.frame],ratio:$('ratio').value,resolution:$('videoResolution').value,videoModel:$('videoModel').value,force:true,chainContinuity:chained,chainAnchor:prevChain,narrationMode:$('narrationMode').value})),signal:AbortSignal.timeout(320000)});
         }catch(e){r={error:'request failed: '+e.message};}
         // Wan (Novita) renders run 4-30 min — the server submits and hands back
         // {pending, task}. Poll THAT task with fresh requests in the background.
         // NEVER retry the submit: every submission is a NEW paid render.
         if(r&&r.pending&&r.task){
           logLocal(`frame ${f.frame}: rendering in the background — wan clips can take a while, no need to watch this screen`);
-          r=await pollVideoTask(f.frame,r.task,{frames:[f.frame],ratio:$('ratio').value,videoModel:$('videoModel').value,chainContinuity:chained,narrationMode:$('narrationMode').value},i+1,targets.length);
+          r=await pollVideoTask(f.frame,r.task,{frames:[f.frame],ratio:$('ratio').value,videoModel:$('videoModel').value,chainContinuity:chained,narrationMode:$('narrationMode').value,resolution:$('videoResolution').value},i+1,targets.length);
           break;
         }
         if(r.error||r.ok===false){logLocal(`frame ${f.frame}: attempt ${attempt} failed — ${String(r.error||'render did not complete').replace(/^frame \d+: /,'')}`,'err');if(attempt<3){logLocal(`frame ${f.frame}: retrying in 10s (attempt ${attempt+1}/3)…`,'');await new Promise(res=>setTimeout(res,10000));}else break;continue;}
@@ -1196,7 +1202,7 @@ $('btnCombine').onclick=async()=>{
   const clipUrls=loadClipUrls();
   for(const f of FRAMES) if(f.clip_url&&!clipUrls[String(f.frame)]) clipUrls[String(f.frame)]=f.clip_url;
   let narrationUrl='';try{narrationUrl=localStorage.getItem('sb_narr_url')||''}catch(e){}
-  const r=await postJob('/combine',sbPayload({ratio:$('ratio').value,narrationMode:$('narrationMode').value,narrVolume:Number($('narrVolume').value),origVolume:Number($('origVolume').value),imageModel:$('imageModel').value,clipUrls,narrationUrl,title:(($('script').value||'').replace(/\s+/g,' ').trim().slice(0,80)||'Story film')}));
+  const r=await postJob('/combine',sbPayload({ratio:$('ratio').value,resolution:$('videoResolution').value,narrationMode:$('narrationMode').value,narrVolume:Number($('narrVolume').value),origVolume:Number($('origVolume').value),imageModel:$('imageModel').value,clipUrls,narrationUrl,title:(($('script').value||'').replace(/\s+/g,' ').trim().slice(0,80)||'Story film')}));
   if(!r||r.error||r.ok===false||r.started)return;
   try{rememberFinalFilm(r.finalUrl);logLocal('🎬 FINAL FILM READY','ok')}catch(e){alert(e.message)}
 };

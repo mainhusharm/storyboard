@@ -1341,6 +1341,10 @@ function novitaImageSize(ratio) {
   if (r === '3:4') return '768*1024';
   return '1280*720';
 }
+
+function normalizeVideoResolution(value) {
+  return String(value || '').toUpperCase() === '1080P' ? '1080P' : '720P';
+}
 // Per-model supported aspect ratios (verified against PaxSenix): Grok accepts
 // 16:9 / 9:16 / 1:1; Omni Flash and Veo 3.1 accept ONLY 16:9 / 9:16. No video
 // model accepts 4:3. Unsupported ratios are snapped to the closest supported
@@ -1764,12 +1768,15 @@ function isAquaImageModel(model) { return /^aqua:/.test(String(model || '')); }
 // a task_url instead of a direct image). Tolerant of the exact response shape.
 function aquaTaskUrl(t) { return String(t || '').trim(); }
 function aquaUrlFrom(j) {
+  if (typeof j === 'string') return /^(https?:|data:image\/)/i.test(j) ? j : '';
+  if (Array.isArray(j)) { for (const item of j) { const url = aquaUrlFrom(item); if (url) return url; } return ''; }
   if (!j || typeof j !== 'object') return '';
   // AquaDevs wraps the finished image in `result` (e.g. {status:'completed', result:{url}}).
-  for (const k of ['result', 'response', 'output', 'data', 'image']) {
+  for (const k of ['result', 'response', 'output', 'data', 'image', 'images', 'image_url']) {
     const v = j[k];
-    if (v && typeof v === 'object' && !Array.isArray(v)) { const n = aquaUrlFrom(v); if (n) return n; }
+    if (v) { const n = aquaUrlFrom(v); if (n) return n; }
   }
+  if (typeof j.b64_json === 'string' && j.b64_json) return 'data:image/png;base64,' + j.b64_json;
   if (typeof j.url === 'string' && /^https?:/.test(j.url)) return j.url;
   if (Array.isArray(j.urls) && typeof j.urls[0] === 'string') return j.urls[0];
   if (j.image && typeof j.image === 'string' && /^https?:/.test(j.image)) return j.image;
@@ -1789,12 +1796,13 @@ async function aquaPollImage(taskUrl, maxMs = 170000) {
     try {
       const r = await fetch(taskUrl, { headers: aquaHeaders({ 'Content-Type': undefined }), signal: AbortSignal.timeout(45000) });
       const j = await r.json().catch(() => ({}));
+      if (!r.ok || j.error || j.success === false) throw Object.assign(new Error(`Aqua task HTTP ${r.status}: ${JSON.stringify(j).slice(0, 400)}`), { terminal: r.status >= 400 && r.status < 500 && r.status !== 429 });
       const url = aquaUrlFrom(j);
       if (url) return url;
       last = String((j && (j.status || j.state || j.message)) || r.status);
       if (/fail|error|cancel/i.test(last)) throw new Error('aqua task failed: ' + JSON.stringify(j).slice(0, 180));
     } catch (e) {
-      if (/aqua task failed/.test(e.message)) throw e;
+      if (e.terminal || /aqua task failed/.test(e.message)) throw e;
       last = e.message;
     }
     await new Promise(r => setTimeout(r, 4000));
@@ -1819,21 +1827,25 @@ async function generateAquaImage(model, prompt, ratio = '9:16', imageUrl = '') {
       });
       const text = await res.text();
       let j = null; try { j = JSON.parse(text); } catch { j = null; }
-      const directUrl = res.ok ? aquaUrlFrom(j) : '';
+      const failed = !res.ok || j?.error || j?.success === false;
+      const directUrl = !failed ? aquaUrlFrom(j) : '';
       if (directUrl) { logLine(`aqua image: ${id} done in ${(j && j.latency) || '?'}s`); return directUrl; }
       // Edit/i2i (and some models) answer with a task to poll instead.
-      const taskUrl = aquaTaskUrl(j && (j.task_url || j.taskUrl || (j.task_id ? 'https://api.aquadevs.com/v1/images/tasks/' + j.task_id : '')));
-      if (res.ok && taskUrl) {
+      const taskData = j?.data && !Array.isArray(j.data) ? j.data : j;
+      const taskId = taskData && (taskData.task_id || taskData.taskId);
+      const taskUrl = aquaTaskUrl(j && (j.task_url || j.taskUrl || taskData?.task_url || (taskId ? AQUA_API + '/v1/images/tasks/' + encodeURIComponent(taskId) : '')));
+      if (!failed && taskUrl) {
         logLine(`aqua image: ${id} queued (${(j && j.status) || 'pending'}) - polling`);
         return await aquaPollImage(taskUrl);
       }
       // A task-style response (task_id) is not used by these models — keep it clear.
       // Cloudflare challenge (403 "Just a moment...") — retry with a pause.
       const isChallenge = res.status === 403 && /just a moment|cf-|cloudflare/i.test(text);
-      lastErr = new Error(j ? JSON.stringify(j).slice(0, 200) : `HTTP ${res.status} ${isChallenge ? 'Cloudflare challenge' : text.slice(0, 120)}`);
+      lastErr = Object.assign(new Error(`Aqua ${id} HTTP ${res.status}: ${isChallenge ? 'Cloudflare challenge' : (j ? JSON.stringify(j).slice(0, 400) : text.slice(0, 200))}`), { code: 'AQUA_IMAGE_ERROR', permanent: res.status >= 400 && res.status < 500 && ![408, 429].includes(res.status) });
+      if (lastErr.permanent) throw lastErr;
       if (isChallenge) await new Promise(r => setTimeout(r, 5000 * attempt));
       logLine(`aqua image ${id} attempt ${attempt}: ${lastErr.message}`);
-    } catch (e) { lastErr = e; logLine(`aqua image ${id} attempt ${attempt}: ${e.message}`); }
+    } catch (e) { if (e.permanent || e.terminal) throw e; lastErr = e; logLine(`aqua image ${id} attempt ${attempt}: ${e.message}`); }
     await new Promise(r => setTimeout(r, 3000 * attempt));
   }
   throw lastErr || new Error('aqua image failed');
@@ -1843,12 +1855,14 @@ async function generateAquaImage(model, prompt, ratio = '9:16', imageUrl = '') {
 // file behind the logfare-local marker, so the submit → wait → download pipeline
 // treats it exactly like a finished Logfare render.
 async function aquaImageToFile(url, outPath) {
+  await fsp.mkdir(path.dirname(outPath), { recursive: true });
   const u = String(url || '');
   const dataM = /^data:image\/[\w.+-]+;base64,(.+)$/i.exec(u);
   if (dataM) { await fsp.writeFile(outPath, Buffer.from(dataM[1], 'base64')); return outPath; }
   if (!/^https?:/i.test(u)) throw new Error('aqua image returned no usable URL');
   const r = await fetch(u, { signal: AbortSignal.timeout(120000) });
   if (!r.ok) throw new Error(`aqua image download failed: HTTP ${r.status}`);
+  if (/text\/html|application\/json/i.test(r.headers.get('content-type') || '')) throw new Error('Aqua image download returned an error page instead of image bytes');
   await fsp.writeFile(outPath, Buffer.from(await r.arrayBuffer()));
   return outPath;
 }
@@ -3264,6 +3278,7 @@ async function generateCharRefs(characters, imageModel = 'seedream-5', style = '
   const perTaskMin = IS_VERCEL ? Math.max(1, Math.floor(budgetMs / 60000)) : 25;
   const renderCharRef = async (c, prompt) => {
     const out = charRefFile(c.id);
+    let lastFailure = null;
     const refAttempt = async (label, p, modelOverride) => {
       const mdl = modelOverride || imageModel;
       p = capProviderImagePrompt(p);
@@ -3271,9 +3286,13 @@ async function generateCharRefs(characters, imageModel = 'seedream-5', style = '
       const info = {};
       const task = await submitTask(q, logLine, info);
       if (info.error?.permanent) { info.error.submittedPrompt = p; throw info.error; }
-      if (!task) { logLine(`${c.id}: ref SUBMIT FAILED (${label})`); return false; }
+      if (!task) {
+        lastFailure = { code: info.error?.code || 'REFERENCE_SUBMIT_FAILED', message: `${mdl} (${label}): ${info.error?.message || 'provider did not return an image task'}`, submitted_prompt: p, model: mdl, retryable: true };
+        logLine(`${c.id}: ref SUBMIT FAILED — ${lastFailure.message}`); return false;
+      }
       logLine(`${c.id}: submitted ref portrait (${label})`);
-      const url = await waitTask(task, perTaskMin);
+      const waitInfo = {};
+      const url = await waitTask(task, perTaskMin, logLine, waitInfo);
       if (job.cancelRequested) return 'cancel';
       if (url && await download(url, out)) {
         await assetVault.captureFile(out, 'image', (c.name || c.id) + ' — character reference', { stage: 'character-reference', character_id: c.id, model: mdl, prompt: p });
@@ -3283,7 +3302,8 @@ async function generateCharRefs(characters, imageModel = 'seedream-5', style = '
         logLine(`${c.id}: REF DONE (${label})`);
         return true;
       }
-      logLine(`${c.id}: ref RENDER FAILED (${label}) — repairing prompt and retrying`);
+      lastFailure = { code: 'REFERENCE_RENDER_FAILED', message: `${mdl} (${label}): ${url ? 'rendered image could not be downloaded' : (waitInfo.payload ? JSON.stringify(waitInfo.payload).slice(0, 400) : 'render task failed or timed out without an image')}`, submitted_prompt: p, model: mdl, retryable: true };
+      logLine(`${c.id}: ref RENDER FAILED — ${lastFailure.message}`);
       return false;
     };
     // Content-filter recovery (e.g. Logfare's 3030 on a perfectly respectful
@@ -3337,7 +3357,7 @@ async function generateCharRefs(characters, imageModel = 'seedream-5', style = '
     r = await refAttempt('essentials fallback', essentials);
     if (r === 'cancel') return;
     if (r !== true) {
-      c.reference_error ||= { code: 'REFERENCE_RENDER_FAILED', message: 'Character reference render failed after all attempts.', retryable: true };
+      c.reference_error = lastFailure || { code: 'REFERENCE_RENDER_FAILED', message: 'Character reference render failed after all attempts.', retryable: true };
       job.failed.push(c.id); logLine(`${c.id}: REF FAILED — all render attempts failed`);
     }
     job.done++;
@@ -3846,6 +3866,7 @@ async function repairVideoPrompt(frameNum, prompt, videoModel) {
 }
 
 async function generateVideos(frames, ratio, videoModel = DEFAULT_VIDEO_MODEL, chainContinuity = false, opts = {}) {
+  const videoResolution = normalizeVideoResolution(opts.resolution);
   const withAnim = frames.filter(f => f.animation_prompt).sort((a, b) => a.frame - b.frame);
   setPhase('videos', withAnim.length);
   // Purge stale frame videos + chain anchors from older storyboards (frame numbers
@@ -3929,7 +3950,7 @@ async function generateVideos(frames, ratio, videoModel = DEFAULT_VIDEO_MODEL, c
         task = await novitaSubmit({
           model: model0,
           input: { prompt: p },
-          parameters: { duration: novitaDurationFor(model0, f.duration_sec), resolution: '720P', ratio: mRatio },
+           parameters: { duration: novitaDurationFor(model0, f.duration_sec), resolution: videoResolution, ratio: mRatio },
           ...(useNovitaImg ? { imageUrls: [img] } : {})
         }, logLine);
       } else {
@@ -4533,12 +4554,17 @@ async function combineFilm(frames, ratio = '16:9', narrationMode = 'tts', opts =
   const ratioParts = ratio.split(':');
   const rw = parseInt(ratioParts[0]) || 16;
   const rh = parseInt(ratioParts[1]) || 9;
-  const normW = rw >= rh ? 1280 : 720;
-  const normH = rw >= rh ? 720 : 1280;
-  const squareW = rw === rh ? 1080 : normW;
-  const squareH = rw === rh ? 1080 : normH;
-  const targetW = rw === rh ? 1080 : normW;
-  const targetH = rw === rh ? 1080 : normH;
+  const videoResolution = normalizeVideoResolution(opts.resolution);
+  // Ratio-exact base dimensions, scaled 1.5x for 1080P. (The previous
+  // long-side/short-side derivation flattened 4:3 and 3:4 boards to 16:9/9:16.)
+  const COMBINE_DIMS = {
+    '16:9': [1280, 720], '9:16': [720, 1280], '1:1': [1024, 1024],
+    '4:3': [1024, 768], '3:4': [768, 1024]
+  };
+  const scaleFactor = videoResolution === '1080P' ? 1.5 : 1;
+  const [baseW, baseH] = COMBINE_DIMS[`${rw}:${rh}`] || [1280, 720];
+  const targetW = Math.round(baseW * scaleFactor / 2) * 2;
+  const targetH = Math.round(baseH * scaleFactor / 2) * 2;
   logLine(`combine: target resolution ${targetW}x${targetH} (${ratio})`);
 
   const sorted = [...frames].sort((a, b) => a.frame - b.frame);
@@ -5539,6 +5565,7 @@ const routeRequest = async (req, res) => {
   // Strip trailing slash except root
   if (p.length > 1 && p.endsWith('/')) p = p.slice(0, -1);
   try {
+    if (p === '/api/vault-cleanup') return assetVault.handleCleanup(req, res);
     // --- API ---
     if (p === '/api/status') {
       const statusUser = await getUserBySessionToken(authToken(req));
@@ -5894,7 +5921,7 @@ const routeRequest = async (req, res) => {
         if (narrationMode === 'prompt') {
           logLine('prompt-vocalized mode: narration embedded in video prompts, no TTS');
         }
-        steps.push(['videos', () => generateVideos(videoFrames, body.ratio || '16:9', body.videoModel || DEFAULT_VIDEO_MODEL, body.chainContinuity === true)]);          steps.push(['combine', () => combineFilm(frames, body.ratio || '16:9', narrationMode, { narrVol: body.narrVolume, origVol: body.origVolume, clipUrls: body.clipUrls, imageModel: body.imageModel, narrationUrl: body.narrationUrl })]);
+        steps.push(['videos', () => generateVideos(videoFrames, body.ratio || '16:9', body.videoModel || DEFAULT_VIDEO_MODEL, body.chainContinuity === true, { resolution: body.resolution })]);          steps.push(['combine', () => combineFilm(frames, body.ratio || '16:9', narrationMode, { resolution: body.resolution, narrVol: body.narrVolume, origVol: body.origVolume, clipUrls: body.clipUrls, imageModel: body.imageModel, narrationUrl: body.narrationUrl })]);
         // After combine: generate full narration TTS and overlay on final video
         if (narrationMode === 'tts') {
           const engine = body.narrationEngine || body.engine || DEFAULT_NARRATION_ENGINE;
@@ -6054,7 +6081,7 @@ const routeRequest = async (req, res) => {
                 const task = await novitaSubmit({
                   model: vidModel,
                   input: { prompt: f.animation_prompt || f.summary || 'cinematic story scene, dramatic lighting' },
-                  parameters: { duration: dur, resolution: '720P', ratio: mRatio },
+                  parameters: { duration: dur, resolution: normalizeVideoResolution(body.resolution), ratio: mRatio },
                   ...(useImg ? { imageUrls: [anchor] } : {})
                 }, logLine);
                 if (!task) return sendJson(res, 502, { error: `${vidModel} submit failed` });
@@ -6092,7 +6119,7 @@ const routeRequest = async (req, res) => {
         // and keep the synchronous per-frame path.
         return (async () => {
           try {
-            await generateVideos(frames, body.ratio || '16:9', body.videoModel || DEFAULT_VIDEO_MODEL, body.chainContinuity === true, { skipPurge: isPartial });
+            await generateVideos(frames, body.ratio || '16:9', body.videoModel || DEFAULT_VIDEO_MODEL, body.chainContinuity === true, { skipPurge: isPartial, resolution: body.resolution });
             job.phase = 'idle';
             // Truth-check: only claim success when the mp4 actually landed on disk —
             // a render can exhaust the 300s Vercel budget without throwing.
@@ -6124,7 +6151,7 @@ const routeRequest = async (req, res) => {
           } catch (e) { job.phase = 'idle'; return sendJson(res, 500, { error: String(e.message || e) }); }
         })();
       }
-      generateVideos(frames, body.ratio || '16:9', body.videoModel || DEFAULT_VIDEO_MODEL, body.chainContinuity === true, { skipPurge: isPartial }).catch(e => { logLine(`videos crash: ${e.message}`); job.phase = 'idle'; });
+      generateVideos(frames, body.ratio || '16:9', body.videoModel || DEFAULT_VIDEO_MODEL, body.chainContinuity === true, { skipPurge: isPartial, resolution: body.resolution }).catch(e => { logLine(`videos crash: ${e.message}`); job.phase = 'idle'; });
       return sendJson(res, 202, { started: true, count: frames.filter(f => f.animation_prompt).length });
     }
 
@@ -6136,7 +6163,7 @@ if (p === '/api/combine' && req.method === 'POST') {
       if (IS_VERCEL) return (async () => {
         const combineDeadline = Date.now() + 270000;
         try {
-          const fp = await combineFilm(frames, body.ratio || '16:9', body.narrationMode, { narrVol: body.narrVolume, origVol: body.origVolume, clipUrls: body.clipUrls, imageModel: body.imageModel, narrationUrl: body.narrationUrl });
+          const fp = await combineFilm(frames, body.ratio || '16:9', body.narrationMode, { resolution: body.resolution, narrVol: body.narrVolume, origVol: body.origVolume, clipUrls: body.clipUrls, imageModel: body.imageModel, narrationUrl: body.narrationUrl });
           job.phase = 'idle';
           if (!fp || !fs.existsSync(fp) || !fs.statSync(fp).size) {
             return sendJson(res, 422, { ok: false, error: 'No final film was created. Finish rendering the scene clips or images, then retry Combine.' });
@@ -6161,7 +6188,7 @@ if (p === '/api/combine' && req.method === 'POST') {
           return sendJson(res, 200, { ok: true, finalUrl });
         } catch (e) { job.phase = 'idle'; return sendJson(res, 500, { error: String(e.message || e) }); }
       })();
-      combineFilm(frames, body.ratio || '16:9', body.narrationMode, { narrVol: body.narrVolume, origVol: body.origVolume, clipUrls: body.clipUrls, imageModel: body.imageModel, narrationUrl: body.narrationUrl }).then(async fp => {
+      combineFilm(frames, body.ratio || '16:9', body.narrationMode, { resolution: body.resolution, narrVol: body.narrVolume, origVol: body.origVolume, clipUrls: body.clipUrls, imageModel: body.imageModel, narrationUrl: body.narrationUrl }).then(async fp => {
         if (fp) await archiveToVault({ title: body.title, filePath: fp, frames, ratio: body.ratio || '16:9' });
         else logLine('combine: no output');
       }).catch(e => { logLine(`combine crash: ${e.message}`); job.phase = 'idle'; });
@@ -7443,7 +7470,7 @@ RULES:
     // Omni-flash keeps the old synchronous behaviour (its clips render fast enough).
     if (p === '/api/flashloop/generate-video' && req.method === 'POST') {
       const body = await readBody(req).catch(() => ({}));
-      const { prompt = '', imageUrl = '', ratio = '9:16', chainAnchor = '', model: bodyModel = '', duration: bodyDuration = 0, pollTask: pollTaskId = '' } = body || {};
+      const { prompt = '', imageUrl = '', ratio = '9:16', resolution = '720P', chainAnchor = '', model: bodyModel = '', duration: bodyDuration = 0, pollTask: pollTaskId = '' } = body || {};
       const sceneN = Math.max(1, Number(body.scene) || 1);
       // A POLL request only carries the task id (the prompt went with the submit),
       // so the prompt check only applies when submitting a new render.
@@ -7496,7 +7523,7 @@ RULES:
               return {
                 model: MODEL,
                 input: { prompt: softened },
-                parameters: { duration: novDur, resolution: '720P', ratio: mRatio },
+                parameters: { duration: novDur, resolution: normalizeVideoResolution(resolution), ratio: mRatio },
                 ...(useAnchor ? { imageUrls: [anchor] } : {})
               };
             };
@@ -7565,13 +7592,16 @@ RULES:
       return (async () => {
         try {
           // Ratios are honoured per value (Novita renders 1:1, 4:3 and 3:4 too).
-          // Anything unknown falls back to 16:9.
+          // Anything unknown falls back to 16:9. `resolution` (720P/1080P, sent by
+          // the Make Video picker) scales the ratio-exact base dimensions — a
+          // 1080P wan render is no longer downscaled back to 720P at combine.
           const ratio = normalizeVideoRatio(body.ratio || '9:16', body.model && isNovitaVideoModel(body.model) ? body.model : 'omni-flash');
           const DIM_BY_RATIO = {
             '16:9': [1280, 720], '9:16': [720, 1280], '1:1': [1024, 1024],
             '4:3': [1024, 768], '3:4': [768, 1024]
           };
-          const [w, h] = DIM_BY_RATIO[ratio] || [1280, 720];
+          const flashScale = normalizeVideoResolution(body.resolution) === '1080P' ? 1.5 : 1;
+          const [w, h] = (DIM_BY_RATIO[ratio] || [1280, 720]).map(d => Math.round(d * flashScale / 2) * 2);
           const clipsDir = path.join(VIDEO_DIR, 'flash_clips');
           fs.mkdirSync(clipsDir, { recursive: true });
           const normClips = [];

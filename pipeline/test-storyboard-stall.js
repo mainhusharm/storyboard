@@ -64,7 +64,7 @@ console.log('\n[5] renders cannot outlive the Vercel function budget');
 // waitTask defaults to a 25-minute deadline. A provider that never answers kept
 // the promise alive past Vercel's 300s kill, so the request died with no
 // response and the pipeline looked frozen forever.
-check('char-refs parallel wait is budgeted', /waitTask\(task, perTaskMin\)/.test(src));
+check('char-refs parallel wait is budgeted', /waitTask\(task, perTaskMin/.test(src));
 check('per-task budget derived from the request budget', /IS_VERCEL \? Math\.max\(1, Math\.floor\(budgetMs \/ 60000\)\) : 25/.test(src));
 check('frame image wait is budgeted on Vercel', /waitTask\(task, IS_VERCEL \? 4 : 25\)/.test(src));
 check('client bounds the request with a manual abort timer', /setTimeout\(\(\) => \{ timedOut = true; ac\.abort\(\); \}, timeoutMs\)/.test(client));

@@ -16,6 +16,7 @@ async function runScenario(slowCharacters) {
     CHARACTERS_PROMPT: '', CHARS_JSON: 'characters', FRAMES_JSON: 'frames',
     Date: { now: () => now }, job: { cancelRequested: false },
     storyboardFrameCount: () => 2, logLine: () => {},
+    assetVault: { captureJSON: async () => {}, captureFile: async () => {} },
     buildFramesPrompt: () => '', lockSacredCharacter: c => c,
     capProviderImagePrompt: p => p, writeJson: async () => {},
     parseOrSalvage: async value => value,
