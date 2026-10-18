@@ -8,6 +8,9 @@ const crypto = require('crypto');
 const { execFile } = require('child_process');
 const { URL } = require('url');
 const { createVault } = require('./vault');
+const { MODEL: MODELSCOPE_IMAGE_MODEL, createModelscopeProvider } = require('./modelscope');
+const isModelscopeImageModel = model => model === MODELSCOPE_IMAGE_MODEL;
+const modelscopeImages = createModelscopeProvider({ getToken: () => MODELSCOPE_API_TOKEN, requestBudgetMs: process.env.VERCEL ? 270000 : Infinity, log: message => logLine(message) });
 const assetVault = createVault({
   root: process.env.STORYBOARD_DATA_DIR || (process.env.VERCEL ? '/tmp' : path.resolve(__dirname, '..')),
   isVercel: !!process.env.VERCEL,
@@ -63,6 +66,8 @@ let NOVITA_BASE = (process.env.NOVITA_BASE_URL || (() => { try { return fs.readF
 if (NOVITA_API_KEY) console.log('[Novita] API key loaded — wan3.0 video + qwen/wanx image models enabled');
 const FISH_API = 'https://api.fish.audio';
 const API = 'https://api.paxsenix.org';
+let MODELSCOPE_API_TOKEN = process.env.MODELSCOPE_API_TOKEN || process.env.MODELSCOPE_TOKEN || '';
+if (!IS_VERCEL && !MODELSCOPE_API_TOKEN) { try { MODELSCOPE_API_TOKEN = fs.readFileSync(path.join(ROOT, 'pipeline', 'modelscope_token.txt'), 'utf8').trim(); } catch {} }
 const AQUA_API = 'https://api.aquadevs.com';
 const LOGFARE_API = 'https://logfare.ai/v1';
 const PORT = process.env.PORT || 5173;
@@ -2037,6 +2042,13 @@ async function submitTask(pathAndQuery, logFn = logLine, outInfo = null) {
   // Logfare image models are not PaxSenix endpoints — render locally and hand the
   // finished file back (waitTask/download understand the logfare-local: marker).
   const lfModel = /[?&]model=([^&]+)/.exec(pq);
+  if (lfModel && isModelscopeImageModel(decodeURIComponent(lfModel[1]))) {
+    const query = new URLSearchParams(pq.slice(pq.indexOf('?') + 1));
+    try {
+      const result = await modelscopeImages.generate(query.get('prompt') || '', query.get('ratio') || '1:1');
+      return modelscopeImages.marker(result.url);
+    } catch (error) { if (outInfo) outInfo.error = error; logFn('ModelScope image: ' + error.message); return null; }
+  }
   if (lfModel && isLogfareImageModel(decodeURIComponent(lfModel[1]))) {
     const qv = (k, dflt) => { const m = new RegExp(`[?&]${k}=([^&]*)`).exec(pq); return m ? decodeURIComponent(m[1]) : dflt; };
     try {
@@ -2121,6 +2133,14 @@ async function refImageBuffer(url) {
 
 // img2img with reference image(s) — anchors character identity
 async function submitImg2ImgTask(prompt, refUrls, imageModel = 'seedream-5', ratio = '16:9', outInfo = null) {
+  if (isModelscopeImageModel(imageModel)) {
+    try {
+      const refs = await Promise.all(refUrls.slice(0, 10).map(url => refImageBuffer(url)));
+      if (refs.some(buffer => !buffer?.length)) throw Object.assign(new Error('A Qwen reference image could not be loaded. Re-upload it before retrying.'), { terminal: true, permanent: true });
+      const result = await modelscopeImages.generate(prompt, ratio, refs);
+      return modelscopeImages.marker(result.url);
+    } catch (error) { if (outInfo) outInfo.error = error; logLine('ModelScope reference image: ' + error.message); return null; }
+  }
   // Logfare img2img = multipart images/edits with the reference image BYTES.
   if (isLogfareImageModel(imageModel)) {
     try {
@@ -2208,6 +2228,8 @@ async function waitTask(taskUrl, maxMin = 25, logFn = logLine, outInfo = null) {
   // A Logfare render is already finished when submitTask returns it — nothing to
   // poll, hand the local file straight back (download() copies it into place).
   if (isLogfareLocal(taskUrl)) return taskUrl;
+  const modelscopeUrl = modelscopeImages.finishedUrl(taskUrl);
+  if (modelscopeUrl) return modelscopeUrl;
   // Novita tasks poll THEIR status endpoint (documented async-job shape), not
   // PaxSenix's — the marker carries the task id.
   if (String(taskUrl).startsWith(NOVITA_TASK_PREFIX)) return novitaWait(taskUrl, maxMin, logFn, outInfo);
@@ -3500,7 +3522,7 @@ async function generateImages(frames, imageModel, ratio, style, consistency = tr
     // Every failed attempt records its provider reason here so the final
     // "all attempts" error can say WHAT failed, not just that something did.
     const attemptFailures = [];
-    const refsFor = () => (f.characters_present || []).map(id => refById.get(id)).filter(Boolean).slice(0, 3);
+    const refsFor = () => (f.characters_present || []).map(id => refById.get(id)).filter(Boolean).slice(0, isModelscopeImageModel(imageModel) ? 10 : 3);
     const imgAttempt = async (label, p, useRef, modelOverride) => {
       const mdl = modelOverride || imageModel;
       p = capProviderImagePrompt(p);
@@ -4526,7 +4548,7 @@ function stillImageToVideo(imagePath, targetSec, outputPath) {
 function emergencyImageChain(preferred) {
   const chain = [preferred, 'flux-2-klein-9b', 'nano-banana-pro'].filter(Boolean);
   return chain.filter((m, i) => chain.indexOf(m) === i &&
-    (IMAGE_MODELS.includes(m) || isLogfareImageModel(m) || isNovitaImageModel(m) || isAquaImageModel(m)));
+    (IMAGE_MODELS.includes(m) || isModelscopeImageModel(m) || isLogfareImageModel(m) || isNovitaImageModel(m) || isAquaImageModel(m)));
 }
 
 // Finished films use the same immutable, account-scoped vault as every other output.
@@ -5498,7 +5520,18 @@ async function requireCredits(req, res, amount, label) {
 // API clients can also authenticate with `Authorization: Bearer <token>` (the browser
 // SPA itself authenticates via the HttpOnly sb_session cookie).
 function bearerToken(req) { return (req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim() || null; }
-function readBody(req) { return new Promise((resolve, reject) => { let s = ''; req.on('data', c => { s += c; if (s.length > 15e6) req.destroy(); }); req.on('end', () => { try { const body = s ? JSON.parse(s) : {}; assetVault.setBody(body); resolve(body); } catch (e) { reject(e); } }); req.on('error', reject); }); }
+async function readBody(req) {
+  const body = await new Promise((resolve, reject) => {
+    let text = '';
+    req.on('data', chunk => { text += chunk; if (text.length > 15e6) req.destroy(); });
+    req.on('end', () => { try { resolve(text ? JSON.parse(text) : {}); } catch (error) { reject(error); } });
+    req.on('error', reject);
+  });
+  // Resume in the request's async context before updating per-account settings.
+  assetVault.setBody(body);
+  modelscopeImages.setOptions(body?.modelscope);
+  return body;
+}
 async function runJobOnVercel(res, jobFn, successData = { ok: true }) {
   try {
     // jobFn may return extra response fields (e.g. the hosted narration URL) —
@@ -5615,7 +5648,7 @@ const routeRequest = async (req, res) => {
       } catch (e) { return sendJson(res, 200, { hasAudio: false, matchesCurrent: false, withSpeech: 0, error: e.message }); }
     }
     if (p === '/api/health' || p === '/api/ping') return sendJson(res, 200, { ok: true, vercel: IS_VERCEL, path: p, url: rawUrl, hasKey: !!API_KEY, commit: (process.env.VERCEL_GIT_COMMIT_SHA || '').slice(0, 7) || 'local', deployedAt: process.env.VERCEL_DEPLOYMENT_ID ? 'vercel' : 'local', logfare: { key: !!LOGFARE_API_KEY, lastOkAt: logfareStatus.lastOkAt, lastModel: logfareStatus.lastModel, lastError: logfareStatus.lastError }, aqua: { key: !!AQUA_API_KEY, lastOkAt: aquaStatus.lastOkAt, lastModel: aquaStatus.lastModel, lastError: aquaStatus.lastError } });
-    if (p === '/api/models') return sendJson(res, 200, { chat: MODELS, image: IMAGE_MODELS.concat(['aqua:nanobanana-pro', 'aqua:agnes-image'], LOGFARE_IMAGE_MODELS, NOVITA_IMAGE_MODELS.map(m => m.id)), video: VIDEO_MODELS, voices: VOICES, languages: LANGUAGES, narrationModes: NARRATION_MODES, narrationEngines: NARRATION_ENGINES, narrationVoices: { fish: VOICES, mimo: VOICES, logfare: LOGFARE_VOICES }, styles: STYLE_KEYS.map(k => ({ key: k, label: STYLES[k].label })) });
+    if (p === '/api/models') return sendJson(res, 200, { chat: MODELS, image: IMAGE_MODELS.concat([MODELSCOPE_IMAGE_MODEL, 'aqua:nanobanana-pro', 'aqua:agnes-image'], LOGFARE_IMAGE_MODELS, NOVITA_IMAGE_MODELS.map(m => m.id)), video: VIDEO_MODELS, voices: VOICES, languages: LANGUAGES, narrationModes: NARRATION_MODES, narrationEngines: NARRATION_ENGINES, narrationVoices: { fish: VOICES, mimo: VOICES, logfare: LOGFARE_VOICES }, styles: STYLE_KEYS.map(k => ({ key: k, label: STYLES[k].label })) });
 
     // --- CREDITS ---
     if (p === '/api/credits' && req.method === 'GET') {
@@ -7242,8 +7275,18 @@ RULES:
 
         // Respect the selected image model: PaxSenix ids, "aqua:<id>", a Logfare
         // image model (flux-2-klein-9b / lucid-origin / phoenix-1.0) or "novita:<id>".
-        let selectedModel = (model && (IMAGE_MODELS.includes(model) || isAquaImageModel(model) || isLogfareImageModel(model) || isFlashloopLogfareImage(model) || isNovitaImageModel(model))) ? model : 'seedream-5';
+        let selectedModel = (model && (IMAGE_MODELS.includes(model) || isModelscopeImageModel(model) || isAquaImageModel(model) || isLogfareImageModel(model) || isFlashloopLogfareImage(model) || isNovitaImageModel(model))) ? model : 'seedream-5';
         if (isFlashloopLogfareImage(selectedModel)) selectedModel = selectedModel.slice(LOGFARE_IMG_PREFIX.length);
+
+        if (isModelscopeImageModel(selectedModel)) {
+          const refUrls = [...new Set([refImageUrl, ...(Array.isArray(body.referenceImages) ? body.referenceImages : [])].filter(Boolean))];
+          if (refUrls.length > 10) return sendJson(res, 400, { error: 'Qwen accepts up to 10 reference images.' });
+          const refs = await Promise.all(refUrls.map(url => refImageBuffer(url)));
+          if (refs.some(buffer => !buffer?.length)) return sendJson(res, 400, { error: 'A Qwen reference could not be loaded. Re-upload the image.' });
+          const promptText = trendPromptPrefix(source, slug, trendName, tagline) + String(prompt);
+          const result = await modelscopeImages.generate(promptText, ratio, refs);
+          return sendJson(res, 200, { ok: true, imageUrl: result.url, model: selectedModel, provider: 'modelscope', mode: refs.length ? 'i2i' : 't2i', seed: result.seed, width: result.width, height: result.height, enhancedPrompt: result.enhancedPrompt });
+        }
 
         // ---- Novita provider (qwen-image-3.0-pro / wan2.7-image-pro / wanx2.1) ----
         // Async job: submit → poll /v1/status → direct image URL back to the client
@@ -8483,11 +8526,11 @@ ${infl.description || '(no description - describe a beautiful confident influenc
   }
 };
 
-const requestHandler = (req, res) => assetVault.run(() => routeRequest(req, res));
+const requestHandler = (req, res) => modelscopeImages.run(() => assetVault.run(() => routeRequest(req, res)));
 module.exports = requestHandler;
 // Exposed for the pipeline/test-*.js regression tests.
 module.exports.__internal = {
-  assetVault,
+  assetVault, modelscopeImages, submitTask, waitTask,
   flashloopScenePlan,
   storyboardFrameCount, emergencyImageChain, vocalizeAnimationPrompts,
   capProviderImagePrompt, lockSacredCharacter, secularizeForImageFilter,

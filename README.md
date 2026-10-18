@@ -74,3 +74,6 @@ Opens at `http://localhost:5173`.
 - `storyboard/` — Character/frame state + trend templates
 - `frames/` — Generated character refs and frame images
 - `video/` — Frame MP4s and final story MP4
+## Qwen Image 2.1 — ModelScope
+
+Available in Storyboard, Flashloop and SJinn for text-to-image and reference-image editing. Select the provider to see all five aspect ratios at 1K/2K, custom dimensions, seed/randomization, prompt enhancement and negative prompt. Set MODELSCOPE_API_TOKEN in Vercel and redeploy. Setup and behavior: [MODELSCOPE.md](MODELSCOPE.md). Run npm run test:modelscope to verify the integration.

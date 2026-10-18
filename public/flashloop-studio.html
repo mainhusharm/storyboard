@@ -225,6 +225,7 @@
       <div class="field" style="margin-bottom:14px">
         <label for="i2iModel">i2i Model</label>
         <select id="i2iModel">
+          <option value="modelscope:qwen-image-2.1">Qwen Image 2.1 — ModelScope</option>
           <option value="lfimg:flux-1-schnell" selected>Flux 1 Schnell — Logfare (fastest)</option>
           <option value="lfimg:gpt-image-2">GPT Image 2 — Logfare</option>
           <option value="lfimg:flux-2-dev">Flux 2 Dev — Logfare</option>
@@ -251,9 +252,9 @@
             <option value="nano-banana-2-lite">Nano Banana 2 Lite</option>
           <option value="gpt-image-2">GPT Image 2</option>
         </select>
-        <div class="hint">PaxSenix, AquaDevs or Logfare image model. Logfare renders square and is centre-cropped to the ratio above; if the selected model fails the server falls back to PaxSenix.</div>
+        <div class="hint">ModelScope Qwen, PaxSenix, AquaDevs, Novita or Logfare image model. Qwen supports the selected ratio and optional reference photos. Logfare renders square and is centre-cropped. Qwen errors are shown without changing providers.</div>
       </div>
-      <div id="i2iLoading" style="display:none;align-items:center;gap:10px;color:var(--dim);font-size:13px;margin:12px 0"><div class="spinner"></div> Generating image via PaxSenix… This may take 1-3 minutes.</div>
+      <div id="i2iLoading" style="display:none;align-items:center;gap:10px;color:var(--dim);font-size:13px;margin:12px 0"><div class="spinner"></div> Generating image with your selected provider… This may take 1-3 minutes.</div>
       <div id="i2iError" style="display:none;background:rgba(248,113,113,.12);border:1px solid rgba(248,113,113,.3);color:var(--red);padding:12px 14px;border-radius:10px;font-size:13px;margin:12px 0"></div>
       <div id="i2iResult" style="display:none">
         <img id="i2iImage" src="" alt="Generated image" style="max-width:420px;max-height:500px;border-radius:12px;border:1px solid var(--line2);object-fit:contain">
@@ -344,6 +345,7 @@
 <div id="toast" class="toast">Copied to clipboard!</div>
 
 <script src="/auth.js"></script>
+<script src="/modelscope-controls.js"></script>
 <script>
 // Auth guard — shared resilient guard (window.SBAuth). Retries transient
 // /api/auth/me failures and only redirects on a real 401, so a logged-in user
@@ -410,7 +412,7 @@ let sceneLen = 8; // seconds per scene (from the dropdown / server response)
 
 // Carry the creating studio through every request, including serverless polls.
 function vaultPayload(payload) {
-  return { ...payload, source: source === 'sjinn' ? 'sjinn' : 'flashloop', title: payload.title || scriptTitle || name || ($('idea').value || '').trim().slice(0, 100) || 'Studio creation' };
+  return { ...(window.SBModelscope?.payload()||{}), ...(payload.model === 'modelscope:qwen-image-2.1' ? { referenceImages: getRefs().map(ref => ref.imageUrl).filter(Boolean) } : {}), ...payload, source: source === 'sjinn' ? 'sjinn' : 'flashloop', title: payload.title || scriptTitle || name || ($('idea').value || '').trim().slice(0, 100) || 'Studio creation' };
 }
 
 

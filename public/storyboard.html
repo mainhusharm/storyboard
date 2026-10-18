@@ -363,6 +363,7 @@ The Director AI will:
 </div>
 
 <script src="/auth.js"></script>
+<script src="/modelscope-controls.js"></script>
 <script>
 // Auth guard — shared resilient guard (window.SBAuth). Retries transient
 // /api/auth/me failures and only redirects on a real 401, so a logged-in user
@@ -574,7 +575,7 @@ async function init(){
     const lbl=LOGFARE_LABELS[x]||AQUA_LABELS[x]||x;
     return `<option value="${x}">${lbl}</option>`;
   }).join('');
-  const IMG_MODEL_LABELS={'aqua:nanobanana-pro':'Nano Banana Pro — AquaDevs','aqua:agnes-image':'Agnes Image — AquaDevs'};
+  const IMG_MODEL_LABELS={'modelscope:qwen-image-2.1':'Qwen Image 2.1 — ModelScope','aqua:nanobanana-pro':'Nano Banana Pro — AquaDevs','aqua:agnes-image':'Agnes Image — AquaDevs'};
   $('imageModel').innerHTML=m.image.map(x=>`<option value="${x}">${IMG_MODEL_LABELS[x]||x}</option>`).join('');
   $('videoModel').innerHTML=(m.video||[{id:'grok-video',label:'Grok Video — 6s'},{id:'omni-flash',label:'Omni Flash — 8s'},{id:'veo-3.1',label:'Veo 3.1 — 8s'}]).map(v=>`<option value="${v.id}">${v.label}</option>`).join('');
   const fillVoices=()=>{const per=(m.narrationVoices||{})[$('narrationEngine').value];const list=(per&&per.length)?per:(m.voices||[{id:'female',label:'Female narrator'},{id:'male',label:'Male narrator'}]);$('voice').innerHTML=list.map(v=>`<option value="${v.id}">${v.label}</option>`).join('');};
@@ -727,7 +728,7 @@ let LOCAL_BUSY=false;
 // then carry characters/framesData along; on localhost this stays false so the
 // server's authoritative disk files are never overwritten with a stale copy.
 let OFFLINE_BOARD=false;
-function sbPayload(extra){const b={...extra};if(OFFLINE_BOARD||IS_VERCEL_CLIENT){if(CHARS.length)b.characters=CHARS;if(FRAMES.length)b.framesData=FRAMES;}return b;}
+function sbPayload(extra){const b={...(window.SBModelscope?.payload()||{}),...extra};if(OFFLINE_BOARD||IS_VERCEL_CLIENT){if(CHARS.length)b.characters=CHARS;if(FRAMES.length)b.framesData=FRAMES;}return b;}
 async function acceptCharacterResults(result){
   if(!result)return;
   if(Array.isArray(result.characters)){
@@ -834,8 +835,9 @@ let SUBMITTING=false;
   if(!(await guardBusy())) return null;
   clearLocalLog();
   SUBMITTING=true;
+  if(body?.imageModel==='modelscope:qwen-image-2.1')USER_CANCELLED=false;
   try{
-    const r=await api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const r=IS_VERCEL_CLIENT&&body?.imageModel==='modelscope:qwen-image-2.1'&&['/char-refs','/images'].includes(path) ? await callPhase(path,body) : await api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     if(r&&r.error){LOCAL_RESULT='failed';logLocal(`${path}: ${r.error}`,'err');alert(r.error);}
     return r;
   } catch(e) { LOCAL_RESULT='failed';logLocal(`${path}: ${e.message}`,'err');alert('Error: '+e.message); return null; }
@@ -869,7 +871,7 @@ $('btnAuto').onclick=async()=>{
   if(IS_VERCEL_CLIENT) return runAutoVercel(script);
   clearLocalLog();
   const r=await api('/run-all',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
-    script,model:$('chatModel').value,duration:Number($('duration').value),look:$('look').value,
+    ...(window.SBModelscope?.payload()||{}),script,model:$('chatModel').value,duration:Number($('duration').value),look:$('look').value,
     style:$('style').value,imageModel:$('imageModel').value,videoModel:$('videoModel').value,ratio:$('ratio').value,
     voice:$('voice').value,consistency:$('consistency').checked,language:$('language').value,narrationMode:$('narrationMode').value,narrationEngine:$('narrationEngine').value,narrVolume:Number($('narrVolume').value),origVolume:Number($('origVolume').value),chainContinuity:$('chainContinuity').checked,clipDuration:Number($('clipDuration').value),resolution:$('videoResolution').value
   })}).catch(e=>{alert('Error: '+e.message);return{error:e.message}});
@@ -880,8 +882,29 @@ $('btnAuto').onclick=async()=>{
 // that served the storyboard submit may still be finishing its background work
 // when the next phase arrives. That is a queueing delay, not a failure — so wait
 // it out instead of aborting the whole pipeline with a "Pipeline failed: busy".
+async function qwenImagePhase(path, body) {
+  const characters = path === '/char-refs';
+  const ids = characters
+    ? (Array.isArray(body.force) ? body.force : CHARS.map(c => c.id))
+    : (Array.isArray(body.frames) ? body.frames : FRAMES.map(f => f.frame));
+  let result = { ok: true };
+  for (let i = 0; i < ids.length; i++) {
+    if (USER_CANCELLED) throw new Error('cancelled');
+    logLocal('Qwen '+(characters?'reference':'image')+' '+(i+1)+'/'+ids.length+'…');
+    // Give each image a fresh Vercel invocation and carry completed references
+    // forward; large boards must not share a single 300-second render budget.
+    const single = { ...body, characters: CHARS, framesData: FRAMES,
+      ...(characters ? { force: [ids[i]] } : { frames: [ids[i]] }) };
+    result = await callPhase(path, single, { qwenSingle: true, attempts: 1 });
+    if (characters) await acceptCharacterResults(result); else await acceptImageResults(result);
+    if (!result || result.error || result.ok === false) return result;
+  }
+  return { ...result, ...(characters ? { characters: CHARS } : { frames: FRAMES }) };
+}
 async function callPhase(path, body, opts = {}) {
-  const attempts = opts.attempts || 24;
+  const qwenImage = body?.imageModel === 'modelscope:qwen-image-2.1' && ['/char-refs','/images'].includes(path);
+  if (IS_VERCEL_CLIENT && qwenImage && !opts.qwenSingle) return qwenImagePhase(path, body);
+  const attempts = opts.attempts || (qwenImage ? 1 : 24);
   const timeoutMs = opts.timeoutMs || 280000; // under Vercel's 300s function kill
   for (let i = 0; i < attempts; i++) {
     let r = null;

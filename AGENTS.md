@@ -62,6 +62,17 @@ consistency**, generates frame images, animates them via Grok Video / Omni Flash
   explicit Delete buttons. Failed deletes retain metadata for retry. Exact duplicate
   polls deduplicate per owner/source/type. The old unowned vault index is left intact
   and not automatically assigned. Setup and tests: VAULT.md, npm run test:vault.
+- **ModelScope Qwen Image 2.1** — model id modelscope:qwen-image-2.1. web/modelscope.js owns authenticated
+  Gradio upload → named v2 call → final SSE completion. Browser controls live in
+  web/public/modelscope-controls.js and apply to Storyboard and Flashloop/SJinn.
+  MODELSCOPE_API_TOKEN (alias MODELSCOPE_TOKEN) stays server-side; local fallback
+  pipeline/modelscope_token.txt is ignored by Git. Preserve all five 1K/2K ratio
+  presets, custom 256–2688 dimensions in steps of 8, seed/randomization, prompt
+  enhancement, negative prompt and up to ten references. Request options are
+  isolated with AsyncLocalStorage. Storyboard renders one Qwen image per Vercel
+  request; never resubmit a paid job automatically after a stream/poll failure.
+  Only final combined films enter the vault. Setup: MODELSCOPE.md.
+  Tests: npm run test:modelscope.
 - **AquaDevs image models in Storyboard** — the image-model dropdown offers `aqua:nanobanana-pro`
   ("Nano Banana Pro — AquaDevs") and `aqua:agnes-image` ("Agnes Image — AquaDevs").
   `submitTask`/`submitImg2ImgTask` intercept `aqua:` ids before the PaxSenix path and render via

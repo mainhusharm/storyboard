@@ -7,7 +7,8 @@
     "start": "node web/server.js",
     "dev": "node web/server.js",
     "build": "node scripts/sync-public.js",
-    "test:vault": "node pipeline/test-vault-store.js && node pipeline/test-vault-api.js"
+    "test:vault": "node pipeline/test-vault-store.js && node pipeline/test-vault-api.js",
+    "test:modelscope": "node pipeline/test-modelscope.js"
   },
   "keywords": [],
   "author": "",
