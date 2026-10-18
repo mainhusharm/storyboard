@@ -8500,6 +8500,7 @@ ${infl.description || '(no description - describe a beautiful confident influenc
     else if (p === '/' || p === '/home') filePath = path.join(PUBLIC, 'home.html');
     else if (p === '/login' || p === '/signup') filePath = path.join(PUBLIC, 'login.html');
     else if (p === '/storyboard' || p === '/index') filePath = path.join(PUBLIC, 'storyboard.html');
+    else if (p === '/generations') filePath = path.join(PUBLIC, 'generations.html');
     else if (p === '/influencer') filePath = path.join(PUBLIC, 'influencer.html');
     else if (p === '/trends') filePath = path.join(PUBLIC, 'trends.html');
     else if (p === '/flashloop-studio' || /^\/effects\/[^/]+$/.test(p)) filePath = path.join(PUBLIC, 'flashloop-studio.html');
@@ -8508,7 +8509,7 @@ ${infl.description || '(no description - describe a beautiful confident influenc
     // Protect tool pages (local server): require a valid session, redirect to /login.
     // The landing page (/) is PUBLIC so new visitors can see the product first.
     // On Vercel the static pages are gated client-side via /api/auth/me instead.
-    if (!IS_VERCEL && (p === '/vault' || p === '/vault.html' || p === '/storyboard' || p === '/index' || p === '/influencer' || p === '/trends' || p === '/flashloop-studio' || /^\/effects\/[^/]+$/.test(p))) {
+    if (!IS_VERCEL && (p === '/vault' || p === '/vault.html' || p === '/storyboard' || p === '/index' || p === '/influencer' || p === '/trends' || p === '/flashloop-studio' || p === '/generations' || /^\/effects\/[^/]+$/.test(p))) {
       const pageUser = await requirePageAuth(req, res);
       if (!pageUser) return;
     }

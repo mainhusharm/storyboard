@@ -73,6 +73,17 @@ consistency**, generates frame images, animates them via Grok Video / Omni Flash
   request; never resubmit a paid job automatically after a stream/poll failure.
   Only final combined films enter the vault. Setup: MODELSCOPE.md.
   Tests: npm run test:modelscope.
+- **🗂 Generations — parallel film queue** (`/generations`, linked from the Studio header). Paste
+  scripts, press Add to queue, and watch every film run the full pipeline (storyboard → refs →
+  images → narration → videos → combine) on live cards with thumbnail, progress bar, log tail and
+  per-run **✕ Cancel**. Up to 3 films run in parallel on Vercel (each phase is its own invocation
+  carrying the inline board — no shared state); the local server runs one at a time (its job is
+  global) and the queue serializes automatically. Cancelling stops that run's orchestration
+  immediately; already-submitted provider jobs may still finish on their side. Runs persist in
+  localStorage (`sb_generations`): a reload marks running jobs "interrupted" and **▶ Resume**
+  continues from saved progress (finished refs/images/clips are never re-run); **⟲ Restart** goes
+  fresh, 🗑 removes the card. Long Wan clips poll in the background with the same pending-means-
+  wait semantics as the Studio. Regression: `node pipeline/test-generations.js`.
 - **AquaDevs image models in Storyboard** — the image-model dropdown offers `aqua:nanobanana-pro`
   ("Nano Banana Pro — AquaDevs") and `aqua:agnes-image` ("Agnes Image — AquaDevs").
   `submitTask`/`submitImg2ImgTask` intercept `aqua:` ids before the PaxSenix path and render via
