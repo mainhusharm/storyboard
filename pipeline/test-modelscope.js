@@ -2,11 +2,12 @@
 const assert=require('node:assert/strict');
 const {test,before,after}=require('node:test');
 const fs=require('node:fs/promises');const path=require('node:path');const http=require('node:http');
-const {MODEL,BASE,PRESETS,settings,createModelscopeProvider}=require('../web/modelscope');
+const {MODEL,BASE,PRESETS,settings,normalizeToken,createModelscopeProvider}=require('../web/modelscope');
 const imageUrl='https://qwen-qwen-image-2-1.ms.show/gradio_api/file=/tmp/gradio/final/image.png';
 const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a3XcAAAAASUVORK5CYII=','base64');
 function events(text){return new Response(new ReadableStream({start(c){const bytes=new TextEncoder().encode(text);for(let i=0;i<bytes.length;i+=13)c.enqueue(bytes.slice(i,i+13));c.close();}}),{headers:{'Content-Type':'text/event-stream'}});}
 function complete(url=imageUrl){return 'event: generating\ndata: [{"path":"/tmp/gradio/placeholder/image.png"},0,""]\n\nevent: heartbeat\ndata: null\n\nevent: complete\ndata: '+JSON.stringify([{path:'/tmp/gradio/final/image.png',url},42,'Enhanced prompt'])+'\n\n';}
+test('token accepts raw and Bearer-prefixed values',()=>{assert.equal(normalizeToken('test-token'),'test-token');assert.equal(normalizeToken(' Bearer test-token '),'test-token');});
 function fakeFetch(calls,eventText=complete()) {return async(url,options={})=>{
   calls.push({url:String(url),options});
   if(String(url).endsWith('/upload'))return Response.json(['/tmp/gradio/reference/image.png']);

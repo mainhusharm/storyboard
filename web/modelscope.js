@@ -4,6 +4,9 @@ const MODEL = 'modelscope:qwen-image-2.1';
 const BASE = 'https://studio-qwen-qwen-image-2-1.api-inference.modelscope.net';
 const PUBLIC_HOST = 'qwen-qwen-image-2-1.ms.show';
 const PREFIX = 'modelscope:result:';
+function normalizeToken(value) {
+  return String(value || '').trim().replace(/^Bearer\s+/i, '').trim();
+}
 const PRESETS = { '16:9':[1344,768], '9:16':[768,1344], '1:1':[1024,1024], '4:3':[1184,864], '3:4':[864,1184] };
 function settings(input = {}, ratio = '16:9') {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw failure('Invalid Qwen image settings.', true);
@@ -25,7 +28,9 @@ function createModelscopeProvider({ getToken, fetchImpl = (...args)=>fetch(...ar
   function setOptions(options) { const scope=context.getStore(); if(scope) scope.options=options||{}; }
   function finishedUrl(marker) { return String(marker).startsWith(PREFIX) ? decodeURIComponent(String(marker).slice(PREFIX.length)) : null; }
   async function generate(prompt, ratio='16:9', references=[], overrides) {
-    const token=getToken?.();
+    // Accept either a raw token or a copied `Bearer ...` value. The provider
+    // adds the Authorization scheme below, avoiding `Bearer Bearer <token>`.
+    const token=normalizeToken(getToken?.());
     if(!token) throw failure('ModelScope needs MODELSCOPE_API_TOKEN on the server. Add it in Vercel and redeploy.',true);
     const params=settings(overrides||context.getStore()?.options,ratio);
     if(!String(prompt||'').trim())throw failure('Qwen image prompt is required.',true);
@@ -91,4 +96,4 @@ function createModelscopeProvider({ getToken, fetchImpl = (...args)=>fetch(...ar
   }
   return {run,setOptions,generate,finishedUrl,marker:url=>PREFIX+encodeURIComponent(url)};
 }
-module.exports={MODEL,BASE,PRESETS,settings,createModelscopeProvider};
+module.exports={MODEL,BASE,PRESETS,settings,normalizeToken,createModelscopeProvider};
