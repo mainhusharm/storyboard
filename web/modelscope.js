@@ -5,7 +5,9 @@ const BASE = 'https://studio-qwen-qwen-image-2-1.api-inference.modelscope.net';
 const PUBLIC_HOST = 'qwen-qwen-image-2-1.ms.show';
 const PREFIX = 'modelscope:result:';
 function normalizeToken(value) {
-  return String(value || '').trim().replace(/^Bearer\s+/i, '').trim();
+  return String(value || '').trim()
+    .replace(/^['"]|['"]$/g, '')
+    .replace(/^Bearer\s+/i, '').trim();
 }
 const PRESETS = { '16:9':[1344,768], '9:16':[768,1344], '1:1':[1024,1024], '4:3':[1184,864], '3:4':[864,1184] };
 function settings(input = {}, ratio = '16:9') {
