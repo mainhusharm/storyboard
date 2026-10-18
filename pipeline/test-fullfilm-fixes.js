@@ -96,7 +96,8 @@ check('poll of a live task answers pending again', /return sendJson\(res, 202, \
 check('completion still saves the chain anchor', /chain anchor saved → next scene starts from its last frame/.test(src));
 check('completion still hosts the clip for combine', /clipUrl = await uploadVideoClip\(videoFile\(f\.frame\)\)/.test(src));
 check('wan3.0 start frame passed via imageUrls', /\.\.\.\(useImg \? \{ imageUrls: \[anchor\] \} : \{\}\)/.test(src));
-check('client polls pending renders (45-min wall-clock ceiling)', /while\(Date\.now\(\)-started<2700000\)/.test(client));
+check('client polls pending renders (45-min ceiling checked after a healthy poll, so laptop sleep never abandons a render)', /if\(Date\.now\(\)-started>=2700000\)break/.test(client));
+check('watchdog ignores laptop sleep while background polls are alive', /if \(BACKGROUND_POLLS > 0\) \{ LOCAL_LAST_ACTIVITY = Date\.now\(\); return; \}/.test(client));
 check('client polls every 15s', /setTimeout\(r,15000\)\)/.test(client));
 check('client treats pending as keep-waiting, not failure', /if\(j&&j\.pending\)\{[\s\S]*?continue;/.test(client));
 check('client cancel still stops the poll loop', /if\(USER_CANCELLED\)throw new Error\('cancelled'\);/.test(client));

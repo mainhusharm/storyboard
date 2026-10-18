@@ -343,7 +343,7 @@ async function main() {
   let now = 0, calls = 0;
   const messages = [];
   const browser = {
-    Date: { now: () => now }, USER_CANCELLED: false, LOCAL_LAST_ACTIVITY: 0,
+    Date: { now: () => now }, USER_CANCELLED: false, LOCAL_LAST_ACTIVITY: 0, BACKGROUND_POLLS: 0,
     LOCAL_PHASE: '', sbPayload: b => b, logLocal: m => messages.push(m),
     setTimeout: fn => { now += 15000; fn(); },
     callPhase: async () => { calls++; now += 20 * 60000; return { pending: true, status: 'RUNNING' }; }
@@ -362,6 +362,7 @@ async function main() {
     const values = { videoModel: 'wan3.0-video-prime', imageModel: 'flux-2-klein-9b', narrationMode,
       ratio: '16:9', duration: '1', clipDuration: '1', narrVolume: '1', origVolume: '1' };
     const auto = {
+      window: {}, // sbPayload reads window.SBModelscope (absent in this harness)
       CHARS: [], FRAMES: [], IS_VERCEL_CLIENT: true, USER_CANCELLED: false,
       $: id => ({ value: values[id] || '', checked: true, style: {}, load() {} }),
       localStorage: { setItem: (k, v) => storage.set(k, v), getItem: k => storage.get(k) },

@@ -179,6 +179,7 @@
   <span class="sub">SCRIPT → CHARACTERS → FRAMES → VIDEO → FILM</span>
   <div class="right">
     <a href="/" style="font-size:11px;padding:6px 14px;border:1px solid var(--line2);border-radius:99px;color:var(--dim);cursor:pointer;text-decoration:none;display:flex;align-items:center;gap:5px;font-weight:600;letter-spacing:.5px">🏠 Home</a>
+    <a href="/generations" style="font-size:11px;padding:6px 14px;border:1px solid var(--line2);border-radius:99px;color:var(--teal);text-decoration:none;font-weight:600">🗂 Generations</a>
     <a href="/vault" style="font-size:11px;padding:6px 14px;border:1px solid var(--line2);border-radius:99px;color:var(--amber2);text-decoration:none;font-weight:600">▣ Vault</a>
     <a href="/trends?source=flashloop" style="font-size:11px;padding:6px 14px;border:1px solid var(--line2);border-radius:99px;background:linear-gradient(135deg,rgba(139,124,246,.15),rgba(236,72,153,.15));color:var(--violet);cursor:pointer;text-decoration:none;display:flex;align-items:center;gap:5px;font-weight:600;letter-spacing:.5px">⚡ Trend Loop</a>
     <a href="/trends?source=sjinn" style="font-size:11px;padding:6px 14px;border:1px solid var(--line2);border-radius:99px;background:linear-gradient(135deg,rgba(6,182,212,.15),rgba(59,130,246,.15));color:#06b6d4;cursor:pointer;text-decoration:none;display:flex;align-items:center;gap:5px;font-weight:600;letter-spacing:.5px">🎬 SJinn AI</a>
@@ -492,10 +493,16 @@ function withTimeout(opts = {}) {
 // Watchdog: regardless of which await failed to settle, if the client believes it
 // is running but nothing has logged for this long, the run is stranded. Clear the
 // flags so the buttons work again instead of forcing a refresh.
+// EXCEPTION: while a background (two-phase Wan/Novita) poll loop is alive, a
+// closed laptop lid freezes this tab's timers — wall-clock "no progress" then
+// fires the moment the lid reopens even though the remote render and the poll
+// loop are both healthy. Sleep time is not stall time: refresh instead.
 const STUCK_CLIENT_MS = 15 * 60 * 1000;
+let BACKGROUND_POLLS = 0;
 function clientWatchdog() {
   if (!LOCAL_BUSY && !SUBMITTING) return;
   if (Date.now() - LOCAL_LAST_ACTIVITY < STUCK_CLIENT_MS) return;
+  if (BACKGROUND_POLLS > 0) { LOCAL_LAST_ACTIVITY = Date.now(); return; }
   try { PHASE_ABORT && PHASE_ABORT.abort('watchdog'); } catch (e) {}
   PHASE_ABORT = null;
   LOCAL_BUSY = false; SUBMITTING = false;
@@ -1127,7 +1134,9 @@ async function pollVideoTask(frameNum, task, body, idx, total){
   const pollBody=sbPayload({...body, pollTask:task});
   const started=Date.now();
   let waited=0, consecutiveErrors=0,lastStatus='';
-  while(Date.now()-started<2700000){ // 45-min wall-clock ceiling for one scene
+  BACKGROUND_POLLS++;
+  try{
+  while(true){ // bounded below by the 45-min total ceiling after each healthy poll
     LOCAL_PHASE=`VIDEOS ${idx}/${total} · rendering in background ${Math.round(waited/60000)}m`;
     await new Promise(r=>setTimeout(r,15000));
     waited=Date.now()-started;
@@ -1142,11 +1151,17 @@ async function pollVideoTask(frameNum, task, body, idx, total){
     if(j&&j.pending){
       LOCAL_LAST_ACTIVITY=Date.now(); // healthy polls keep long Wan renders alive in the watchdog
       if(j.status&&j.status!==lastStatus){lastStatus=j.status;logLocal(`frame ${frameNum}: ${lastStatus.toLowerCase()}`);}
+      // The ceiling is checked only AFTER a healthy poll: a suspended laptop
+      // (closed lid) freezes timers, and the first poll on wake either finds
+      // the task finished (returns it) or proves it is still alive — sleep
+      // time never abandons a healthy render.
+      if(Date.now()-started>=2700000)break; // 45-min total ceiling for one scene
       continue;
     }
     return j||{error:'no response'};    // settled (done or hard failure)
   }
   return {error:`render still running after 45 min (task ${task}). Check this task before submitting another paid render.`};
+  } finally { BACKGROUND_POLLS--; }
 }
 // On Vercel, render videos ONE FRAME PER REQUEST — a serverless invocation dies at
 // 300s, and a full board (especially with seamless chaining) can take 20-60 min, so
