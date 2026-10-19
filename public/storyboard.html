@@ -575,7 +575,7 @@ async function init(){
     const lbl=LOGFARE_LABELS[x]||AQUA_LABELS[x]||x;
     return `<option value="${x}">${lbl}</option>`;
   }).join('');
-  const IMG_MODEL_LABELS={'modelscope:qwen-image-2.1':'Qwen Image 2.1 — ModelScope','aqua:nanobanana-pro':'Nano Banana Pro — AquaDevs','aqua:agnes-image':'Agnes Image — AquaDevs'};
+  const IMG_MODEL_LABELS={'aqua:qwen-image-3.0-pro':'Qwen Image 3.0 Pro — AquaDevs','modelscope:qwen-image-2.1':'Qwen Image 2.1 — ModelScope','aqua:nanobanana-pro':'Nano Banana Pro — AquaDevs','aqua:agnes-image':'Agnes Image — AquaDevs'};
   $('imageModel').innerHTML=m.image.map(x=>`<option value="${x}">${IMG_MODEL_LABELS[x]||x}</option>`).join('');
   $('videoModel').innerHTML=(m.video||[{id:'grok-video',label:'Grok Video — 6s'},{id:'omni-flash',label:'Omni Flash — 8s'},{id:'veo-3.1',label:'Veo 3.1 — 8s'}]).map(v=>`<option value="${v.id}">${v.label}</option>`).join('');
   const fillVoices=()=>{const per=(m.narrationVoices||{})[$('narrationEngine').value];const list=(per&&per.length)?per:(m.voices||[{id:'female',label:'Female narrator'},{id:'male',label:'Male narrator'}]);$('voice').innerHTML=list.map(v=>`<option value="${v.id}">${v.label}</option>`).join('');};

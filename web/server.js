@@ -1241,7 +1241,7 @@ function aquaHeaders(extra) {
   for (const key of Object.keys(headers)) if (headers[key] == null) delete headers[key];
   return headers;
 }
-const AQUA_IMAGE_MODELS = ['agnes-image', 'nanobanana-2', 'nanobanana-pro', 'gptimage-2'];
+const AQUA_IMAGE_MODELS = ['agnes-image', 'nanobanana-2', 'nanobanana-pro', 'gptimage-2', 'qwen-image-3.0-pro'];
 // Grok Imagine is xAI's image model on PaxSenix: GET /ai-image/grok-imagine
 // (text-to-image, params: prompt + ratio) and POST /ai-img2img/grok-imagine
 // (image-to-image, body: prompt/model/ratio/image_urls — same shape as seedream,
@@ -5648,7 +5648,7 @@ const routeRequest = async (req, res) => {
       } catch (e) { return sendJson(res, 200, { hasAudio: false, matchesCurrent: false, withSpeech: 0, error: e.message }); }
     }
     if (p === '/api/health' || p === '/api/ping') return sendJson(res, 200, { ok: true, vercel: IS_VERCEL, path: p, url: rawUrl, hasKey: !!API_KEY, commit: (process.env.VERCEL_GIT_COMMIT_SHA || '').slice(0, 7) || 'local', deployedAt: process.env.VERCEL_DEPLOYMENT_ID ? 'vercel' : 'local', logfare: { key: !!LOGFARE_API_KEY, lastOkAt: logfareStatus.lastOkAt, lastModel: logfareStatus.lastModel, lastError: logfareStatus.lastError }, aqua: { key: !!AQUA_API_KEY, lastOkAt: aquaStatus.lastOkAt, lastModel: aquaStatus.lastModel, lastError: aquaStatus.lastError } });
-    if (p === '/api/models') return sendJson(res, 200, { chat: MODELS, image: IMAGE_MODELS.concat([MODELSCOPE_IMAGE_MODEL, 'aqua:nanobanana-pro', 'aqua:agnes-image'], LOGFARE_IMAGE_MODELS, NOVITA_IMAGE_MODELS.map(m => m.id)), video: VIDEO_MODELS, voices: VOICES, languages: LANGUAGES, narrationModes: NARRATION_MODES, narrationEngines: NARRATION_ENGINES, narrationVoices: { fish: VOICES, mimo: VOICES, logfare: LOGFARE_VOICES }, styles: STYLE_KEYS.map(k => ({ key: k, label: STYLES[k].label })) });
+    if (p === '/api/models') return sendJson(res, 200, { chat: MODELS, image: IMAGE_MODELS.concat([MODELSCOPE_IMAGE_MODEL, 'aqua:nanobanana-pro', 'aqua:agnes-image', 'aqua:qwen-image-3.0-pro'], LOGFARE_IMAGE_MODELS, NOVITA_IMAGE_MODELS.map(m => m.id)), video: VIDEO_MODELS, voices: VOICES, languages: LANGUAGES, narrationModes: NARRATION_MODES, narrationEngines: NARRATION_ENGINES, narrationVoices: { fish: VOICES, mimo: VOICES, logfare: LOGFARE_VOICES }, styles: STYLE_KEYS.map(k => ({ key: k, label: STYLES[k].label })) });
 
     // --- CREDITS ---
     if (p === '/api/credits' && req.method === 'GET') {

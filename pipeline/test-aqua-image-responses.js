@@ -7,7 +7,7 @@ const code = source.slice(source.indexOf('function aquaUrlFrom('), source.indexO
 let requests = [], reply;
 const context = {
   AQUA_API: 'https://api.aquadevs.com', AQUA_API_KEY: 'fake',
-  AQUA_IMAGE_MODELS: ['nanobanana-pro', 'agnes-image'],
+  AQUA_IMAGE_MODELS: vm.runInNewContext(source.match(/const AQUA_IMAGE_MODELS = ([^;]+);/)[1]),
   aquaStatus: { lastError: '', lastModel: '', lastOkAt: 0 },
   aquaHeaders: () => ({}), aquaRatio: () => 'square', aquaTaskUrl: s => String(s || ''),
   logLine() {}, AbortSignal, Date, JSON, encodeURIComponent,
@@ -24,6 +24,15 @@ assert.equal(context.aquaUrlFrom({ result: { b64_json: 'YWJj' } }), 'data:image/
 (async () => {
   reply = async () => new Response(JSON.stringify({ images: [{ url }] }));
   assert.equal(await context.generateAquaImage('aqua:agnes-image', 'portrait'), url);
+  requests = [];
+  const reference = 'data:image/png;base64,YWJj';
+  assert.equal(await context.generateAquaImage('aqua:qwen-image-3.0-pro', 'Qwen portrait', '1:1', reference), url);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].url, 'https://api.aquadevs.com/v1/images/generations');
+  const qwenBody = JSON.parse(requests[0].options.body);
+  assert.equal(qwenBody.model, 'qwen-image-3.0-pro');
+  assert.equal(qwenBody.image, reference);
+  assert.equal(qwenBody.ratio, 'square');
   requests = [];
   reply = async requested => new Response(JSON.stringify(requested.includes('/tasks/') ? { status: 'completed', image_url: url } : { data: { task_id: 'task-123' } }));
   assert.equal(await context.generateAquaImage('aqua:nanobanana-pro', 'portrait'), url);

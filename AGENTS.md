@@ -85,7 +85,8 @@ consistency**, generates frame images, animates them via Grok Video / Omni Flash
   fresh, 🗑 removes the card. Long Wan clips poll in the background with the same pending-means-
   wait semantics as the Studio. Regression: `node pipeline/test-generations.js`.
 - **AquaDevs image models in Storyboard** — the image-model dropdown offers `aqua:nanobanana-pro`
-  ("Nano Banana Pro — AquaDevs") and `aqua:agnes-image` ("Agnes Image — AquaDevs").
+  ("Nano Banana Pro — AquaDevs"), `aqua:agnes-image` ("Agnes Image — AquaDevs")
+  and `aqua:qwen-image-3.0-pro` ("Qwen Image 3.0 Pro — AquaDevs").
   `submitTask`/`submitImg2ImgTask` intercept `aqua:` ids before the PaxSenix path and render via
   `generateAquaImage` (POST /v1/images/generations; ratio maps 1:1→square, 16:9/4:3→landscape,
   9:16/3:4→portrait; direct models answer with a URL, task models poll — both handled). Per the
