@@ -68,6 +68,9 @@ const FISH_API = 'https://api.fish.audio';
 const API = 'https://api.paxsenix.org';
 let MODELSCOPE_API_TOKEN = process.env.MODELSCOPE_API_TOKEN || process.env.MODELSCOPE_TOKEN || '';
 if (!IS_VERCEL && !MODELSCOPE_API_TOKEN) { try { MODELSCOPE_API_TOKEN = fs.readFileSync(path.join(ROOT, 'pipeline', 'modelscope_token.txt'), 'utf8').trim(); } catch {} }
+// xclis.ai image gateway (OpenAI-compatible /v1/images/generations + /edits).
+let XCLIS_API_KEY = process.env.XCLIS_API_KEY || '';
+if (!IS_VERCEL && !XCLIS_API_KEY) { try { XCLIS_API_KEY = fs.readFileSync(path.join(ROOT, 'pipeline', 'xclis_apikey.txt'), 'utf8').trim(); } catch {} }
 const AQUA_API = 'https://api.aquadevs.com';
 const LOGFARE_API = 'https://logfare.ai/v1';
 const PORT = process.env.PORT || 5173;
@@ -1231,6 +1234,15 @@ function isFlashloopPromptModel(m) {
   return bare === 'auto' || LOGFARE_MODELS.includes(bare);
 }
 const IMAGE_MODELS = ['nano-banana-pro', 'nano-banana-2', 'nano-banana-2-lite', 'seedream-5', 'seedream-4', 'seedream-4.5', 'grok-imagine-2', 'grok-imagine', 'gpt-image-2'];
+const XCLIS_API = (process.env.XCLIS_BASE_URL || 'https://jp.xclis.ai/v1').replace(/\/+$/, '');
+const XCLIS_IMAGE_MODELS = ['gpt-image-2.5-sunburst-az', 'gpt-image-2.5-sunburst', 'gpt-image-2.5-flare-az', 'gpt-image-2.5-flare'];
+function isXclisImageModel(model) { return /^xclis:/.test(String(model || '')); }
+function xclisSize(ratio) {
+  const r = String(ratio || '16:9');
+  if (r === '1:1') return '1024x1024';
+  if (r === '9:16' || r === '3:4') return '1024x1536';
+  return '1536x1024';
+}
 // AquaDevs image models (POST https://api.aquadevs.com/v1/images/generations).
 // Selected from the UI as "aqua:<id>" so they never collide with same-named
 // PaxSenix models. These return a direct image URL (no task polling).
@@ -1899,6 +1911,45 @@ async function aquaImageToFile(url, outPath) {
   return outPath;
 }
 
+async function generateXclisImage(model, prompt, ratio = '16:9', refBuffer = null) {
+  const id = String(model).replace(/^xclis:/, '');
+  if (!XCLIS_IMAGE_MODELS.includes(id)) throw new Error('unknown xclis image model: ' + id);
+  if (!XCLIS_API_KEY) throw new Error('no xclis.ai key (env XCLIS_API_KEY or pipeline/xclis_apikey.txt)');
+  const headers = { Authorization: 'Bearer ' + XCLIS_API_KEY };
+  const size = xclisSize(ratio);
+  const request = async (url, options = {}) => {
+    const response = await fetch(url, { ...options, headers: { ...headers, ...(options.headers || {}) }, signal: AbortSignal.timeout(240000) });
+    const text = await response.text();
+    let body = {}; try { body = JSON.parse(text); } catch {}
+    if (!response.ok) {
+      const error = Object.assign(new Error(`xclis ${id} HTTP ${response.status}: ${body?.error?.message || body?.error || text.slice(0, 300)}`), { permanent: response.status >= 400 && response.status < 500 && ![408, 429].includes(response.status) });
+      throw error;
+    }
+    const item = body?.data?.[0] || body?.result?.data?.[0] || body?.result?.[0] || body;
+    if (item?.url) return item.url;
+    if (item?.b64_json) return 'data:image/png;base64,' + item.b64_json;
+    throw new Error(`xclis ${id} returned no image URL or base64 image`);
+  };
+  let lastError;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      if (refBuffer?.length) {
+        const form = new FormData();
+        form.append('model', id); form.append('prompt', String(prompt || '')); form.append('size', size);
+        form.append('image', new Blob([refBuffer], { type: 'image/png' }), 'reference.png');
+        try { return await request(`${XCLIS_API}/images/edits`, { method: 'POST', body: form }); }
+        catch (editError) { if (editError.permanent && !/404|405|not found/i.test(editError.message)) throw editError; logLine(`xclis ${id}: edits unavailable — retrying text-to-image`); }
+      }
+      return await request(`${XCLIS_API}/images/generations`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: id, prompt: String(prompt || ''), size }) });
+    } catch (error) {
+      if (error.permanent) throw error;
+      lastError = error; logLine(`xclis ${id} attempt ${attempt}: ${error.message}`);
+      if (attempt < 3) await new Promise(resolve => setTimeout(resolve, attempt * 3000));
+    }
+  }
+  throw lastError || new Error(`xclis ${id} image failed`);
+}
+
 // ================================ Novita async jobs ================================
 // One submit helper for BOTH video and image jobs (same /v1/submit + /v1/status
 // API per the docs). Submit returns a `novita:task:<id>` marker that waitTask()
@@ -2072,6 +2123,15 @@ async function submitTask(pathAndQuery, logFn = logLine, outInfo = null) {
       return LOGFARE_LOCAL_PREFIX + file;
     } catch (e) { if (outInfo) outInfo.error = e; logFn(`aqua image failed: ${e.message}`); return null; }
   }
+  if (lfModel && isXclisImageModel(decodeURIComponent(lfModel[1]))) {
+    const qv = (k, dflt) => { const m = new RegExp(`[?&]${k}=([^&]*)`).exec(pq); return m ? decodeURIComponent(m[1]) : dflt; };
+    try {
+      const url = await generateXclisImage(decodeURIComponent(lfModel[1]), qv('prompt', ''), qv('ratio', '16:9'));
+      const file = path.join(FRAMES_DIR, `xclis_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}.png`);
+      await aquaImageToFile(url, file);
+      return LOGFARE_LOCAL_PREFIX + file;
+    } catch (e) { if (outInfo) outInfo.error = e; logFn(`xclis image failed: ${e.message}`); return null; }
+  }
   // Novita text-to-image ("novita:<id>" model in the query) — not a PaxSenix
   // endpoint; submit through the Novita /v1/submit job API instead.
   if (lfModel && isNovitaImageModel(decodeURIComponent(lfModel[1]))) {    const qv = (k, dflt) => { const m = new RegExp(`[?&]${k}=([^&]*)`).exec(pq); return m ? decodeURIComponent(m[1]) : dflt; };
@@ -2190,6 +2250,15 @@ async function submitImg2ImgTask(prompt, refUrls, imageModel = 'seedream-5', rat
       await aquaImageToFile(url, file);
       return LOGFARE_LOCAL_PREFIX + file;
     } catch (e) { if (outInfo) outInfo.error = e; logLine(`aqua img2img ${imageModel}: ${e.message}`); return null; }
+  }
+  if (isXclisImageModel(imageModel)) {
+    try {
+      const refBuf = await refImageBuffer((refUrls || [])[0]);
+      const url = await generateXclisImage(imageModel, prompt, ratio, refBuf);
+      const file = path.join(FRAMES_DIR, `xclis_i2i_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}.png`);
+      await aquaImageToFile(url, file);
+      return LOGFARE_LOCAL_PREFIX + file;
+    } catch (e) { if (outInfo) outInfo.error = e; logLine(`xclis img2img ${imageModel}: ${e.message}`); return null; }
   }
   const model = (imageModel && img2ImgEndpoint(imageModel)) ? safeImageModel(imageModel) : 'seedream-5';
   const endpoint = img2ImgEndpoint(model);
@@ -5652,7 +5721,7 @@ const routeRequest = async (req, res) => {
       } catch (e) { return sendJson(res, 200, { hasAudio: false, matchesCurrent: false, withSpeech: 0, error: e.message }); }
     }
     if (p === '/api/health' || p === '/api/ping') return sendJson(res, 200, { ok: true, vercel: IS_VERCEL, path: p, url: rawUrl, hasKey: !!API_KEY, commit: (process.env.VERCEL_GIT_COMMIT_SHA || '').slice(0, 7) || 'local', deployedAt: process.env.VERCEL_DEPLOYMENT_ID ? 'vercel' : 'local', logfare: { key: !!LOGFARE_API_KEY, lastOkAt: logfareStatus.lastOkAt, lastModel: logfareStatus.lastModel, lastError: logfareStatus.lastError }, aqua: { key: !!AQUA_API_KEY, lastOkAt: aquaStatus.lastOkAt, lastModel: aquaStatus.lastModel, lastError: aquaStatus.lastError } });
-    if (p === '/api/models') return sendJson(res, 200, { chat: MODELS, image: IMAGE_MODELS.concat([MODELSCOPE_IMAGE_MODEL, 'aqua:nanobanana-pro', 'aqua:agnes-image', 'aqua:qwen-image-3.0-pro'], LOGFARE_IMAGE_MODELS, NOVITA_IMAGE_MODELS.map(m => m.id)), video: VIDEO_MODELS, voices: VOICES, languages: LANGUAGES, narrationModes: NARRATION_MODES, narrationEngines: NARRATION_ENGINES, narrationVoices: { fish: VOICES, mimo: VOICES, logfare: LOGFARE_VOICES }, styles: STYLE_KEYS.map(k => ({ key: k, label: STYLES[k].label })) });
+    if (p === '/api/models') return sendJson(res, 200, { chat: MODELS, image: IMAGE_MODELS.concat([MODELSCOPE_IMAGE_MODEL, ...XCLIS_IMAGE_MODELS.map(m => 'xclis:' + m), 'aqua:nanobanana-pro', 'aqua:agnes-image', 'aqua:qwen-image-3.0-pro'], LOGFARE_IMAGE_MODELS, NOVITA_IMAGE_MODELS.map(m => m.id)), video: VIDEO_MODELS, voices: VOICES, languages: LANGUAGES, narrationModes: NARRATION_MODES, narrationEngines: NARRATION_ENGINES, narrationVoices: { fish: VOICES, mimo: VOICES, logfare: LOGFARE_VOICES }, styles: STYLE_KEYS.map(k => ({ key: k, label: STYLES[k].label })) });
 
     // --- CREDITS ---
     if (p === '/api/credits' && req.method === 'GET') {

@@ -16,7 +16,7 @@ const source = fs.readFileSync(serverFile, 'utf8');
 const client = fs.readFileSync(path.join(root, 'web/public/storyboard.html'), 'utf8');
 let imageCalls = 0, submits = 0, imageMode = 'filtered', failUploads = false;
 let paxImages = false, paxImageSubmits = 0;
-let aquaImages = false, aquaCalls = 0;
+let aquaImages = false, aquaCalls = 0, xclisImages = false, xclisCalls = 0;
 let forceCopyFailure = false, forceConcatFailure = false, fallbackCount = 0;
 let statusCode = 200, statusBody = { status: 'RUNNING' };
 let png, clip, submitted;
@@ -33,6 +33,10 @@ async function upstream(url, options = {}) {
       assert.ok(String(aquaBody.image).startsWith('data:image/'), 'img2img references travel as base64 data URLs');
     }
     return json({ result: { url: 'https://cdn.example.test/still.png' } });
+  }
+  if (xclisImages && (url === 'https://jp.xclis.ai/v1/images/generations' || url === 'https://jp.xclis.ai/v1/images/edits')) {
+    xclisCalls++;
+    return json({ data: [{ url: 'https://cdn.example.test/still.png' }] });
   }
   if ((!aquaImages || !url.startsWith('https://api.aquadevs.com/')) && (url.endsWith('/images/generations') || url.endsWith('/images/edits'))) {
     imageCalls++;
@@ -88,7 +92,7 @@ function isolatedRequire(name) {
 vm.runInNewContext(source.replace("const ROOT = IS_VERCEL ? '/tmp' : path.resolve(__dirname, '..');", `const ROOT = ${JSON.stringify(tmp)};`), {
   module: mod, exports: mod.exports, require: isolatedRequire, __dirname: path.dirname(serverFile),
   process: { env: { VERCEL: '1', STORYBOARD_DATA_DIR: tmp, NOVITA_API_KEY: 'fake', NOVITA_BASE_URL: 'https://novita.example.test',
-    LOGFARE_API_KEY: 'fake', AQUA_API_KEY: 'fake', SESSION_SECRET: 'offline-test-session-secret' } },
+    LOGFARE_API_KEY: 'fake', AQUA_API_KEY: 'fake', XCLIS_API_KEY: 'fake', SESSION_SECRET: 'offline-test-session-secret' } },
   Buffer, URL, fetch: upstream, AbortController, AbortSignal, Blob, FormData,
   setTimeout, clearTimeout, setInterval, clearInterval, console
 }, { filename: serverFile });
@@ -248,6 +252,18 @@ async function main() {
   assert.equal(modelsPayload.image.includes('aqua:nanobanana-pro'), true, 'dropdown lists aqua:nanobanana-pro');
   assert.equal(modelsPayload.image.includes('aqua:agnes-image'), true, 'dropdown lists aqua:agnes-image');
   console.log('ok: AquaDevs image models render storyboard frames (t2i + anchored) and references');
+
+  xclisImages = true;
+  const beforeXclis = xclisCalls;
+  const xclisFrame = { frame: 8, duration_sec: 1, image_prompt: 'A blue ceramic vase on a table', animation_prompt: 'Slow push-in', narration: '', characters_present: [] };
+  result = await api('/images', { frames: [8], framesData: [xclisFrame], characters: [], imageModel: 'xclis:gpt-image-2.5-sunburst-az', ratio: '16:9' });
+  assert.equal(result.body.ok, true, JSON.stringify(result.body));
+  assert.equal(xclisCalls - beforeXclis, 1, 'xclis t2i uses the OpenAI-compatible generations endpoint');
+  assert.equal(result.body.frames[0].generated_image_url, 'https://cdn.example.test/still.png');
+  assert.ok(modelsPayload.image.includes('xclis:gpt-image-2.5-sunburst-az'), 'dropdown lists xclis sunburst AZ');
+  assert.ok(modelsPayload.image.includes('xclis:gpt-image-2.5-flare'), 'dropdown lists xclis flare');
+  xclisImages = false;
+  console.log('ok: xclis image models render Storyboard frames');
 
   const videoBody = { frames: [2], framesData: [{ ...frame, frame: 2 }], characters: [],
     videoModel: 'wan3.0-video-prime', narrationMode: 'prompt', chainContinuity: false };

@@ -352,7 +352,8 @@ $('btnAdd').onclick=newRunFromForm;
   try{
     const m=await getApi('/models');
     $('chatModel').innerHTML=(m.chat||[]).map(x=>`<option>${esc(x)}</option>`).join('');
-    const IMG_LABELS={'aqua:nanobanana-pro':'Nano Banana Pro — AquaDevs','aqua:agnes-image':'Agnes Image — AquaDevs'};
+    const IMG_LABELS={'aqua:nanobanana-pro':'Nano Banana Pro — AquaDevs','aqua:agnes-image':'Agnes Image — AquaDevs',
+      'xclis:gpt-image-2.5-sunburst-az':'GPT Image 2.5 Sunburst AZ — xclis','xclis:gpt-image-2.5-sunburst':'GPT Image 2.5 Sunburst — xclis','xclis:gpt-image-2.5-flare-az':'GPT Image 2.5 Flare AZ — xclis','xclis:gpt-image-2.5-flare':'GPT Image 2.5 Flare — xclis'};
     $('imageModel').innerHTML=(m.image||[]).map(x=>`<option value="${esc(x)}">${esc(IMG_LABELS[x]||x)}</option>`).join('');
     $('videoModel').innerHTML=(m.video||[]).map(x=>`<option>${esc(x)}</option>`).join('');
     $('narrationMode').innerHTML=(m.narrationModes||[]).map(x=>`<option value="${esc(x.id||x)}">${esc(x.label||x)}</option>`).join('');

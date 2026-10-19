@@ -582,7 +582,8 @@ async function init(){
     const lbl=LOGFARE_LABELS[x]||AQUA_LABELS[x]||x;
     return `<option value="${x}">${lbl}</option>`;
   }).join('');
-  const IMG_MODEL_LABELS={'aqua:qwen-image-3.0-pro':'Qwen Image 3.0 Pro — AquaDevs','modelscope:qwen-image-2.1':'Qwen Image 2.1 — ModelScope','aqua:nanobanana-pro':'Nano Banana Pro — AquaDevs','aqua:agnes-image':'Agnes Image — AquaDevs'};
+  const IMG_MODEL_LABELS={'aqua:qwen-image-3.0-pro':'Qwen Image 3.0 Pro — AquaDevs','modelscope:qwen-image-2.1':'Qwen Image 2.1 — ModelScope','aqua:nanobanana-pro':'Nano Banana Pro — AquaDevs','aqua:agnes-image':'Agnes Image — AquaDevs',
+    'xclis:gpt-image-2.5-sunburst-az':'GPT Image 2.5 Sunburst AZ — xclis','xclis:gpt-image-2.5-sunburst':'GPT Image 2.5 Sunburst — xclis','xclis:gpt-image-2.5-flare-az':'GPT Image 2.5 Flare AZ — xclis','xclis:gpt-image-2.5-flare':'GPT Image 2.5 Flare — xclis'};
   $('imageModel').innerHTML=m.image.map(x=>`<option value="${x}">${IMG_MODEL_LABELS[x]||x}</option>`).join('');
   try{const saved=localStorage.getItem('sb_image_model');if(m.image.includes(saved))$('imageModel').value=saved;}catch(e){}
   $('imageModel').addEventListener('change',()=>{try{localStorage.setItem('sb_image_model',$('imageModel').value);}catch(e){}});

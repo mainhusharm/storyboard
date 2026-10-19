@@ -94,6 +94,13 @@ consistency**, generates frame images, animates them via Grok Video / Omni Flash
   anchors pass the reference BYTES inline (no re-host round-trip). The finished bytes come back
   behind the `logfare-local:` marker, so the whole submit→wait→download ladder, the emergency
   still chain, and the hosting-on-Vercel behaviour are unchanged.
+- **xclis.ai image models in Storyboard** — the image-model dropdown also offers
+  `xclis:gpt-image-2.5-sunburst-az`, `xclis:gpt-image-2.5-sunburst`,
+  `xclis:gpt-image-2.5-flare-az` and `xclis:gpt-image-2.5-flare`. The OpenAI-compatible
+  `https://jp.xclis.ai/v1/images/generations` route supports direct URLs and base64 results;
+  `/images/edits` is used for reference-anchored frames when available, with ratio-aware
+  1024x1024 / 1536x1024 / 1024x1536 sizes. Credentials use `XCLIS_API_KEY` on Vercel or the
+  gitignored `pipeline/xclis_apikey.txt` locally. Never commit the key.
 - **Aqua image transport** uses normal authenticated JSON API headers. Do not add
   fake browser Client Hints, Origin or Referer to solve Cloudflare challenges.
   A challenge is AQUA_CLOUDFLARE_BLOCKED with terminal=true, permanent=false:
