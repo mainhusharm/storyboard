@@ -29,6 +29,33 @@
           "value": "no-store, max-age=0"
         }
       ]
+    },
+    {
+      "source": "/flashloop-studio",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-store, max-age=0"
+        }
+      ]
+    },
+    {
+      "source": "/flashloop-studio.html",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-store, max-age=0"
+        }
+      ]
+    },
+    {
+      "source": "/effects/:slug",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-store, max-age=0"
+        }
+      ]
     }
   ],
   "rewrites": [
@@ -98,5 +125,17 @@
       "path": "/api/vault-cleanup",
       "schedule": "0 0 * * *"
     }
-  ]
+  ],
+  "functions": {
+    "api/studio-worker.js": {
+      "maxDuration": 300,
+      "experimentalTriggers": [
+        {
+          "type": "queue/v2beta",
+          "topic": "studio-generation",
+          "retryAfterSeconds": 60
+        }
+      ]
+    }
+  }
 }

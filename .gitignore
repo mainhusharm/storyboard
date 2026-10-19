@@ -54,3 +54,6 @@ desktop.ini
 *.log
 # Generated trend template cache (rebuilt from the live trend pages)
 storyboard/trend-templates.json
+
+# Durable local background jobs (private prompts and account ownership)
+studio-jobs/

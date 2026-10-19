@@ -9,6 +9,16 @@ const { execFile } = require('child_process');
 const { URL } = require('url');
 const { createVault } = require('./vault');
 const { MODEL: MODELSCOPE_IMAGE_MODEL, createModelscopeProvider } = require('./modelscope');
+const { Readable } = require('node:stream');
+const { createJobStore, createStudioJobs } = require('./studio-jobs');
+const studioQueue = require('./studio-queue');
+const STUDIO_WORKER = Symbol('trusted studio worker');
+const studioExecutionContext = new (require('node:async_hooks').AsyncLocalStorage)();
+function studioTimeout(ms) {
+  const deadline = studioExecutionContext.getStore()?.deadline;
+  if (deadline && deadline - Date.now() < 1000) throw new Error('Background step reached its time budget. Saved scenes and provider task IDs are retained.');
+  return deadline ? Math.max(1, Math.min(ms, deadline - Date.now())) : ms;
+}
 const isModelscopeImageModel = model => model === MODELSCOPE_IMAGE_MODEL;
 const modelscopeImages = createModelscopeProvider({ getToken: () => MODELSCOPE_API_TOKEN, requestBudgetMs: process.env.VERCEL ? 270000 : Infinity, log: message => logLine(message) });
 const assetVault = createVault({
@@ -1555,7 +1565,7 @@ function reapStaleJob(force = false) {
 // task polls check it and abort. Only the storyboard job is cancellable this way
 // (call sites that log via logLine), never the independent influencer job (inflLogLine).
 function storyboardCancelRequested(logFn) {
-  return logFn === logLine && job.cancelRequested;
+  return !studioExecutionContext.getStore() && logFn === logLine && job.cancelRequested;
 }
 
 // ---------------- SEPARATE job state for AI Influencer (fully independent from storyboard) ----------------
@@ -1663,7 +1673,8 @@ async function uploadToImageHost(filePath, logFn = inflLogLine) {
 // so the clip has to survive outside the instance that rendered it).
 async function uploadVideoClip(filePath, logFn = logLine, mime = 'video/mp4', fileName = 'clip.mp4', opts = {}) {
   const uploadTimeout = () => {
-    const remaining = opts.deadline ? opts.deadline - Date.now() : 180000;
+    const deadline = opts.deadline || studioExecutionContext.getStore()?.deadline;
+    const remaining = deadline ? deadline - Date.now() : 180000;
     if (remaining < 1000) throw new Error('clip upload exceeded the request time budget');
     return Math.min(180000, remaining);
   };
@@ -1971,7 +1982,8 @@ async function novitaFetch(apiPath, opts = {}, timeoutMs = 120000) {
 // exist" etc.) fail FAST with no retry; transient proxy drops get one retry.
 async function novitaSubmit(body, logFn = logLine) {
   if (!NOVITA_API_KEY) { logFn('novita: no API key (env NOVITA_API_KEY or pipeline/novita_apikey.txt)'); return null; }
-  for (let attempt = 1; attempt <= 2; attempt++) {
+  const maxAttempts = studioExecutionContext.getStore() ? 1 : 2;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     if (storyboardCancelRequested(logFn)) { logFn('novita submit cancelled by user'); return null; }
     try {
       const res = await novitaFetch('/v1/submit', { method: 'POST', body: JSON.stringify(body) }, 60000);
@@ -1980,7 +1992,7 @@ async function novitaSubmit(body, logFn = logLine) {
       logFn(`novita submit: HTTP ${res.status} ${JSON.stringify(j).slice(0, 200)}`);
       if (res.status >= 400 && res.status < 500) return null; // permanent (bad model / validation)
     } catch (e) { logFn(`novita submit attempt ${attempt}: ${e.message}`); }
-    if (attempt < 2) await new Promise(r => setTimeout(r, 3000));
+    if (attempt < maxAttempts) await new Promise(r => setTimeout(r, 3000));
   }
   return null;
 }
@@ -2146,7 +2158,7 @@ async function submitTask(pathAndQuery, logFn = logLine, outInfo = null) {
 // which left the request dead with no response and the UI frozen before any image
 // appeared. Keep a single attempt short and cap the count on Vercel so the whole
 // image phase stays inside the budget.
-const submitAttempts = IS_VERCEL ? 2 : 4;
+const submitAttempts = studioExecutionContext.getStore() ? 1 : (IS_VERCEL ? 2 : 4);
 const submitTimeoutMs = IS_VERCEL ? 45000 : 120000;
 for (let attempt = 1; attempt <= submitAttempts; attempt++) {
     if (storyboardCancelRequested(logFn)) { logFn('submit cancelled by user'); return null; }
@@ -5544,6 +5556,7 @@ async function requirePageAuth(req, res) {
 // user's current credit balance + plan to req.user so the request can be gated
 // downstream.
 async function requireApiAuth(req, res) {
+  if (req[STUDIO_WORKER]) return { ...req[STUDIO_WORKER].user };
   const user = await getUserBySessionToken(authToken(req));
   if (!user) { sendJson(res, 401, { error: 'auth required' }); return null; }
   try { const meta = await loadUserMeta(user.id); user.credits = meta.credits; user.plan = meta.plan; } catch (e) { user.credits = 0; user.plan = 'trial'; }
@@ -5804,6 +5817,22 @@ const routeRequest = async (req, res) => {
     }
 
     if (await assetVault.handle(req, res, u)) return;
+
+    if (p === '/api/studio-jobs' || p.startsWith('/api/studio-jobs/')) {
+      try {
+        if (p === '/api/studio-jobs' && req.method === 'POST') {
+          const result = await studioJobs.start(req.user, await readBody(req));
+          return sendJson(res,202,{ok:true,job:result});
+        }
+        if (p === '/api/studio-jobs' && req.method === 'GET') return sendJson(res,200,{ok:true,jobs:await studioJobs.list(req.user,u.searchParams.get('source'))});
+        const match = /^\/api\/studio-jobs\/([a-f0-9-]{36})$/.exec(p);
+        if (match && ['GET','DELETE'].includes(req.method)) {
+          const result = req.method === 'DELETE' ? await studioJobs.cancel(req.user,match[1]) : await studioJobs.get(req.user,match[1]);
+          return sendJson(res,result ? 200 : 404,result ? {ok:true,job:result} : {error:'Job not found.'});
+        }
+        return sendJson(res,404,{error:'Job endpoint not found.'});
+      } catch(e) { return sendJson(res,e.statusCode||503,{error:e.message}); }
+    }
 
     if (p === '/api/cancel' && req.method === 'POST') {
       reapStaleJob();
@@ -7174,7 +7203,7 @@ Return ONLY a JSON object:
         const refs = Array.isArray(references) ? references.filter(r => r && String(r.name || '').trim()) : [];
         const trendMode = resolveTrendMode(source, slug, effectName, tagline);
         const perScene = [5, 8, 10, 15, 30].includes(Number(sceneLength)) ? Number(sceneLength) : 8;
-        const total = Math.max(1, Math.min(20, Number(totalScenes) || 8));
+        const total = Math.max(1, Math.min(req[STUDIO_WORKER] ? 60 : 20, Number(totalScenes) || 8));
         let trendTpl = null;
         try {
           trendTpl = await trendTemplates.buildTrendTemplate({
@@ -7405,10 +7434,12 @@ RULES:
               parameters: { size: novitaImageSize(ratio) }
             }, refs.length ? { imageUrls: refs } : {}), logLine);
             if (!task) throw new Error('submit failed');
+            if (req[STUDIO_WORKER]) return sendJson(res,202,{ok:true,taskUrl:task,pending:true,model:selectedModel});
             const imageUrl = await novitaWait(task, IS_VERCEL ? 4 : 8, logLine);
             if (!imageUrl) throw new Error('render failed or timed out');
             return sendJson(res, 200, { ok: true, imageUrl, model: selectedModel, mode: refs.length ? 'i2i' : 't2i', provider: 'novita' });
           } catch (e) {
+            if (req[STUDIO_WORKER]) return sendJson(res,502,{error:e.message,provider:'novita',model:selectedModel});
             logLine('novita image failed: ' + e.message + ' — falling back to PaxSenix');
             aquaFailureNote = e.message;
             selectedModel = 'nano-banana-2';
@@ -7613,6 +7644,9 @@ RULES:
     // Omni-flash keeps the old synchronous behaviour (its clips render fast enough).
     if (p === '/api/flashloop/generate-video' && req.method === 'POST') {
       const body = await readBody(req).catch(() => ({}));
+      const worker = req[STUDIO_WORKER];
+      const VIDEO_DIR = worker ? worker.videoDir : path.join(ROOT,'video');
+      const FRAMES_DIR = worker ? worker.framesDir : path.join(ROOT,'frames');
       const { prompt = '', imageUrl = '', ratio = '9:16', resolution = '720P', chainAnchor = '', model: bodyModel = '', duration: bodyDuration = 0, pollTask: pollTaskId = '' } = body || {};
       const sceneN = Math.max(1, Number(body.scene) || 1);
       // A POLL request only carries the task id (the prompt went with the submit),
@@ -7633,7 +7667,13 @@ RULES:
           // ---- phase 2: finish a job submitted earlier ----
           if (pollTaskId) {
             logLine(`flashloop video scene ${sceneN}: polling novita job for ${MODEL}…`);
-            const url = await novitaWait(pollTaskId, IS_VERCEL ? 4 : 25, logLine);
+            let url;
+            if (worker) {
+              const status = await pollStudioTask(pollTaskId);
+              if (status.failed) return sendJson(res,502,{error:status.error||'Provider render failed'});
+              if (!status.url) return sendJson(res,202,{ok:true,pending:true,task:pollTaskId});
+              url=status.url;
+            } else url = await novitaWait(pollTaskId, IS_VERCEL ? 4 : 25, logLine);
             if (!url) return sendJson(res, 504, { error: `${MODEL} render still running or failed — try this scene again`, pending: true, task: pollTaskId });
             if (!(await download(url, out))) return sendJson(res, 500, { error: 'clip download failed' });
           } else {
@@ -7670,7 +7710,7 @@ RULES:
                 ...(useAnchor ? { imageUrls: [anchor] } : {})
               };
             };
-            if (isNov && IS_VERCEL) {
+            if (isNov && (IS_VERCEL || worker)) {
               // Never block the request on a 100-300s render: submit, hand the
               // task back, let the client poll it in a fresh invocation.
               if (!NOVITA_API_KEY) {
@@ -7681,6 +7721,15 @@ RULES:
               if (!task) return sendJson(res, 502, { error: `${MODEL} submit failed` });
               logLine(`flashloop video scene ${sceneN}: ${MODEL} submitted (${novDur}s) — returning task for polling`);
               return sendJson(res, 202, { ok: true, pending: true, scene: sceneN, task, model: MODEL });
+            }
+            if (worker && !isNov) {
+              const mode = anchor ? 'image-to-video' : 'text-to-video';
+              const imgParam = anchor ? '&'+videoImgKey(MODEL)+'='+encodeURIComponent(anchor) : '';
+              // One submit attempt only. A lost response must not buy a second render.
+              const response = await paxFetch(API+'/ai-video/'+MODEL+'?prompt='+encodeURIComponent(softened)+'&ratio='+mRatio+'&type='+mode+imgParam,{},45000);
+              const submitted = await response.json().catch(()=>({}));
+              if (!response.ok || !submitted.ok || !submitted.task_url) return sendJson(res,502,{error:submitted.message||submitted.error||'Video submission failed'});
+              return sendJson(res,202,{ok:true,pending:true,task:submitted.task_url,model:MODEL,scene:sceneN});
             }
             const attempt = async (useImg) => {
               if (isNov) {
@@ -7715,7 +7764,7 @@ RULES:
           try { clipUrl = await uploadVideoClip(out, logLine); }
           catch (e) { logLine(`flashloop video scene ${sceneN}: clip upload failed (${e.message}) — local combine fallback only`); }
           logLine(`flashloop video scene ${sceneN}: DONE`);
-          return sendJson(res, 200, { ok: true, scene: sceneN, video_path: '/video/' + path.basename(out), clip_url: clipUrl, chain_image_url: chainUrl });
+          return sendJson(res, 200, { ok: true, scene: sceneN, video_path: '/video/' + path.relative(path.join(ROOT,'video'),out).replace(/\\/g,'/'), clip_url: clipUrl, chain_image_url: chainUrl });
         } catch (e) {
           logLine(`flashloop video scene ${sceneN}: FAILED — ${e.message}`);
           return sendJson(res, 500, { error: String(e.message || e) });
@@ -7727,10 +7776,14 @@ RULES:
     // into one film (normalize → concat, copy mode with re-encode fallback).
     if (p === '/api/flashloop/combine' && req.method === 'POST') {
       const body = await readBody(req).catch(() => ({}));
+      const worker = req[STUDIO_WORKER];
+      const VIDEO_DIR = worker ? worker.videoDir : path.join(ROOT,'video');
+      const normalizeOnly = worker && body.normalizeOnly === true;
+      const preNormalized = worker && body.preNormalized === true;
       const sceneList = (Array.isArray(body.scenes) ? body.scenes : []).map(Number).filter(Boolean);
       const clipUrls = Array.isArray(body.clipUrls) ? body.clipUrls.map(String).filter(Boolean) : [];
       if (!sceneList.length) return sendJson(res, 400, { error: 'scenes list required' });
-      if (!(await requireCredits(req, res, 1, 'combine video'))) return;
+      if (!normalizeOnly && !(await requireCredits(req, res, 1, 'combine video'))) return;
       return (async () => {
         try {
           // Ratios are honoured per value (Novita renders 1:1, 4:3 and 3:4 too).
@@ -7744,6 +7797,7 @@ RULES:
           };
           const flashScale = normalizeVideoResolution(body.resolution) === '1080P' ? 1.5 : 1;
           const [w, h] = (DIM_BY_RATIO[ratio] || [1280, 720]).map(d => Math.round(d * flashScale / 2) * 2);
+          fs.mkdirSync(VIDEO_DIR,{recursive:true});
           const clipsDir = path.join(VIDEO_DIR, 'flash_clips');
           fs.mkdirSync(clipsDir, { recursive: true });
           const normClips = [];
@@ -7755,13 +7809,15 @@ RULES:
             if (!fs.existsSync(source) && clipUrls[sceneIndex]) {
               try {
                 const remote = clipUrls[sceneIndex];
-                const fetched = await fetch(remote, { signal: AbortSignal.timeout(180000) });
+                const fetched = await fetch(remote, { signal: AbortSignal.timeout(studioTimeout(180000)) });
                 if (!fetched.ok) throw new Error(`HTTP ${fetched.status}`);
                 source = path.join(VIDEO_DIR, `flash_remote_${String(n).padStart(2, '0')}.mp4`);
                 await fsp.writeFile(source, Buffer.from(await fetched.arrayBuffer()));
                 logLine(`flashloop combine: downloaded scene ${n} from public clip URL`);
               } catch (e) { logLine(`flashloop combine: scene ${n} remote clip download failed (${e.message})`); }
             }
+            if (worker && !fs.existsSync(source)) return sendJson(res,502,{error:'Scene '+n+' could not be downloaded. Completed scenes retained.'});
+            if (preNormalized) { normClips.push(source); continue; }
             if (!fs.existsSync(source)) { logLine(`flashloop combine: scene ${n} mp4 missing — skipping`); continue; }
 idx++;
             const clip = path.join(clipsDir, `clip_${String(idx).padStart(2, '0')}.mp4`);
@@ -7801,6 +7857,12 @@ await new Promise((resolve) => {
               detail: `scenes [${sceneList.join(', ')}] — this serverless instance has no local copies and no usable clip URL was supplied. Re-render the video clips (each scene request returns a hosted clip_url that combine re-downloads).`
             });
           }
+          if (worker && normClips.length !== sceneList.length) return sendJson(res,502,{error:'Scene normalization failed. The final film was not shortened.'});
+          if (normalizeOnly) {
+            const clipUrl=await uploadVideoClip(normClips[0],logLine);
+            if (!clipUrl) return sendJson(res,502,{error:'Normalized scene upload failed'});
+            return sendJson(res,200,{ok:true,clip_url:clipUrl});
+          }
           const listFile = path.join(VIDEO_DIR, 'flash_concat.txt');
           // Entries relative to VIDEO_DIR (concat -safe 0 resolves them against the list's dir)
           fs.writeFileSync(listFile, normClips.map(c => `file '${path.relative(VIDEO_DIR, c).replace(/\\/g, '/')}'`).join('\n'));
@@ -7824,9 +7886,9 @@ await new Promise((resolve) => {
           let finalUrl = '';
           try { finalUrl = await uploadVideoClip(finalPath, logLine); }
           catch (e) { logLine(`flashloop combine: final upload failed (${e.message}) — local path only`); }
-          await assetVault.captureFile(finalPath, 'video', body.title || 'Finished film', { stage: 'final', scene_count: normClips.length, ratio });
+          const vaultEntry = await assetVault.captureFile(finalPath, 'video', body.title || 'Finished film', { stage: 'final', scene_count: normClips.length, ratio });
           logLine(`flashloop combine: final video ready (${normClips.length} clips, ${(fs.statSync(finalPath).size / 1048576).toFixed(1)} MB)${finalUrl ? ', hosted' : ''}`);
-          return sendJson(res, 200, { ok: true, video_path: '/video/flash_final.mp4', clip_url: finalUrl, hosted_url: finalUrl, clips: normClips.length });
+          return sendJson(res, 200, { ok: true, video_path: '/video/' + path.relative(path.join(ROOT,'video'),finalPath).replace(/\\/g,'/'), vault_url: vaultEntry ? '/api/vault/'+vaultEntry.id+'/content' : '', clip_url: finalUrl, hosted_url: finalUrl, clips: normClips.length });
         } catch (e) { return sendJson(res, 500, { error: String(e.message || e) }); }
       })();
     }
@@ -8611,11 +8673,55 @@ ${infl.description || '(no description - describe a beautiful confident influenc
   }
 };
 
+
+// Internal dispatch retains existing credit gates and per-request provider/vault
+// contexts. Only this process can set the Symbol: JSON/headers cannot impersonate it.
+async function pollStudioTask(task) {
+  if (String(task).startsWith(NOVITA_TASK_PREFIX)) return novitaPollOnce(task);
+  let parsed;
+  try { parsed=new URL(task); } catch { throw new Error('Invalid provider task URL'); }
+  const apiHost=new URL(API).hostname;
+  if (parsed.protocol!=='https:' || !(parsed.hostname===apiHost || parsed.hostname.endsWith('.paxsenix.org'))) throw new Error('Unrecognized provider task host');
+  try {
+    const res=await paxFetch(parsed.href,{},45000);
+    const data=await res.json();
+    if (/fail|error/i.test(data.status||'')) return {failed:true,error:data.message||data.error||'Provider task failed'};
+    if (data.status==='done' && data.ok) return {url:data.url||data.urls?.[0]||data.video_url};
+    return {pending:true};
+  } catch (e) { return {pending:true}; }
+}
+async function executeStudioStep(job, route, body) {
+  if (!['/api/flashloop/generate-i2i','/api/flashloop/generate-video','/api/flashloop/combine','/api/flashloop/generate-prompt','/api/flashloop/generate-outline','/api/flashloop/generate-scene'].includes(route)) throw new Error('Invalid internal studio route');
+  const runDir='studio_'+job.id+'_'+crypto.randomUUID();
+  const scope={user:job.user,videoDir:path.join(ROOT,'video',runDir),framesDir:path.join(ROOT,'frames',runDir)};
+  const req=Readable.from([JSON.stringify(body)]);
+  Object.assign(req,{method:'POST',url:route,headers:{host:'localhost'},[STUDIO_WORKER]:scope});
+  try {
+    return await new Promise((resolve,reject)=>{
+      const headers={};
+      const res={statusCode:200,headersSent:false,setHeader(k,v){headers[k]=v;},getHeader(k){return headers[k];},writeHead(code,h){this.statusCode=code;this.headersSent=true;Object.assign(headers,h);},end(text){
+        try { const data=JSON.parse(String(text)); if(this.statusCode>=400 && !data.pending) reject(new Error(data.error||'Studio step HTTP '+this.statusCode)); else resolve(data); } catch(e){reject(e);}
+      }};
+      Promise.resolve(studioExecutionContext.run({deadline:Date.now()+255000},()=>requestHandler(req,res))).catch(reject);
+    });
+  } finally {
+    // These invocation-owned directories contain only hosted, temporary media.
+    await Promise.all([scope.videoDir,scope.framesDir].map(dir=>fsp.rm(dir,{recursive:true,force:true}).catch(()=>{})));
+  }
+}
+const studioJobs=createStudioJobs({
+  store:createJobStore({root:ROOT,isVercel:IS_VERCEL,getDb:async()=>{await initAuthStore();return authMode==='pg'?authPool:null;}}),
+  publish:studioQueue.publish,execute:executeStudioStep,
+  pollImage:async task=>{const result=await pollStudioTask(task);if(result.failed)throw new Error(result.error);return result.url?{imageUrl:result.url}:{pending:true};}
+});
+studioQueue.setLocalHandler(studioJobs.process);
+
 const requestHandler = (req, res) => modelscopeImages.run(() => assetVault.run(() => routeRequest(req, res)));
 module.exports = requestHandler;
+module.exports.processStudioJob = studioJobs.process;
 // Exposed for the pipeline/test-*.js regression tests.
 module.exports.__internal = {
-  assetVault, modelscopeImages, submitTask, waitTask,
+  assetVault, modelscopeImages, submitTask, waitTask, studioJobs, executeStudioStep, pollStudioTask,
   flashloopScenePlan,
   storyboardFrameCount, emergencyImageChain, vocalizeAnimationPrompts,
   capProviderImagePrompt, lockSacredCharacter, secularizeForImageFilter,
@@ -8643,6 +8749,7 @@ module.exports.__internal = {
 };
 
 if (!IS_VERCEL && require.main === module) {
+  studioJobs.recoverLocal().catch(e=>console.error('studio recovery:',e.message));
   const server = http.createServer(requestHandler);
   server.on('error', (err) => {
     if (err.code === 'EADDRINUSE') {

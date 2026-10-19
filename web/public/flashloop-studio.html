@@ -332,9 +332,11 @@
       <div id="mvSummary" style="font-size:12px;color:var(--teal);margin:0 0 12px;padding:8px 10px;background:var(--panel2);border:1px solid var(--line2);border-radius:8px"></div>
       <div style="display:flex;align-items:center;gap:8px;margin:0 0 12px;font-size:12px;color:var(--dim);cursor:pointer">
         <input type="checkbox" id="mvChained" checked style="accent-color:var(--amber)">
-        <label for="mvChained" style="cursor:pointer"><b>Seamless chaining (recommended)</b> — scene 1 renders, its LAST FRAME becomes the start image of scene 2, and so on, so the story flows continuously like the Storyboard tool. Renders in order (slower). Uncheck to render all scenes in PARALLEL from their own images instead.</label>
+        <label for="mvChained" style="cursor:pointer"><b>Seamless chaining (recommended)</b> — scene 1 renders, its LAST FRAME becomes the start image of scene 2, and so on, so the story flows continuously like the Storyboard tool. Renders in order (slower). Uncheck to render scenes independently from their own images (up to four provider renders at a time).</label>
       </div>
       <button id="btnMakeVideo" class="generate-btn" style="background:linear-gradient(135deg,rgba(251,146,60,.25),rgba(236,72,153,.25));border-color:#fb923c">🎬 Make Video (Omni Flash)</button>
+      <div style="font-size:12px;color:var(--dim);margin-top:10px">After a generation is queued, it continues in the cloud while your laptop is asleep or this page is closed. Reopen this studio to see progress.</div>
+      <div id="mvJobs" style="display:none;margin-top:12px"><label for="mvJobSelect">Saved generations </label><select id="mvJobSelect" style="max-width:100%"></select> <button id="mvCancel" class="back-btn" style="display:none">Cancel generation</button></div>
       <div id="mvClips" style="display:none;margin-top:16px"></div>
       <div id="mvStatus" style="display:none;background:var(--panel2);border:1px solid var(--line2);border-radius:10px;padding:12px;font-size:12px;line-height:1.7;max-height:240px;overflow-y:auto;margin-top:14px;white-space:pre-wrap"></div>
       <video id="mvVideo" controls playsinline style="display:none;max-width:420px;width:100%;border-radius:12px;border:1px solid var(--line2);margin-top:14px"></video>
@@ -549,140 +551,20 @@ syncSceneLength();
 
 // Same rule the server uses, so the client knows how many scenes to ask for.
 function plannedSceneCount(durMode, perScene){
-  if (durMode <= 5 || perScene >= 30) return 1;
+  if (durMode <= 5) return 1;
   const total = durMode >= 30 ? 120 : 64;
   return Math.max(2, Math.round(total / perScene));
 }
 function setLoadingText(t){ const el = $('loading'); if (el) el.innerHTML = '<div class="spinner"></div> ' + escapeHtml(t); }
 
 $('btnGenerate').onclick = async () => {
-  const idea = $('idea').value.trim();
-  const sceneDuration = Number($('duration').value);
-  const ratio = $('ratio').value;
   $('error').classList.remove('visible');
-  $('outputPanel').classList.remove('visible');
-  $('btnGenerate').disabled = true;
-  $('loading').classList.add('visible');
-  $('btnGenerateImage').style.display = 'none';
-  const sceneLength = Number($('sceneLength').value) || 8;
+  $('btnGenerate').disabled=true;$('loading').classList.add('visible');setLoadingText('Saving background script…');
   try {
-    // Vercel ends a request at 300s, so a multi-scene script is written ONE SCENE PER
-    // REQUEST there and stitched here; locally one call still writes the whole script.
-    const planned = plannedSceneCount(sceneDuration, sceneLength);
-    if (planned > 1) {
-      scenes = [];
-      sceneLen = sceneLength;
-      setLoadingText('Planning ' + planned + ' scenes…');
-      // Phase 1: ONE cheap call plans the whole story, so the scenes stay coherent
-      // while phase 2 writes them all at once.
-      let outline = null, outlineTitle = name;
-      try {
-        const ro = await fetch('/api/flashloop/generate-outline', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(vaultPayload({ slug, name, tagline, idea, totalScenes: planned, duration: sceneDuration, sceneLength, ratio, model: $('model').value, references: getRefs(), trendThumbnail, source }))
-        });
-        const rawO = await ro.text();
-        let jo; try { jo = JSON.parse(rawO); } catch { jo = { error: rawO ? rawO.slice(0, 180) : ('HTTP ' + ro.status) }; }
-        if (ro.ok && !jo.error && Array.isArray(jo.outline) && jo.outline.length) {
-          outline = jo.outline;
-          outlineTitle = jo.title || name;
-          if (jo.sceneLength) sceneLen = Number(jo.sceneLength);
-        }
-      } catch (e) { /* plan failed - fall through to sequential writing */ }
-
-      if (outline) {
-        // Phase 2: write EVERY scene in parallel. Sequentially this is ~14 minutes for
-        // a 2-minute video; in parallel it is as long as the slowest single scene.
-        let doneCount = 0;
-        const results = [];
-        // Waves of 5: 15 simultaneous Logfare calls can hit its rate limit.
-        const WAVE = 5;
-        for (let start = 0; start < outline.length; start += WAVE) {
-        const wave = await Promise.all(outline.slice(start, start + WAVE).map(async (beat, k) => {
-          const i = start + k;
-          const prevBeat = i > 0 ? (outline[i - 1].summary || outline[i - 1].title || '') : '';
-          try {
-            const r2 = await fetch('/api/flashloop/generate-scene', {
-              method: 'POST', headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(vaultPayload({ slug, name, tagline, idea, sceneIndex: i + 1, totalScenes: planned, sceneBeat: beat.summary || beat.title || '', prevBeat, sceneTitle: beat.title || '', duration: sceneDuration, sceneLength, ratio, model: $('model').value, references: getRefs(), trendThumbnail, source }))
-            });
-            const raw2 = await r2.text();
-            let j2; try { j2 = JSON.parse(raw2); } catch { j2 = { error: raw2 ? raw2.slice(0, 180) : ('HTTP ' + r2.status) }; }
-            if (!r2.ok || j2.error) throw new Error(j2.error || ('HTTP ' + r2.status));
-            doneCount++;
-            setLoadingText('Writing scenes… ' + doneCount + '/' + outline.length + ' done');
-            return j2.scene || null;
-          } catch (sceneErr) { return null; }
-        }));
-        results.push(...wave);
-        }
-        scenes = results.filter(Boolean);
-        if (!scenes.length) throw new Error('Every scene failed to generate — please try again.');
-        const failed = outline.length - scenes.length;
-        if (failed) {
-          $('error').textContent = failed + ' of ' + outline.length + ' scenes failed — the rest are ready; press Generate again to retry.';
-          $('error').classList.add('visible');
-        }
-        scriptTitle = outlineTitle;
-      } else {
-      let chunkErr = '';
-      for (let i = 1; i <= planned; i++) {
-        setLoadingText('Writing scene ' + i + ' of ' + planned + '…');
-        const prevEnd = scenes.length ? String(scenes[scenes.length - 1].videoPrompt || '').slice(-600) : '';
-        try {
-        const r2 = await fetch('/api/flashloop/generate-scene', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(vaultPayload({ slug, name, tagline, idea, sceneIndex: i, totalScenes: planned, prevEnd, duration: sceneDuration, sceneLength, ratio, model: $('model').value, references: getRefs(), trendThumbnail, source }))
-        });
-        const raw2 = await r2.text();
-        let j2; try { j2 = JSON.parse(raw2); } catch { j2 = { error: raw2 ? raw2.slice(0, 180) : ('HTTP ' + r2.status) }; }
-        if (!r2.ok || j2.error) throw new Error(j2.error || ('HTTP ' + r2.status));
-        if (j2.scene) scenes.push(j2.scene);
-        if (j2.sceneLength) sceneLen = Number(j2.sceneLength);
-        } catch (sceneErr) {
-          chunkErr = 'scene ' + i + ': ' + sceneErr.message;
-          break;
-        }
-      }
-      if (!scenes.length) throw new Error(chunkErr || 'The script generator returned no scenes.');
-      if (chunkErr) {
-        $('error').textContent = 'Stopped after scene ' + scenes.length + ' of ' + planned + ' — ' + chunkErr;
-        $('error').classList.add('visible');
-      }
-      scriptTitle = name;
-      }
-    } else {
-      const res = await fetch('/api/flashloop/generate-prompt', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(vaultPayload({ slug, name, tagline, idea, sceneDuration, duration: sceneDuration, sceneLength, ratio, model: $('model').value, references: getRefs(), trendThumbnail, source }))
-      });
-      const rawText = await res.text();
-      let j; try { j = JSON.parse(rawText); } catch { j = { error: rawText ? rawText.slice(0, 180) : ('HTTP ' + res.status) }; }
-      if (!res.ok || j.error) throw new Error(j.error || ('Failed to generate prompt (HTTP ' + res.status + ')'));
-      scenes = Array.isArray(j.scenes) ? j.scenes : [];
-      if (!scenes.length) throw new Error('The script generator returned no scenes.');
-      sceneLen = Number(j.sceneLength) || Number(j.sceneDuration) || 8;
-      scriptTitle = j.title || name;
-    }
-    $('effectTitle').textContent = scriptTitle;
-    renderScript();
-    $('outputPanel').classList.add('visible');
-    // Generate Image works with or without a trend reference: when a thumbnail is
-    // available it is used as the i2i anchor; otherwise the scene prompt runs as
-    // plain text-to-image. So the button always shows after a script is generated.
-    $('btnGenerateImage').style.display = 'inline-flex';
-    $('i2iSection').style.display = 'block';
-    $('makeVideoSection').style.display = 'block';
-    sceneImages = {}; // new script — drop cached scene images
-    syncMvEngine();
-    $('mvSummary').textContent = mvSummaryText();
-  } catch (e) {
-    $('error').textContent = 'Error: ' + e.message;
-    $('error').classList.add('visible');
-  } finally {
-    $('btnGenerate').disabled = false;
-    $('loading').classList.remove('visible');
+    await queueStudioJob(vaultPayload({kind:'prompt',slug,name,tagline,idea:$('idea').value.trim(),duration:Number($('duration').value),sceneLength:Number($('sceneLength').value)||8,
+      ratio:$('ratio').value,model:$('model').value,references:getRefs(),trendThumbnail}));
+  } catch(e) {
+    $('error').textContent=e.message;$('error').classList.add('visible');$('btnGenerate').disabled=false;$('loading').classList.remove('visible');
   }
 };
 
@@ -803,68 +685,18 @@ function showToast(msg){
 
 // ---- i2i Image Generation ----
 $('btnGenerateImage').onclick = async () => {
-  if (!scenes.length) return;
-  $('btnGenerateImage').disabled = true;
-  $('i2iLoading').style.display = 'flex';
-  $('i2iError').style.display = 'none';
-  $('i2iResult').style.display = 'none';
-  try {
-    const res = await fetch('/api/flashloop/generate-i2i', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(vaultPayload({
-        prompt: (($('i2iPrompt') && $('i2iPrompt').value.trim()) || sceneImageText(Number(($('i2iScene') && $('i2iScene').value) || 0))),
-        refImageUrl: refAnchorUrl() || trendThumbnail,
-        ratio: $('ratio').value,
-        model: $('i2iModel').value,
-        trendName: name,
-        tagline: tagline,
-        slug: slug,
-        source: source
-      }))
-    });
-    const j = await res.json().catch(() => ({ error: 'Invalid response from server' }));
-    if (!res.ok || j.error) throw new Error(j.error || 'Failed to start i2i generation');
-    if (!j.imageUrl && !j.taskUrl) throw new Error('No image URL returned from server');
-    // AquaDevs returns the image URL directly; PaxSenix returns a task to poll.
-    const imageUrl = j.imageUrl ? j.imageUrl : await pollTask(j.taskUrl);
-    if (!imageUrl) throw new Error('Image generation timed out or failed');
-    $('i2iImage').src = imageUrl;
-    $('i2iDownload').href = imageUrl;
-    $('i2iDownload').download = `${slug || 'flashloop'}_i2i.png`;
-    $('i2iResult').style.display = 'block';
-  } catch (e) {
-    $('i2iError').textContent = 'Error: ' + e.message;
-    $('i2iError').style.display = 'block';
-  } finally {
-    $('btnGenerateImage').disabled = false;
-    $('i2iLoading').style.display = 'none';
-  }
+  if(!scenes.length)return;
+  $('btnGenerateImage').disabled=true;$('i2iLoading').style.display='flex';$('i2iError').style.display='none';
+  const index=Number($('i2iScene')?.value||0);
+  try{
+    await queueStudioJob(vaultPayload({kind:'image',imageModel:$('i2iModel').value,ratio:$('ratio').value,
+      scenes:[{imagePrompt:$('i2iPrompt')?.value.trim()||sceneImageText(index)}],sceneIndex:index,
+      refImageUrl:refAnchorUrl()||trendThumbnail,referenceImages:getRefs().map(ref=>ref.imageUrl).filter(Boolean),trendName:name,tagline,slug}));
+  }catch(e){$('i2iError').textContent=e.message;$('i2iError').style.display='block';$('btnGenerateImage').disabled=false;$('i2iLoading').style.display='none';}
 };
 
-async function pollTask(taskUrl) {
-  const deadline = Date.now() + 5 * 60 * 1000; // 5 min max
-  let networkErrors = 0;
-  while (Date.now() < deadline) {
-    try {
-      const res = await fetch(taskUrl);
-      const j = await res.json().catch(() => ({}));
-      networkErrors = 0;
-      if (j.status === 'done' && j.ok) return j.url || (j.urls && j.urls[0]) || null;
-      if (/fail|error/i.test(j.status || '')) throw new Error(j.error || 'Task failed');
-    } catch (e) {
-      networkErrors++;
-      if (networkErrors >= 6) throw new Error('Too many network errors polling task');
-    }
-    await new Promise(r => setTimeout(r, 5000));
-  }
-  throw new Error('Image generation timed out (5 min)');
-}
-
 // ---- Make Video: all scenes → selected engine clips, seamlessly chained ----
-// Mirrors the storyboard pipeline: scene image first, then ONE video request per
-// scene (fits Vercel's 300s budget), each anchored to the previous scene's final
-// frame via chainAnchor. Finally combines all clips into one film.
+// Scene submission, polling, chaining and final assembly run in durable workers.
 let sceneImages = {}; // scene index -> public first-frame image URL (session cache)
 // Keep the Make Video button label in sync with the chosen render engine, and
 // auto-pick a duration the engine can actually render (wan3.0 does 30s clips,
@@ -927,167 +759,118 @@ function mvLog(msg, isErr){
   el.appendChild(line);
   el.scrollTop = el.scrollHeight;
 }
-$('btnMakeVideo').onclick = async () => {
-  if (!scenes.length) return;
-  const n = scenes.length;
-  const engine = $('mvModel').value;
-  const engineName = ($('mvModel').options[$('mvModel').selectedIndex].text || '').split('—')[0].trim() || engine;
-  // Clamp the picked scene length to what this engine can actually render, the
-  // same way the server's novitaDurationFor() does (wan3.0 exact set, wan2.x ≤15,
-  // omni-flash fixed 8s) so the confirmation matches the real renders.
-  let perScene = mvDuration();
-  if (engine === 'omni-flash') perScene = 8;
-  else if (engine.indexOf('wan3.0') === 0) {
-    perScene = [1, 2, 3, 4, 5, 10, 15, 20, 25, 30].reduce((b, a) => Math.abs(a - perScene) < Math.abs(b - perScene) ? a : b, 5);
-  } else if (engine.indexOf('wan') === 0) perScene = Math.max(1, Math.min(15, perScene));
-  // Seamless chaining renders in story order (each scene needs the previous
-  // scene's last frame). Unchecked: every scene renders in PARALLEL from its own
-  // first-frame image — much faster, and all clips are shown before combining.
-  const doChain = $('mvChained').checked;
-  const engineCanChain = engine === 'omni-flash' || engine.indexOf('i2v') !== -1 || engine.indexOf('wan3.0') === 0;
-  const chainNote = !doChain
-    ? 'All scenes render in PARALLEL from their own first frames, then combine'
-    : (engineCanChain
-      ? 'SEAMLESS CHAINING: scene 1 renders, its LAST FRAME becomes the start image of scene 2, and so on — one continuous story (sequential, slower)'
-      : 'Text-to-video scenes continue via prompt (this engine takes no start frame)');
-  if (!confirm(`Make a video from all ${n} scene(s) with ${engineName}?\n\nEach scene renders ~${perScene}s — ${chainNote}. ${n} scenes ≈ ${Math.round(n * perScene / 60 * 10) / 10} min of video. Renders can take 4-30 minutes per scene. Start?`)) return;
-  $('btnMakeVideo').disabled = true;
-  $('mvStatus').innerHTML = '';
-  $('mvVideo').style.display = 'none';
-  $('mvDownload').style.display = 'none';
-  $('mvClips').style.display = 'none';
-  $('mvClips').innerHTML = '';
-  try {
-    const ratio = $('ratio').value;
-    const results = new Array(n).fill(null);   // scene index -> {clip_url, chain_image_url}
-    const postScene = payload => fetch('/api/flashloop/generate-video', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(vaultPayload(payload))
-    });
-    // Poll a submitted cloud render until it settles. A wan clip can take 4-30
-    // minutes, so the cap is generous; each poll is a fresh serverless invocation.
-     const resolution = $('mvResolution').value;
-     const renderScene = async (i, chainAnchor) => {
-       let res = await postScene({ scene: i + 1, prompt: sceneVideoText(i), imageUrl: sceneImages[i], ratio, resolution, chainAnchor, model: engine, duration: perScene });
-      let v = await res.json().catch(() => ({}));
-      if (v && v.pending && v.task) {
-        let waited = 0;
-        while (waited < 2700000) {            // 45 min ceiling
-          mvLog(`scene ${i + 1}/${n}: ${engineName} rendering in the cloud (${Math.round(waited / 1000)}s of ~${perScene}s clip)…`);
-          await new Promise(r => setTimeout(r, 15000));
-          waited += 15000;
-           res = await postScene({ scene: i + 1, pollTask: v.task, model: engine, resolution });
-          v = await res.json().catch(() => ({}));
-          if (!v || !v.pending) break;        // settled (done or hard failure)
-        }
-      }
-      return { res, v };
-    };
-    const ensureImage = async (i) => {
-      if (sceneImages[i]) return true;
-      mvLog(`scene ${i + 1}/${n}: generating first-frame image…`);
-      const r = await fetch('/api/flashloop/generate-i2i', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(vaultPayload({ prompt: sceneImageText(i), refImageUrl: refAnchorUrl() || trendThumbnail, ratio, model: $('i2iModel').value, trendName: name, tagline }))
-      });
-      const j = await r.json().catch(() => ({}));
-      if (!r.ok || j.error) { mvLog(`scene ${i + 1} image FAILED — ${j.error || 'HTTP ' + r.status}`, true); return false; }
-      // Direct-URL providers (AquaDevs, Logfare, Novita) answer with the finished
-      // image; task-based providers (PaxSenix) answer with a taskUrl to poll.
-      if (j.imageUrl) sceneImages[i] = j.imageUrl;
-      else if (j.taskUrl) {
-        sceneImages[i] = await pollTask(j.taskUrl);
-      }
-      if (!sceneImages[i]) { mvLog(`scene ${i + 1} image: no image URL returned`, true); return false; }
-      mvLog(`scene ${i + 1}/${n}: image done`);
-      return true;
-    };
-
-    if (doChain) {
-      // SEQUENTIAL — scene N starts from the LAST FRAME of scene N-1, exactly like
-      // the storyboard pipeline. The scene's own first-frame image is only needed
-      // for scene 1 (or to restart the chain after a failure), so it is generated
-      // lazily instead of for every scene.
-      let prevChain = '';
-      for (let i = 0; i < n; i++) {
-        if (!prevChain && !(await ensureImage(i))) continue;
-        mvLog(`scene ${i + 1}/${n}: rendering video (${engineName}${prevChain ? ', starting from previous last frame' : ''})… 4-30 min`);
-        const { res, v } = await renderScene(i, prevChain);
-        if (!res.ok || v.error) {
-          mvLog(`scene ${i + 1}: FAILED — ${v.error || 'HTTP ' + res.status} (chain broken — the next scene starts from its own image)`, true);
-          prevChain = ''; continue;
-        }
-        results[i] = v;
-        if (v.chain_image_url) {
-          prevChain = v.chain_image_url;
-          if (i < n - 1) mvLog(`scene ${i + 1}: last frame captured → scene ${i + 2} starts exactly here`);
-        } else if (i < n - 1) {
-          mvLog(`scene ${i + 1}: no chain frame returned — scene ${i + 2} will start from its own image`, true);
-        }
-        mvLog(`scene ${i + 1}/${n}: video done ✓`);
-      }
-    } else {
-      // PARALLEL — all scenes at once (cap 4 concurrent renders), then combine.
-      mvLog(`rendering all ${n} scene(s) in parallel (max 4 at a time)…`);
-      const queue = [...Array(n).keys()];
-      const workers = Array.from({ length: Math.min(4, n) }, async () => {
-        while (queue.length) {
-          const i = queue.shift();
-          if (!(await ensureImage(i))) continue;
-          mvLog(`scene ${i + 1}/${n}: rendering video (${engineName})… 4-30 min`);
-          const { res, v } = await renderScene(i, '');
-          if (!res.ok || v.error) { mvLog(`scene ${i + 1}: FAILED — ${v.error || 'HTTP ' + res.status}`, true); continue; }
-          results[i] = v;
-          mvLog(`scene ${i + 1}/${n}: video done ✓`);
-        }
-      });
-      await Promise.all(workers);
-    }
-
-    // Show EVERY scene clip so problems in any single scene are visible.
-    const okIdx = results.map((r, i) => (r && r.ok !== false && (r.clip_url || r.video_path) ? i : -1)).filter(i => i >= 0);
-    if (okIdx.length) {
-      const box = $('mvClips');
-      box.style.display = 'block';
-      box.innerHTML = `<div style="font-size:12px;color:var(--dim);margin-bottom:8px">Scene clips (${okIdx.length}/${n}) — inspect each one before the final cut:</div>`;
-      for (const i of okIdx) {
-        const url = results[i].clip_url || results[i].video_path;
-        const row = document.createElement('div');
-        row.style.cssText = 'display:flex;gap:12px;align-items:center;flex-wrap:wrap;padding:8px 0;border-bottom:1px solid var(--line2)';
-        row.innerHTML = `<video controls playsinline style="width:170px;border-radius:8px;background:#000" src="${url}"></video>
-          <div style="font-size:12px;color:var(--dim)">scene ${i + 1} · ~${perScene}s${results[i].chain_image_url ? ' · chained' : ''}</div>
-          <a class="back-btn" style="background:var(--panel2);border-color:var(--green);color:var(--green)" href="${url}" download="scene_${String(i + 1).padStart(2, '0')}.mp4">⬇ scene ${i + 1}</a>`;
-        box.appendChild(row);
-      }
-    }
-    if (!okIdx.length) throw new Error('all scenes failed');
-
-    // combine into one film (scene order preserved; combine re-downloads any
-    // clip that is not on this instance from its hosted clip_url)
-    const rendered = okIdx.map(i => i + 1);
-    const clipUrls = okIdx.map(i => results[i].clip_url || '');
-    mvLog(`combining ${rendered.length} clip(s) into the final video…`);
-    const cr = await fetch('/api/flashloop/combine', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-       body: JSON.stringify(vaultPayload({ scenes: rendered, clipUrls, ratio, resolution }))
-    });
-    const cj = await cr.json().catch(() => ({}));
-    if (!cr.ok || cj.error) throw new Error('combine: ' + (cj.error || 'HTTP ' + cr.status));
-    // Prefer the hosted final URL: /video/flash_final.mp4 only exists on the
-    // instance that ran combine, so on Vercel the player would hit a 404.
-    const vurl = (cj.clip_url || cj.hosted_url || cj.video_path || '/video/flash_final.mp4') + '?v=' + Date.now();
-    $('mvVideo').src = vurl;
-    $('mvVideo').style.display = 'block';
-    $('mvDownload').href = vurl;
-    $('mvDownload').style.display = 'inline-block';
-    mvLog(`🎬 VIDEO READY — ${cj.clips || rendered.length} clips combined`);
-    showToast('Video ready!');
-    $('makeVideoSection').scrollIntoView({ behavior: 'smooth' });
-  } catch (e) {
-    mvLog('ERROR: ' + e.message, true);
-  } finally {
-    $('btnMakeVideo').disabled = false;
+// The browser observes saved jobs. All generation steps run in queue workers.
+let studioJobId='', studioJobTimer=null, studioRequestKey='', studioRequestBody='', studioPollEpoch=0;
+const studioActive = j => j && !['completed','failed','cancelled'].includes(j.status);
+async function studioApi(url, options={}) {
+  const r=await fetch(url,{cache:'no-store',...options});
+  const j=await r.json().catch(()=>({}));
+  if(!r.ok)throw new Error(j.error||'Could not load background job (HTTP '+r.status+').');
+  return j;
+}
+function displayStudioJob(j) {
+  $('outputPanel').classList.add('visible');
+  $('makeVideoSection').style.display='block';
+  $('btnGenerate').disabled=j.kind==='prompt'&&studioActive(j);
+  $('loading').classList.toggle('visible',j.kind==='prompt'&&studioActive(j));
+  if(j.kind==='prompt'&&studioActive(j))setLoadingText(j.message||'Writing script in the cloud…');
+  $('btnGenerateImage').disabled=j.kind==='image'&&studioActive(j);
+  $('i2iLoading').style.display=j.kind==='image'&&studioActive(j)?'flex':'none';
+  const script=j.kind==='prompt'&&j.status==='completed'?j.result:j.script;
+  if(script?.scenes?.length&&$('scriptContainer').dataset.job!==j.id){
+    $('scriptContainer').dataset.job=j.id;
+    scenes=script.scenes;sceneLen=Number(script.sceneLength)||8;scriptTitle=script.title||j.title;
+    sceneImages={};for(const scene of (j.scenes||[]))if(scene.imageUrl)sceneImages[scene.scene-1]=scene.imageUrl;
+    $('effectTitle').textContent=scriptTitle;renderScript();
+    $('btnGenerateImage').style.display='inline-flex';$('i2iSection').style.display='block';syncMvEngine();$('mvSummary').textContent=mvSummaryText();
   }
+  for(const scene of (j.scenes||[]))if(scene.imageUrl)sceneImages[scene.scene-1]=scene.imageUrl;
+  if(j.kind==='image'&&j.result?.imageUrl){
+    $('i2iSection').style.display='block';$('i2iImage').src=j.result.imageUrl;$('i2iDownload').href=j.result.imageUrl;$('i2iResult').style.display='block';
+    sceneImages[j.result.sceneIndex||0]=j.result.imageUrl;
+  }
+  $('btnMakeVideo').disabled=j.kind==='film'&&studioActive(j);
+  $('mvCancel').style.display=studioActive(j)?'inline-block':'none';
+  $('mvStatus').style.display='block';
+  $('mvStatus').textContent=(j.logs||[j.message]).filter(Boolean).join('\n');
+  $('mvStatus').scrollTop=$('mvStatus').scrollHeight;
+  const clips=(j.scenes||[]).filter(s=>s.clip_url);
+  const signature=JSON.stringify(clips.map(s=>s.clip_url));
+  if($('mvClips').dataset.signature!==signature){
+    $('mvClips').dataset.signature=signature;
+    $('mvClips').replaceChildren();
+    $('mvClips').style.display=clips.length?'block':'none';
+    for(const scene of clips){
+      const row=document.createElement('div'); row.style.cssText='display:flex;gap:12px;align-items:center;margin:10px 0';
+      const video=document.createElement('video'); video.controls=true;video.playsInline=true;video.src=scene.clip_url;video.style.cssText='width:170px;border-radius:8px';
+      const link=document.createElement('a');link.href=scene.clip_url;link.download='scene_'+scene.scene+'.mp4';link.textContent='Download scene '+scene.scene;link.className='back-btn';
+      row.append(video,link);$('mvClips').append(row);
+    }
+  }
+  const url=j.kind==='film'?(j.result?.url||''):'';
+  if($('mvVideo').dataset.url!==url){$('mvVideo').dataset.url=url;$('mvVideo').src=url;$('mvDownload').href=url;}
+  $('mvVideo').style.display=url?'block':'none';
+  $('mvDownload').style.display=url?'inline-block':'none';
+  if(j.error)mvLog(j.error,true);
+  if(j.result?.vault_warning)mvLog(j.result.vault_warning,true);
+}
+function watchStudioJob(id) {
+  clearTimeout(studioJobTimer);studioJobId=id;
+  const epoch=++studioPollEpoch;
+  const tick=async()=>{
+    if(epoch!==studioPollEpoch)return;
+    let again=true;
+    try{
+      const {job}=await studioApi('/api/studio-jobs/'+encodeURIComponent(id));
+      if(epoch!==studioPollEpoch)return;
+      displayStudioJob(job);again=studioActive(job);
+    }catch(e){if(epoch===studioPollEpoch)mvLog('Reconnecting to your saved generation… '+e.message,true);}
+    if(again&&epoch===studioPollEpoch)studioJobTimer=setTimeout(tick,5000);
+  };
+  tick();
+}
+async function restoreStudioJobs(preferredId) {
+  const {jobs}=await studioApi('/api/studio-jobs?source='+encodeURIComponent(source==='sjinn'?'sjinn':'flashloop'));
+  if(!jobs.length)return;
+  $('makeVideoSection').style.display='block';$('mvJobs').style.display='block';
+  const select=$('mvJobSelect');select.replaceChildren();
+  for(const job of jobs){const option=document.createElement('option');option.value=job.id;option.textContent=job.title+' · '+({prompt:'script',image:'image',film:'film'}[job.kind]||'film')+' · '+job.status+' · '+job.completedScenes+'/'+job.sceneCount+' scenes';select.append(option);}
+  const selected=jobs.find(j=>j.id===preferredId)||jobs.find(studioActive)||jobs[0];
+  select.value=selected.id;displayStudioJob(selected);watchStudioJob(selected.id);
+}
+$('mvJobSelect').onchange=()=>watchStudioJob($('mvJobSelect').value);
+$('mvCancel').onclick=async()=>{
+  if(!studioJobId)return;
+  try{const {job}=await studioApi('/api/studio-jobs/'+encodeURIComponent(studioJobId),{method:'DELETE'});++studioPollEpoch;clearTimeout(studioJobTimer);displayStudioJob(job);}
+  catch(e){mvLog(e.message,true);}
 };
+async function queueStudioJob(payload){
+  const serialized=JSON.stringify(payload);
+  if(studioRequestBody!==serialized){studioRequestBody=serialized;studioRequestKey=crypto.randomUUID();}
+  const {job}=await studioApi('/api/studio-jobs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...payload,requestKey:studioRequestKey})});
+  displayStudioJob(job);watchStudioJob(job.id);restoreStudioJobs(job.id).catch(()=>{});
+  studioRequestKey='';studioRequestBody='';showToast('Queued — generation continues after you close this page.');
+  return job;
+}
+$('btnMakeVideo').onclick=async()=>{
+  if(!scenes.length)return;
+  const engine=$('mvModel').value;
+  let perScene=mvDuration();
+  if(engine==='omni-flash')perScene=8;
+  else if(engine.startsWith('wan3.0'))perScene=[1,2,3,4,5,10,15,20,25,30].reduce((b,a)=>Math.abs(a-perScene)<Math.abs(b-perScene)?a:b,5);
+  else perScene=Math.max(1,Math.min(15,perScene));
+  if(!confirm('Queue a film with '+scenes.length+' scenes (~'+perScene+' seconds each)? Generation will continue in the cloud after you close this page.'))return;
+  $('btnMakeVideo').disabled=true;$('mvStatus').textContent='Saving background film…';$('mvStatus').style.display='block';
+  try{
+    const payload=vaultPayload({scenes:scenes.map((_,i)=>({imagePrompt:sceneImageText(i),videoPrompt:sceneVideoText(i),imageUrl:sceneImages[i]||''})),
+      model:engine,imageModel:$('i2iModel').value,ratio:$('ratio').value,resolution:$('mvResolution').value,duration:perScene,chained:$('mvChained').checked,
+      refImageUrl:refAnchorUrl()||trendThumbnail,referenceImages:getRefs().map(ref=>ref.imageUrl).filter(Boolean),trendName:name,tagline});
+    await queueStudioJob(payload);
+  }catch(e){mvLog('Could not queue film: '+e.message,true);$('btnMakeVideo').disabled=false;}
+};
+restoreStudioJobs().catch(e=>{if(!/auth required/i.test(e.message))mvLog('Saved generations are temporarily unavailable: '+e.message,true);});
+document.addEventListener('visibilitychange',()=>{if(!document.hidden&&studioJobId)watchStudioJob(studioJobId);});
+window.addEventListener('online',()=>{if(studioJobId)watchStudioJob(studioJobId);});
 </script>
 </body>
 </html>

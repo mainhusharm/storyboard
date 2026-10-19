@@ -444,3 +444,20 @@ powershell -ExecutionPolicy Bypass -File pipeline\Continue-Full.ps1
 
 `Continue-Full.ps1` backs up stale assets, starts the web server if needed, and drives
 `/api/char-refs`, `/api/images`, `/api/videos`, and `/api/combine` automatically.
+
+## Flashloop / SJinn background generations
+
+All three studio generation buttons submit durable jobs to /api/studio-jobs.
+web/studio-jobs.js owns Postgres checkpoints, account ownership, leases and
+the script/image/film state machines. web/studio-queue.js publishes Vercel Queue
+messages; api/studio-worker.js is a PRIVATE queue/v2beta trigger (studio-generation).
+The browser polls saved progress only; never move generation sequencing back
+into browser timers, promises after HTTP responses, or a daily cron. Cloud jobs
+require DATABASE_URL and Vercel Queues/OIDC. Local development uses private
+studio-jobs/jobs.json and a server timer, recovering on node server restart.
+Only final combined films enter the vault. Scene normalization is one worker
+step per clip; worker directories are invocation-specific and cleaned after
+hosting. Preserve provider task IDs, do not re-submit paid work on queue retry,
+and retain owner/source context for background vault saves. A stale ambiguous
+paid submit stops with an explicit error; polling resumes the existing task.
+Details: BACKGROUND-JOBS.md; npm run test:studio-jobs.
