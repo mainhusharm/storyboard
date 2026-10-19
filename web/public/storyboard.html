@@ -584,6 +584,9 @@ async function init(){
   }).join('');
   const IMG_MODEL_LABELS={'aqua:qwen-image-3.0-pro':'Qwen Image 3.0 Pro — AquaDevs','modelscope:qwen-image-2.1':'Qwen Image 2.1 — ModelScope','aqua:nanobanana-pro':'Nano Banana Pro — AquaDevs','aqua:agnes-image':'Agnes Image — AquaDevs'};
   $('imageModel').innerHTML=m.image.map(x=>`<option value="${x}">${IMG_MODEL_LABELS[x]||x}</option>`).join('');
+  try{const saved=localStorage.getItem('sb_image_model');if(m.image.includes(saved))$('imageModel').value=saved;}catch(e){}
+  $('imageModel').addEventListener('change',()=>{try{localStorage.setItem('sb_image_model',$('imageModel').value);}catch(e){}});
+  $('imageModel').dispatchEvent(new Event('change',{bubbles:true}));
   $('videoModel').innerHTML=(m.video||[{id:'grok-video',label:'Grok Video — 6s'},{id:'omni-flash',label:'Omni Flash — 8s'},{id:'veo-3.1',label:'Veo 3.1 — 8s'}]).map(v=>`<option value="${v.id}">${v.label}</option>`).join('');
   const fillVoices=()=>{const per=(m.narrationVoices||{})[$('narrationEngine').value];const list=(per&&per.length)?per:(m.voices||[{id:'female',label:'Female narrator'},{id:'male',label:'Male narrator'}]);$('voice').innerHTML=list.map(v=>`<option value="${v.id}">${v.label}</option>`).join('');};
   $('language').innerHTML=(m.languages||[{id:'en',label:'English'},{id:'hi',label:'Hindi'}]).map(l=>`<option value="${l.id}">${l.label}</option>`).join('');

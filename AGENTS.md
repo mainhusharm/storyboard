@@ -106,7 +106,10 @@ consistency**, generates frame images, animates them via Grok Video / Omni Flash
   Keep Aqua selected: no automatic cross-provider fallback in Storyboard,
   Flashloop/SJinn, or emergency still generation during combine. Storyboard sends
   one Aqua character/frame per Vercel request, matching single-image studio
-  actions. Log the actual model, ratio, mode, prompt length and route without
+  actions. Vercel rejects old multi-image requests with a refresh instruction
+  before output deletion or credit debit; updated pages submit one at a time.
+  Preserve the selected image model across refreshes.
+  Log the actual model, ratio, mode, prompt length and route without
   credentials or reference bytes. Identical-payload comparison, Cloudflare
   provider retention, and batch tests: npm run test:aqua.
 - **Vercel: videos render ONE FRAME PER REQUEST** — on Vercel a serverless invocation dies at

@@ -9,7 +9,7 @@
     "build": "node scripts/sync-public.js",
     "test:vault": "node pipeline/test-vault-store.js && node pipeline/test-vault-api.js",
     "test:modelscope": "node pipeline/test-modelscope.js",
-    "test:aqua": "node pipeline/test-aqua-image-responses.js && node pipeline/test-aqua-storyboard.js"
+    "test:aqua": "node pipeline/test-aqua-image-responses.js && node pipeline/test-aqua-storyboard.js && node pipeline/test-vercel-image-batches.js"
   },
   "keywords": [],
   "author": "",

@@ -6012,6 +6012,11 @@ const routeRequest = async (req, res) => {
       const requestedIds = Array.isArray(body.force) ? body.force.map(String) : null;
       const targets = requestedIds ? chars.filter(c => requestedIds.includes(c.id)) : chars;
       if (!targets.length) return sendJson(res, 400, { error: 'no matching characters' });
+      if (IS_VERCEL && (isAquaImageModel(body.imageModel) || isModelscopeImageModel(body.imageModel)) && targets.length > 1) {
+        return sendJson(res, 409, { code: 'STORYBOARD_CLIENT_UPDATE_REQUIRED',
+          error: 'Refresh Storyboard with Ctrl+Shift+R to load the current image workflow, reselect your image model, then retry Character References. Your storyboard is retained.',
+          max_images_per_request: 1, commit: (process.env.VERCEL_GIT_COMMIT_SHA || '').slice(0,7) });
+      }
       if (body.force === true) { for (const c of chars) { try { fs.unlinkSync(charRefFile(c.id)); } catch {} } }
       else if (Array.isArray(body.force)) { for (const id of body.force) { try { fs.unlinkSync(charRefFile(id)); } catch {} } }
       if (IS_VERCEL) return (async () => {
@@ -6039,6 +6044,13 @@ const routeRequest = async (req, res) => {
       if (Array.isArray(body.frames) && body.frames.length) {
         const wanted = new Set(body.frames.map(Number));
         frames = frames.filter(f => wanted.has(f.frame));
+      }
+      if (IS_VERCEL && (isAquaImageModel(body.imageModel) || isModelscopeImageModel(body.imageModel)) && frames.length > 1) {
+        return sendJson(res, 409, { code: 'STORYBOARD_CLIENT_UPDATE_REQUIRED',
+          error: 'Refresh Storyboard with Ctrl+Shift+R to load the current image workflow, reselect your image model, then retry Images. Your storyboard is retained.',
+          max_images_per_request: 1, commit: (process.env.VERCEL_GIT_COMMIT_SHA || '').slice(0,7) });
+      }
+      if (Array.isArray(body.frames) && body.frames.length) {
         for (const f of frames) { try { fs.unlinkSync(frameFile(f.frame)); } catch {} }
       }
       // Credit gate: ~1 image per second of footage (imagesPerSec).
