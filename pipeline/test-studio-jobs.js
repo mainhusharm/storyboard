@@ -100,3 +100,15 @@ test('background script scene counts match the supported total duration and scen
   const input=validateInput({kind:'prompt',idea:'A story',duration,sceneLength});assert.equal(input.totalScenes,count);assert.equal(input.sceneLength,per);
  }
 });
+
+// Different stories can overlap; the active-job limit must not disturb accepted work.
+test('three separate stories execute in parallel and cancellation affects only one',async t=>{
+ let entered=0,release,ready;const gate=new Promise(r=>release=r),allEntered=new Promise(r=>ready=r);
+ const f=await fixture(t,{execute:async(j)=>{if(++entered===3)ready();await gate;return {imageUrl:'https://fixture.test/'+j.id+'.png'};}}),service=f.service();
+ const jobs=[];for(let i=0;i<3;i++)jobs.push(await service.start(owner,payload('parallel-key-'+i+'-12345')));
+ await assert.rejects(service.start(owner,payload('parallel-key-four-12345')),/3|three|active/i);
+ const work=jobs.map(j=>service.process({id:j.id}));await allEntered;
+ await service.cancel(owner,jobs[0].id);release();await Promise.all(work);
+ assert.equal((await service.get(owner,jobs[0].id)).status,'cancelled');
+ for(const j of jobs.slice(1)){const saved=await service.get(owner,j.id);assert.notEqual(saved.status,'cancelled');assert.equal(saved.scenes[0].imageUrl,'https://fixture.test/'+j.id+'.png');}
+});

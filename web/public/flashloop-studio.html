@@ -193,9 +193,14 @@
       <div class="hint">Add characters like @Kairo and @Silas. Their descriptions are injected into both img2img and img2video prompts. Upload a photo (📷) to lock the face — the first named reference with a photo becomes the img2img anchor instead of the trend thumbnail.</div>
     </div>
     <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center">
+<button id="btnNewStory" type="button" class="back-btn">＋ New story (others keep running)</button>
       <button id="btnGenerate" class="generate-btn">✨ Generate Full Script</button>
       <button id="btnGenerateImage" class="generate-btn" style="background:linear-gradient(135deg,rgba(139,124,246,.25),rgba(34,211,238,.25));border-color:var(--violet);display:none">🖼 Generate Image</button>
     </div>
+    <div class="field" style="margin-top:14px"><label for="storyTitle">Story name</label><input id="storyTitle" maxlength="160" placeholder="Name this story so you can find it later"></div>
+    <details style="margin:14px 0"><summary style="cursor:pointer;color:var(--teal)">Generate several stories at once</summary><p class="hint">Separate story ideas with --- on its own line. Up to 3 background generations can run together across Flashloop and SJinn.</p><textarea id="batchIdeas" placeholder="A story about Krishna…
+---
+A different story…" style="width:100%;min-height:150px"></textarea><button id="btnBatchStories" type="button" class="back-btn" style="margin-top:10px">Queue these stories</button></details>
     <div id="loading" class="loading"><div class="spinner"></div> GPT is writing your production-ready prompts…</div>
     <div id="error" class="error"></div>
   </div>
@@ -416,7 +421,7 @@ let sceneLen = 8; // seconds per scene (from the dropdown / server response)
 
 // Carry the creating studio through every request, including serverless polls.
 function vaultPayload(payload) {
-  return { ...(window.SBModelscope?.payload()||{}), ...(payload.model === 'modelscope:qwen-image-2.1' ? { referenceImages: getRefs().map(ref => ref.imageUrl).filter(Boolean) } : {}), ...payload, source: source === 'sjinn' ? 'sjinn' : 'flashloop', title: payload.title || scriptTitle || name || ($('idea').value || '').trim().slice(0, 100) || 'Studio creation' };
+  return { ...(window.SBModelscope?.payload()||{}), ...(payload.model === 'modelscope:qwen-image-2.1' ? { referenceImages: getRefs().map(ref => ref.imageUrl).filter(Boolean) } : {}), ...payload, source: source === 'sjinn' ? 'sjinn' : 'flashloop', title: payload.title || $('storyTitle').value.trim() || scriptTitle || name || ($('idea').value || '').trim().slice(0, 100) || 'Studio creation' };
 }
 
 
@@ -691,7 +696,7 @@ $('btnGenerateImage').onclick = async () => {
   const index=Number($('i2iScene')?.value||0);
   try{
     await queueStudioJob(vaultPayload({kind:'image',imageModel:$('i2iModel').value,ratio:$('ratio').value,
-      scenes:[{imagePrompt:$('i2iPrompt')?.value.trim()||sceneImageText(index)}],sceneIndex:index,
+      scenes:[{imagePrompt:$('i2iPrompt')?.value.trim()||sceneImageText(index)}],sceneIndex:index,story:{title:scriptTitle||$('storyTitle').value,sceneLength:sceneLen,scenes:scenes.map((s,i)=>({title:s.title,imagePrompt:sceneImageText(i),videoPrompt:sceneVideoText(i),imageUrl:sceneImages[i]||''}))},
       refImageUrl:refAnchorUrl()||trendThumbnail,referenceImages:getRefs().map(ref=>ref.imageUrl).filter(Boolean),trendName:name,tagline,slug}));
   }catch(e){$('i2iError').textContent=e.message;$('i2iError').style.display='block';$('btnGenerateImage').disabled=false;$('i2iLoading').style.display='none';}
 };
@@ -761,7 +766,7 @@ function mvLog(msg, isErr){
   el.scrollTop = el.scrollHeight;
 }
 // The browser observes saved jobs. All generation steps run in queue workers.
-let studioJobId='', studioJobTimer=null, studioRequestKey='', studioRequestBody='', studioPollEpoch=0;
+let studioJobId='', studioJobTimer=null, studioRequestKey='', studioRequestBody='', studioPollEpoch=0,studioSubmitting=false;
 const studioActive = j => j && !['completed','failed','cancelled'].includes(j.status);
 async function studioApi(url, options={}) {
   const r=await fetch(url,{cache:'no-store',...options});
@@ -778,19 +783,25 @@ function displayStudioJob(j) {
   $('btnGenerateImage').disabled=j.kind==='image'&&studioActive(j);
   $('i2iLoading').style.display=j.kind==='image'&&studioActive(j)?'flex':'none';
   const script=j.kind==='prompt'&&j.status==='completed'?j.result:j.script;
+  if($('scriptContainer').dataset.job!==j.id&&!script){
+    scenes=[];sceneImages={};scriptTitle='';$('scriptContainer').replaceChildren();$('scriptContainer').dataset.job='';
+    $('btnGenerateImage').style.display='none';$('i2iSection').style.display='none';$('storyTitle').value=j.title;
+  }
   if(script?.scenes?.length&&$('scriptContainer').dataset.job!==j.id){
     $('scriptContainer').dataset.job=j.id;
     scenes=script.scenes;sceneLen=Number(script.sceneLength)||8;scriptTitle=script.title||j.title;
-    sceneImages={};for(const scene of (j.scenes||[]))if(scene.imageUrl)sceneImages[scene.scene-1]=scene.imageUrl;
+    sceneImages={};script.scenes.forEach((s,i)=>{if(s.imageUrl)sceneImages[i]=s.imageUrl;});
+    if(j.kind==='film')for(const scene of (j.scenes||[]))if(scene.imageUrl)sceneImages[scene.scene-1]=scene.imageUrl;
+    $('storyTitle').value=j.title;
     $('effectTitle').textContent=scriptTitle;renderScript();
     $('btnGenerateImage').style.display='inline-flex';$('i2iSection').style.display='block';syncMvEngine();$('mvSummary').textContent=mvSummaryText();
   }
-  for(const scene of (j.scenes||[]))if(scene.imageUrl)sceneImages[scene.scene-1]=scene.imageUrl;
+  if(j.kind==='film')for(const scene of (j.scenes||[]))if(scene.imageUrl)sceneImages[scene.scene-1]=scene.imageUrl;
   if(j.kind==='image'&&j.result?.imageUrl){
     $('i2iSection').style.display='block';$('i2iImage').src=j.result.imageUrl;$('i2iDownload').href=j.result.imageUrl;$('i2iResult').style.display='block';
-    sceneImages[j.result.sceneIndex||0]=j.result.imageUrl;
+    if(j.script)sceneImages[j.result.sceneIndex||0]=j.result.imageUrl;
   }
-  $('btnMakeVideo').disabled=j.kind==='film'&&studioActive(j);
+  $('btnMakeVideo').disabled=!scenes.length||(j.kind==='film'&&studioActive(j));
   $('mvCancel').style.display=studioActive(j)?'inline-block':'none';
   $('mvStatus').style.display='block';
   $('mvStatus').textContent=(j.logs||[j.message]).filter(Boolean).join('\n');
@@ -834,25 +845,45 @@ async function restoreStudioJobs(preferredId) {
   const {jobs}=await studioApi('/api/studio-jobs?source='+encodeURIComponent(source==='sjinn'?'sjinn':'flashloop'));
   if(!jobs.length)return;
   $('makeVideoSection').style.display='block';$('mvJobs').style.display='block';
-  const select=$('mvJobSelect');select.replaceChildren();
+  const select=$('mvJobSelect');select.replaceChildren();const draft=document.createElement('option');draft.value='';draft.textContent='Select a saved story…';select.append(draft);
   for(const job of jobs){const option=document.createElement('option');option.value=job.id;option.textContent=job.title+' · '+({prompt:'script',image:'image',film:'film'}[job.kind]||'film')+' · '+job.status+' · '+job.completedScenes+'/'+job.sceneCount+' scenes';select.append(option);}
   const selected=jobs.find(j=>j.id===preferredId)||jobs.find(studioActive)||jobs[0];
   select.value=selected.id;displayStudioJob(selected);watchStudioJob(selected.id);
 }
-$('mvJobSelect').onchange=()=>watchStudioJob($('mvJobSelect').value);
+$('mvJobSelect').onchange=()=>{if($('mvJobSelect').value)watchStudioJob($('mvJobSelect').value);};
 $('mvCancel').onclick=async()=>{
   if(!studioJobId)return;
   try{const {job}=await studioApi('/api/studio-jobs/'+encodeURIComponent(studioJobId),{method:'DELETE'});++studioPollEpoch;clearTimeout(studioJobTimer);displayStudioJob(job);}
   catch(e){mvLog(e.message,true);}
 };
 async function queueStudioJob(payload){
-  const serialized=JSON.stringify(payload);
-  if(studioRequestBody!==serialized){studioRequestBody=serialized;studioRequestKey=crypto.randomUUID();}
-  const {job}=await studioApi('/api/studio-jobs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...payload,requestKey:studioRequestKey})});
-  displayStudioJob(job);watchStudioJob(job.id);restoreStudioJobs(job.id).catch(()=>{});
-  studioRequestKey='';studioRequestBody='';showToast('Queued — generation continues after you close this page.');
-  return job;
+  if(studioSubmitting)throw Error('Please wait for the current story to be queued.');
+  studioSubmitting=true;$('btnNewStory').disabled=true;
+  try{
+    const serialized=JSON.stringify(payload);
+    if(studioRequestBody!==serialized){studioRequestBody=serialized;studioRequestKey=crypto.randomUUID();}
+    const {job}=await studioApi('/api/studio-jobs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...payload,requestKey:studioRequestKey})});
+    displayStudioJob(job);watchStudioJob(job.id);await restoreStudioJobs(job.id).catch(()=>{});
+    studioRequestKey='';studioRequestBody='';showToast('Queued — use New story to start another in parallel.');return job;
+  }finally{studioSubmitting=false;$('btnNewStory').disabled=false;}
 }
+$('btnNewStory').onclick=()=>{
+  if(studioSubmitting)return;
+  clearTimeout(studioJobTimer);++studioPollEpoch;studioJobId='';studioRequestKey='';studioRequestBody='';
+  scenes=[];sceneImages={};scriptTitle='';$('idea').value='';$('storyTitle').value='';$('scriptContainer').replaceChildren();$('scriptContainer').dataset.job='';
+  $('btnGenerate').disabled=false;$('btnGenerateImage').style.display='none';$('btnMakeVideo').disabled=true;$('loading').classList.remove('visible');
+  $('i2iSection').style.display='none';$('i2iLoading').style.display='none';$('mvVideo').style.display='none';$('mvDownload').style.display='none';$('mvClips').style.display='none';$('mvCancel').style.display='none';$('mvJobSelect').value='';
+  $('mvStatus').textContent='Your other stories keep running. Write a new idea above, then Generate Full Script.';$('error').classList.remove('visible');$('idea').focus();$('idea').scrollIntoView({behavior:'smooth',block:'center'});
+};
+$('btnBatchStories').onclick=async()=>{
+  const ideas=$('batchIdeas').value.split(/^\s*---\s*$/m).map(s=>s.trim()).filter(Boolean);
+  if(!ideas.length||ideas.length>3){showToast('Enter 1–3 story ideas separated by --- on its own line.');return;}
+  const options={kind:'prompt',slug,name,tagline,duration:Number($('duration').value),sceneLength:Number($('sceneLength').value)||8,ratio:$('ratio').value,model:$('model').value,references:getRefs(),trendThumbnail};
+  $('btnBatchStories').disabled=true;let count=0;
+  try{for(const idea of ideas){await queueStudioJob(vaultPayload({...options,idea,title:idea.split('\n')[0].replace(/^#+\s*/,'').slice(0,100)}));count++;}$('batchIdeas').value='';}
+  catch(e){$('error').textContent=count+' story/stories queued. Remaining stories were not queued: '+e.message;$('error').classList.add('visible');}
+  finally{$('btnBatchStories').disabled=false;}
+};
 $('btnMakeVideo').onclick=async()=>{
   if(!scenes.length)return;
   const engine=$('mvModel').value;

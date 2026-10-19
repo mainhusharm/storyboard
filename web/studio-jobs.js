@@ -107,7 +107,12 @@ function validateInput(body) {
   if (scenes.some(s => (kind==='film' && !s.videoPrompt.trim()) || (!s.imageUrl && !s.imagePrompt.trim()))) throw fail('Each scene needs a video prompt and an image or image prompt.');
   const model = text(body.model, 100);
   if (kind==='film' && !['omni-flash','wan3.0-video-prime','wan3.0-video','wan2.7-t2v','wan2.1-t2v-turbo','wan2.1-t2v-plus','wan2.7-i2v','wan2.1-i2v-turbo','wan2.1-i2v-plus'].includes(model)) throw fail('Unsupported video model.');
-  return { kind, scenes, source: body.source === 'sjinn' ? 'sjinn' : 'flashloop', title: text(body.title,160) || 'Finished film', model,
+  let story;
+  if(kind==='image'&&body.story){
+    if(!Array.isArray(body.story.scenes)||!body.story.scenes.length||body.story.scenes.length>60)throw fail('Invalid parent story snapshot.');
+    story={title:text(body.story.title,160),sceneLength:Math.max(1,Math.min(30,Number(body.story.sceneLength)||8)),scenes:body.story.scenes.map(s=>({title:text(s.title,160),imagePrompt:text(s.imagePrompt,24000),videoPrompt:text(s.videoPrompt,24000),imageUrl:media(s.imageUrl)}))};
+  }
+  return { story, kind, scenes, source: body.source === 'sjinn' ? 'sjinn' : 'flashloop', title: text(body.title,160) || 'Finished film', model,
     imageModel: text(body.imageModel,100) || 'seedream-5', ratio: ['9:16','16:9','1:1','4:3','3:4'].includes(body.ratio) ? body.ratio : '9:16',
     resolution: body.resolution === '1080P' ? '1080P' : '720P', duration: Math.max(1,Math.min(30,Number(body.duration)||8)), chained: body.chained !== false,
     refImageUrl: media(body.refImageUrl), referenceImages: (Array.isArray(body.referenceImages) ? body.referenceImages : []).slice(0,10).map(media),
@@ -118,7 +123,7 @@ function publicJob(j) {
   return { id:j.id, kind:j.input.kind||'film', source:j.input.source, title:j.input.title, status:j.status, createdAt:j.createdAt, updatedAt:j.updatedAt,
     sceneCount:j.scenes.length, completedScenes:j.scenes.filter(s => j.input.kind==='prompt'?s.draft:j.input.kind==='image'?s.image:s.clip).length, message:j.message, error:j.error,
     scenes:j.scenes.map((s,i) => ({ scene:i+1, imageUrl:s.image, clip_url:s.clip, chain_image_url:s.chain, status:s.stage })),
-    result:j.result, script:j.input.kind==='film'?{scenes:j.input.scenes,title:j.input.title,sceneLength:j.input.duration}:undefined, logs:j.logs, background:true };
+    result:j.result, script:j.input.kind==='film'?{scenes:j.input.scenes,title:j.input.title,sceneLength:j.input.duration}:j.input.kind==='image'?j.input.story:undefined, logs:j.logs, background:true };
 }
 function createStudioJobs({ store, publish, execute, pollImage, now = Date.now, leaseMs = 330000 }) {
   const note = (j, message) => { j.message = message; j.logs.push(message); j.logs = j.logs.slice(-120); };

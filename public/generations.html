@@ -93,6 +93,9 @@ video{width:100%;border-radius:8px;background:#000}
   <button class="primary" id="btnAdd" style="margin-top:12px;width:100%">➕ Add to queue</button>
 </div>
 
+<div class="panel"><details><summary style="cursor:pointer;font-weight:600">Add several stories at once</summary><p class="hint">Separate full scripts with a line containing --- . Up to 20 can be queued; 3 run together on Vercel. Keep this queue tab open for Storyboard runs.</p><textarea id="batchStories" placeholder="Story one script…
+---
+Story two script…"></textarea><button id="btnBatch" class="primary" style="margin-top:12px">Add stories to queue</button></details></div>
 <div class="grid" id="runs"></div>
 <div id="emptyState" class="panel empty" style="display:none">No generations yet — paste a script above and press <b>Add to queue</b>.</div>
 
@@ -124,7 +127,7 @@ async function callApi(path, body, R, {attempts=1, timeoutMs=300000}={}){
     if(R && R.cancelled) throw new Error('cancelled');
     let res;
     try{
-      res = await fetch('/api'+path,{method:'POST',headers:{'Content-Type':'application/json'},
+      res = await fetch('/api'+path,{method:'POST',headers:{'Content-Type':'application/json',...(IS_VERCEL_CLIENT&&R?{'X-Storyboard-Run':R.id}:{})},
         body:JSON.stringify(body||{}),signal:R&&R.ctrl?R.ctrl.signal:AbortSignal.timeout(timeoutMs)});
     }catch(e){
       if(R && R.cancelled) throw new Error('cancelled');
@@ -174,9 +177,15 @@ async function executeRun(R, IO=DEFAULT_IO){
     // ---- Phase 2: character references ----
     if(R.characters.some(c=>!c.reference_image_url)){
       R.phase='char-refs'; runLog(R,'phase 2/6: character references…'); saveRuns();
-      const j=await req('/char-refs',{characters:R.characters,imageModel:O.imageModel,style:O.style,force:true},{attempts:20});
-      if(!j||j.error||j.ok===false) throw new Error((j&&j.error)||'character references failed');
-      if(Array.isArray(j.characters)) R.characters=j.characters;
+      const singleImage=O.imageModel==='modelscope:qwen-image-2.1'||O.imageModel.startsWith('aqua:');
+      const groups=singleImage?R.characters.filter(c=>!c.reference_image_url||c.reference_error).map(c=>[c.id]):[true];
+      for(const force of groups){
+        if(cancelled(R))throw new Error('cancelled');
+        const j=await req('/char-refs',{characters:R.characters,imageModel:O.imageModel,style:O.style,force},{attempts:singleImage?1:20});
+        if(!j||j.error||j.ok===false)throw new Error((j&&j.error)||'character references failed');
+        if(Array.isArray(j.characters))R.characters=j.characters;
+        saveRuns();
+      }
       runLog(R,'character references done','ok'); saveRuns();
     }
     if(cancelled(R)) throw new Error('cancelled');
@@ -187,7 +196,7 @@ async function executeRun(R, IO=DEFAULT_IO){
       if(cancelled(R)) throw new Error('cancelled');
       const f=imgTargets[i];
       runLog(R,`phase 3/6: image ${R.frames.length-imgTargets.length+i+1}/${R.frames.length}…`);
-      const j=await req('/images',{frames:[f.frame],framesData:[f],characters:R.characters,imageModel:O.imageModel,ratio:O.ratio,style:O.style,consistency:O.consistency!==false},{attempts:8});
+      const j=await req('/images',{frames:[f.frame],framesData:[f],characters:R.characters,imageModel:O.imageModel,ratio:O.ratio,style:O.style,consistency:O.consistency!==false},{attempts:O.imageModel==='modelscope:qwen-image-2.1'||O.imageModel.startsWith('aqua:')?1:8});
       if(j&&j.frames&&j.frames[0]) Object.assign(f,j.frames[0]);
       if(!f.generated_image_url) throw new Error('image render failed for frame '+f.frame);
       if(!R.thumbUrl) R.thumbUrl=f.generated_image_url;
@@ -345,11 +354,21 @@ function newRunFromForm(){
   $('script').value=''; $('title').value='';
 }
 $('btnAdd').onclick=newRunFromForm;
+function splitStories(text){return String(text||'').split(/^\s*---\s*$/m).map(s=>s.trim()).filter(Boolean);}
+$('btnBatch').onclick=()=>{
+ const scripts=splitStories($('batchStories').value);
+ if(!scripts.length||scripts.length>20||scripts.some(s=>s.length<10))return alert('Enter 1–20 full scripts, separated by --- on its own line (at least 10 characters each).');
+ // Queue every snapshot before pumping so the scheduler can run the first three.
+ const before=MAX_CONCURRENT;MAX_CONCURRENT=0;
+ try{for(const script of scripts){$('script').value=script;$('title').value=script.split('\n')[0].replace(/^#+\s*/,'').slice(0,80);newRunFromForm();}}finally{MAX_CONCURRENT=before;pump();}
+ $('batchStories').value='';
+};
 
 // ---------- boot ----------
 (async function init(){
   try{ const h=await getApi('/health'); IS_VERCEL_CLIENT=!!(h&&h.vercel); }catch(e){}
   MAX_CONCURRENT=IS_VERCEL_CLIENT?3:1; // local server runs one job at a time
+  let parallelDraft;try{parallelDraft=JSON.parse(localStorage.getItem('sb_parallel_draft')||'null');if(parallelDraft){$('script').value=parallelDraft.script||'';$('title').value=parallelDraft.title||'';localStorage.removeItem('sb_parallel_draft');}}catch(e){}
   try{
     const m=await getApi('/models');
     $('chatModel').innerHTML=(m.chat||[]).map(x=>`<option>${esc(x)}</option>`).join('');
@@ -362,6 +381,7 @@ $('btnAdd').onclick=newRunFromForm;
     $('language').innerHTML=(m.languages||[]).map(x=>`<option value="${esc(x.id||x)}">${esc(x.label||x)}</option>`).join('');
     $('style').innerHTML=(m.styles||[]).map(x=>`<option value="${esc(x.key)}">${esc(x.label)}</option>`).join('');
   }catch(e){}
+  for(const [id,value] of Object.entries(parallelDraft?.settings||{})){const el=$(id);if(!el)continue;if(el.type==='checkbox')el.checked=!!value;else if(Array.from(el.options||[]).some(o=>o.value===String(value)))el.value=value;}
   // A page reload can't keep async loops alive — mark still-"running" runs as
   // interrupted so the user can Resume them from their saved progress.
   let changed=false;

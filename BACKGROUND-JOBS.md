@@ -69,3 +69,18 @@ stubbed. The integration test closes every API connection after acceptance,
 drives private worker deliveries, reopens the API and streams the resulting
 account-owned MP4. Live cloud queue delivery requires a deployed authenticated
 job; offline success alone is not a production provider smoke test.
+
+## Multiple stories at once
+
+Use New story in Flashloop or SJinn to open another draft while accepted jobs
+keep running. Name each story and switch between saved stories in the selector.
+Generate several stories at once accepts up to three ideas separated by --- on
+its own line. The account limit remains three active background jobs across both
+studios; a rejected fourth request leaves accepted jobs running. Image jobs save
+their parent script so reopening a result restores the correct story context.
+
+Storyboard has a separate Parallel stories page at /generations. It accepts
+bulk scripts with the same separator and runs three films together on Vercel
+(one locally), isolating output files, board caches and progress by account/run.
+Keep that page open while it runs; this queue still needs browser orchestration.
+Use /tasks for named progress and cancellation across the studios.

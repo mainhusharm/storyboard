@@ -492,3 +492,22 @@ or turn the Storyboard browser pipeline into a durable worker. Keep studio
 links opening tasks in another tab so navigation preserves browser orchestration.
 Tests: npm run test:tasks (API owner isolation, stale state, cancel signaling,
 progress, desktop/mobile dashboard), plus npm run test:studio-jobs.
+
+## Parallel story workspaces
+
+Storyboard links to /generations through Parallel stories and transfers its draft
+using the one-shot sb_parallel_draft key. Bulk scripts use --- on its own line;
+up to three films execute together on Vercel, with excess stories queued. Local
+Storyboard execution stays serialized. Keep the Storyboard queue page open: its
+orchestration still runs in the browser. X-Storyboard-Run must be validated and
+account-scoped; web/server.js uses AsyncLocalStorage for per-run paths, phase
+state and cached board keys. Never scope auth, provider credentials or vault
+storage to these temporary directories. ModelScope/Aqua reference requests select
+one missing character each and preserve existing references.
+
+Flashloop/SJinn New story detaches the selected observer without cancelling its
+saved cloud job. Bulk ideas use --- and accept up to three ideas. The existing
+limit is three active jobs per account across both studios. Saved story selection
+restores its own scenes, and image jobs carry their parent story snapshot so
+images cannot attach to another story. Do not move sequencing into the browser.
+Regression tests: npm run test:parallel and npm run test:studio-jobs.

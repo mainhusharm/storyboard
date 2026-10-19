@@ -50,6 +50,34 @@ const FRAMES_JSON = path.join(STORYBOARD_DIR, 'frames.json');
 const CHARS_JSON = path.join(STORYBOARD_DIR, 'characters.json');
 const INFLUENCERS_JSON = path.join(STORYBOARD_DIR, 'influencers.json');
 
+
+// A parallel Storyboard run owns its files and in-memory phase state. Auth,
+// provider credentials, the vault, and trend caches retain their normal roots.
+const storyboardScope=new (require('node:async_hooks').AsyncLocalStorage)();
+const storyboardRuns=new Map();
+const defaultStoryPaths={frames:FRAMES_DIR,video:VIDEO_DIR,storyboard:STORYBOARD_DIR,framesJson:FRAMES_JSON,charsJson:CHARS_JSON};
+function storyPath(key){return (storyboardScope.getStore()?.paths||defaultStoryPaths)[key];}
+function storyboardCacheKey(userId){return storyboardScope.getStore()?userId+':'+storyboardScope.getStore().key:userId;}
+async function withStoryboardRun(req,res,fn){
+  const run=String(req.headers['x-storyboard-run']||'');
+  if(!IS_VERCEL||!run)return fn();
+  if(!/^[a-zA-Z0-9_-]{8,100}$/.test(run))return sendJson(res,400,{error:'Invalid story run ID.'});
+  const user=await getUserBySessionToken(authToken(req));
+  if(!user)return sendJson(res,401,{error:'auth required'});
+  const key=crypto.createHash('sha256').update(user.id+'\0'+run).digest('hex');
+  let state=storyboardRuns.get(key);
+  if(!state){
+    for(const [id,old] of storyboardRuns)if(old.job.phase==='idle'&&Date.now()-old.touched>3600000)storyboardRuns.delete(id);
+    if(storyboardRuns.size>=100)return sendJson(res,503,{error:'This instance is at its story capacity. Try again shortly.'});
+    const root=path.join(ROOT,'runs',key),frames=path.join(root,'frames'),video=path.join(root,'video'),storyboard=path.join(root,'storyboard');
+    state={key,paths:{frames,video,storyboard,framesJson:path.join(storyboard,'frames.json'),charsJson:path.join(storyboard,'characters.json')},job:{phase:'idle',total:0,done:0,ok:0,failed:[],log:[],startedAt:null,lastProgressAt:null,cancelRequested:false,cancelling:false}};
+    storyboardRuns.set(key,state);
+  }
+  state.touched=Date.now();
+  await Promise.all(['frames','video','storyboard'].map(k=>fsp.mkdir(state.paths[k],{recursive:true})));
+  return storyboardScope.run(state,fn);
+}
+
 let API_KEY = process.env.PAXSENIX_API_KEY || '';
 if (!IS_VERCEL) { try { API_KEY = API_KEY || fs.readFileSync(path.join(ROOT, 'pipeline', 'apikey.txt'), 'utf8').trim(); } catch {} }
 let AQUA_API_KEY = process.env.AQUA_API_KEY || '';
@@ -1201,7 +1229,7 @@ function parseIsoDuration(dur) {
 }
 
 // Back-compat wrapper used by older call sites
-for (const d of [FRAMES_DIR, VIDEO_DIR, STORYBOARD_DIR]) fs.mkdirSync(d, { recursive: true });
+for (const d of [storyPath('frames'), storyPath('video'), storyPath('storyboard')]) fs.mkdirSync(d, { recursive: true });
 
 // AquaDevs chat models (POST https://api.aquadevs.com/v1/chat/completions).
 // Selected from the UI as "aqua:<id>" so they never collide with same-named
@@ -1494,7 +1522,13 @@ function applyStyle(prompt, styleKey) {
 }
 
 // ---------------- in-memory job state ----------------
-const job = { phase: 'idle', total: 0, done: 0, ok: 0, failed: [], log: [], startedAt: null, lastProgressAt: null, cancelRequested: false, cancelling: false };
+const defaultJob = { phase: 'idle', total: 0, done: 0, ok: 0, failed: [], log: [], startedAt: null, lastProgressAt: null, cancelRequested: false, cancelling: false };
+const job=new Proxy(defaultJob,{
+  get:(target,key)=>Reflect.get(storyboardScope.getStore()?.job||target,key),
+  set:(target,key,value)=>Reflect.set(storyboardScope.getStore()?.job||target,key,value),
+  ownKeys:target=>Reflect.ownKeys(storyboardScope.getStore()?.job||target),
+  getOwnPropertyDescriptor:(target,key)=>Object.getOwnPropertyDescriptor(storyboardScope.getStore()?.job||target,key)
+});
 function logLine(msg) {
   job.log.push(`[${new Date().toLocaleTimeString()}] ${msg}`);
   if (job.log.length > 500) job.log.shift();
@@ -1599,14 +1633,14 @@ function sanitizePrompt(p) {
   }
   return result;
 }
-function frameFile(n) { return path.join(FRAMES_DIR, `frame_${String(n).padStart(2, '0')}.png`); }
-function videoFile(n) { return path.join(VIDEO_DIR, `frame_${String(n).padStart(2, '0')}.mp4`); }
-function charRefFile(id) { return path.join(FRAMES_DIR, `char_${id.replace(/\s+/g, '_')}_ref.png`); }
-function ttsFile(n) { return path.join(VIDEO_DIR, `narration_${String(n).padStart(2, '0')}.mp3`); }
-function narratedVideoFile(n) { return path.join(VIDEO_DIR, `narrated_${String(n).padStart(2, '0')}.mp4`); }
+function frameFile(n) { return path.join(storyPath('frames'), `frame_${String(n).padStart(2, '0')}.png`); }
+function videoFile(n) { return path.join(storyPath('video'), `frame_${String(n).padStart(2, '0')}.mp4`); }
+function charRefFile(id) { return path.join(storyPath('frames'), `char_${id.replace(/\s+/g, '_')}_ref.png`); }
+function ttsFile(n) { return path.join(storyPath('video'), `narration_${String(n).padStart(2, '0')}.mp3`); }
+function narratedVideoFile(n) { return path.join(storyPath('video'), `narrated_${String(n).padStart(2, '0')}.mp4`); }
 
 // ---- AI Influencer helpers ----
-function influencerDir(id) { return path.join(FRAMES_DIR, id); }
+function influencerDir(id) { return path.join(storyPath('frames'), id); }
 function inflRefFile(id, n) { return path.join(influencerDir(id), `ref_${String(n).padStart(2, '0')}.png`); }
 function inflContentFile(id, cid, ext) { return path.join(influencerDir(id), `${cid}.${ext}`); }
 async function readInfluencers() { return await readJson(INFLUENCERS_JSON) || []; }
@@ -1741,10 +1775,10 @@ async function writeJson(f, d) { await fsp.mkdir(path.dirname(f), { recursive: t
 // copy for Vercel, where /tmp can contain a DIFFERENT run). Disk fallback is local
 // only. A serverless request must carry its own board, never borrow an older one.
 async function storyDataFrom(body = {}) {
-  let chars = Array.isArray(body.characters) ? body.characters : (IS_VERCEL ? [] : await readJson(CHARS_JSON) || []);
-  let frames = Array.isArray(body.framesData) ? body.framesData : (IS_VERCEL ? [] : await readJson(FRAMES_JSON) || []);
-  if (Array.isArray(body.characters)) await writeJson(CHARS_JSON, body.characters);
-  if (Array.isArray(body.framesData)) await writeJson(FRAMES_JSON, body.framesData);
+  let chars = Array.isArray(body.characters) ? body.characters : (IS_VERCEL ? [] : await readJson(storyPath('charsJson')) || []);
+  let frames = Array.isArray(body.framesData) ? body.framesData : (IS_VERCEL ? [] : await readJson(storyPath('framesJson')) || []);
+  if (Array.isArray(body.characters)) await writeJson(storyPath('charsJson'), body.characters);
+  if (Array.isArray(body.framesData)) await writeJson(storyPath('framesJson'), body.framesData);
   return { chars, frames };
 }
 
@@ -2132,7 +2166,7 @@ async function submitTask(pathAndQuery, logFn = logLine, outInfo = null) {
     try {
       logFn('Storyboard Aqua image: model=' + decodeURIComponent(lfModel[1]) + ', ratio=' + aquaRatio(qv('ratio', '1:1')));
       const url = await generateAquaImage(decodeURIComponent(lfModel[1]), qv('prompt', ''), qv('ratio', '1:1'), '');
-      const file = path.join(FRAMES_DIR, `aqua_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}.png`);
+      const file = path.join(storyPath('frames'), `aqua_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}.png`);
       await aquaImageToFile(url, file);
       return LOGFARE_LOCAL_PREFIX + file;
     } catch (e) { if (outInfo) outInfo.error = e; logFn(`aqua image failed: ${e.message}`); return null; }
@@ -2141,7 +2175,7 @@ async function submitTask(pathAndQuery, logFn = logLine, outInfo = null) {
     const qv = (k, dflt) => { const m = new RegExp(`[?&]${k}=([^&]*)`).exec(pq); return m ? decodeURIComponent(m[1]) : dflt; };
     try {
       const url = await generateXclisImage(decodeURIComponent(lfModel[1]), qv('prompt', ''), qv('ratio', '16:9'));
-      const file = path.join(FRAMES_DIR, `xclis_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}.png`);
+      const file = path.join(storyPath('frames'), `xclis_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}.png`);
       await aquaImageToFile(url, file);
       return LOGFARE_LOCAL_PREFIX + file;
     } catch (e) { if (outInfo) outInfo.error = e; logFn(`xclis image failed: ${e.message}`); return null; }
@@ -2202,7 +2236,7 @@ async function refImageBuffer(url) {
   // referenced as /frames/<name> — read it straight off disk (the hosted URL is
   // only a fallback for when the local file is gone, e.g. a Vercel cold instance).
   const rel = /^\/frames\/([^/?#]+)$/i.exec(String(url || ''));
-  if (rel) { try { return await fsp.readFile(path.join(FRAMES_DIR, decodeURIComponent(rel[1]))); } catch { return null; } }
+  if (rel) { try { return await fsp.readFile(path.join(storyPath('frames'), decodeURIComponent(rel[1]))); } catch { return null; } }
   if (!/^https?:/i.test(String(url || ''))) return null;
   const r = await fetch(url, { signal: AbortSignal.timeout(60000) });
   return r.ok ? Buffer.from(await r.arrayBuffer()) : null;
@@ -2236,7 +2270,7 @@ async function submitImg2ImgTask(prompt, refUrls, imageModel = 'seedream-5', rat
         if (!u) continue;
         if (isLogfareLocal(u)) { usable.push(await uploadToImageHost(u.slice(LOGFARE_LOCAL_PREFIX.length), logLine)); continue; }
         const localRel = /^\/frames\/([^/?#]+)$/i.exec(String(u));
-        if (localRel) { usable.push(await uploadToImageHost(path.join(FRAMES_DIR, decodeURIComponent(localRel[1])), logLine)); continue; }
+        if (localRel) { usable.push(await uploadToImageHost(path.join(storyPath('frames'), decodeURIComponent(localRel[1])), logLine)); continue; }
         usable.push(u);
       }
       return await novitaSubmit(Object.assign({
@@ -2261,7 +2295,7 @@ async function submitImg2ImgTask(prompt, refUrls, imageModel = 'seedream-5', rat
         if (!image && /^https?:/i.test(ref0)) image = ref0;
       }
       const url = await generateAquaImage(imageModel, prompt, ratio, image);
-      const file = path.join(FRAMES_DIR, `aqua_i2i_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}.png`);
+      const file = path.join(storyPath('frames'), `aqua_i2i_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}.png`);
       await aquaImageToFile(url, file);
       return LOGFARE_LOCAL_PREFIX + file;
     } catch (e) { if (outInfo) outInfo.error = e; logLine(`aqua img2img ${imageModel}: ${e.message}`); return null; }
@@ -2270,7 +2304,7 @@ async function submitImg2ImgTask(prompt, refUrls, imageModel = 'seedream-5', rat
     try {
       const refBuf = await refImageBuffer((refUrls || [])[0]);
       const url = await generateXclisImage(imageModel, prompt, ratio, refBuf);
-      const file = path.join(FRAMES_DIR, `xclis_i2i_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}.png`);
+      const file = path.join(storyPath('frames'), `xclis_i2i_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}.png`);
       await aquaImageToFile(url, file);
       return LOGFARE_LOCAL_PREFIX + file;
     } catch (e) { if (outInfo) outInfo.error = e; logLine(`xclis img2img ${imageModel}: ${e.message}`); return null; }
@@ -2733,7 +2767,7 @@ function logfareImageError(j, httpStatus) {
 async function generateLogfareImage(model, prompt, ratio = '1:1', refBuf = null) {
   if (!isLogfareImageModel(model)) throw new Error('unknown Logfare image model: ' + model);
   if (!LOGFARE_API_KEY) throw new Error('no Logfare key (env LOGFARE_API_KEY or pipeline/logfare_apikey.txt)');
-  const raw = path.join(FRAMES_DIR, `lf_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}.jpg`);
+  const raw = path.join(storyPath('frames'), `lf_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}.jpg`);
   let b64 = '', lastError = null;
   for (let attempt = 1; attempt <= 2 && !b64; attempt++) {
     try {
@@ -2838,7 +2872,7 @@ async function analyzeTrendVisual(coverUrl, trendDetails, characterDescription, 
   let tempDir = '';
   if (videoUrl) {
     try {
-      tempDir = path.join(STORYBOARD_DIR, `.trend_${Date.now()}`);
+      tempDir = path.join(storyPath('storyboard'), `.trend_${Date.now()}`);
       await fsp.mkdir(tempDir, { recursive: true });
       const videoPath = path.join(tempDir, 'source.mp4');
       const response = await fetch(videoUrl, { signal: AbortSignal.timeout(120000) });
@@ -3269,7 +3303,7 @@ async function generateStoryboard(script, model, targetDuration = 120, look = ''
     });
   if (!characters.length) throw new Error('all models failed for characters');
   logLine(`phase 1 done: ${characters.length} characters locked (model: ${charModel})`);
-  await writeJson(CHARS_JSON, characters);
+  await writeJson(storyPath('charsJson'), characters);
 
   // ---- PHASE 2: Generate frames ----
   logLine(`phase 2: generating ${frameCount} frames...`);
@@ -3376,7 +3410,7 @@ async function generateStoryboard(script, model, targetDuration = 120, look = ''
   if (frames.length < frameCount) {
     logLine(`phase 2 keeping ${frames.length} frame(s) of ${frameCount} — models and top-ups exhausted`);
   }
-  await writeJson(FRAMES_JSON, frames);
+  await writeJson(storyPath('framesJson'), frames);
   return { characters, frames };
 }
 
@@ -3521,7 +3555,7 @@ async function generateCharRefs(characters, imageModel = 'seedream-5', style = '
     }
   }));
 
-  await writeJson(CHARS_JSON, characters);
+  await writeJson(storyPath('charsJson'), characters);
   logLine(`char-refs finished: ${job.ok} ok, ${job.failed.length} failed`);
   job.phase = 'idle';
 }
@@ -3747,13 +3781,13 @@ async function generateImages(frames, imageModel, ratio, style, consistency = tr
 
   // Save image URLs to frames.json
   if (urlMap.size > 0 || frames.some(f => f.image_error)) {
-    const allFrames = await readJson(FRAMES_JSON) || frames;
+    const allFrames = await readJson(storyPath('framesJson')) || frames;
     for (const af of allFrames) {
       if (urlMap.has(af.frame)) { af.generated_image_url = urlMap.get(af.frame); delete af.image_error; }
       const result = frames.find(f => f.frame === af.frame);
       if (result?.image_error) af.image_error = result.image_error;
     }
-    await writeJson(FRAMES_JSON, allFrames);
+    await writeJson(storyPath('framesJson'), allFrames);
   }
   logLine(`images finished: ${job.ok} ok, ${job.failed.length} failed`);
   job.phase = 'idle';
@@ -3765,7 +3799,7 @@ async function generateImages(frames, imageModel, ratio, style, consistency = tr
 // public URL), so scene N starts exactly where scene N-1 ended — true story flow.
 // Requires sequential rendering, so the toggle trades speed for continuity.
 
-function chainRefFile(n) { return path.join(FRAMES_DIR, `chain_${String(n).padStart(2, '0')}.png`); }
+function chainRefFile(n) { return path.join(storyPath('frames'), `chain_${String(n).padStart(2, '0')}.png`); }
 
 // omni-flash's PaxSenix i2v asset pipeline REJECTS PNG files (fails with "Uploaded
 // asset ... not ready within 120000ms, last status errored") but accepts JPG —
@@ -3816,10 +3850,10 @@ async function chainRefFor(prevFrame, videoModel = null) {
 }
 
 async function persistChainImage(frame) {
-  const allFrames = (await readJson(FRAMES_JSON)) || [];
+  const allFrames = (await readJson(storyPath('framesJson'))) || [];
   const af = allFrames.find(x => x.frame === frame.frame);
   if (af) af.chain_image_url = frame.chain_image_url; else allFrames.push(frame);
-  await writeJson(FRAMES_JSON, allFrames);
+  await writeJson(storyPath('framesJson'), allFrames);
 }
 
 // Resolve a fresh, reachable public image URL for image-to-video. PaxSenix video
@@ -3894,7 +3928,7 @@ async function omniFlashJpgFromRemote(f, logFn = logLine) {
     const res = await fetch(src, { signal: AbortSignal.timeout(60000) });
     if (!res.ok) return null;
     const buf = Buffer.from(await res.arrayBuffer());
-    const tmpPng = path.join(FRAMES_DIR, `omni_dl_${String(f.frame).padStart(2, '0')}.png`);
+    const tmpPng = path.join(storyPath('frames'), `omni_dl_${String(f.frame).padStart(2, '0')}.png`);
     const tmpJpg = tmpPng.replace(/\.png$/, '.jpg');
     await fsp.writeFile(tmpPng, buf);
     await new Promise((resolve, reject) => {
@@ -4009,7 +4043,7 @@ async function generateVideos(frames, ratio, videoModel = DEFAULT_VIDEO_MODEL, c
   // requested frame is in `frames`, so we must NOT delete the other frames' videos.
   if (!opts.skipPurge) {
     const curFrames = new Set(frames.map(f => f.frame));
-    for (const [dir, pat] of [[VIDEO_DIR, /^frame_(\d+)\.mp4$/i], [FRAMES_DIR, /^chain_(\d+)\.(png|jpg)$/i]]) {
+    for (const [dir, pat] of [[storyPath('video'), /^frame_(\d+)\.mp4$/i], [storyPath('frames'), /^chain_(\d+)\.(png|jpg)$/i]]) {
       for (const f of fs.readdirSync(dir)) {
         const m = pat.exec(f);
         if (m && !curFrames.has(Number(m[1]))) { try { fs.unlinkSync(path.join(dir, f)); } catch {} }
@@ -4294,7 +4328,7 @@ function probeDuration(mediaPath) {
 // its own /tmp, so the combine invocation CANNOT see full_narration.mp3 written by
 // the narration invocation — without this URL the final film came out silent.
 async function hostNarrationAudio() {
-  const fullAudioPath = path.join(VIDEO_DIR, 'full_narration.mp3');
+  const fullAudioPath = path.join(storyPath('video'), 'full_narration.mp3');
   if (!fs.existsSync(fullAudioPath)) return '';
   try { return await uploadVideoClip(fullAudioPath, logLine, 'audio/mpeg', 'narration.mp3'); }
   catch (e) { logLine(`narration audio upload failed: ${e.message} — combine on another instance may miss the voice track`); return ''; }
@@ -4376,14 +4410,14 @@ async function generateFullNarration(frames, voice = DEFAULT_VOICE, language = D
     engine: engine || DEFAULT_NARRATION_ENGINE,
     hash: crypto.createHash('sha1').update(fullText).digest('hex')
   });
-  const sigFile = path.join(VIDEO_DIR, 'narr_chunk_sig.txt');
+  const sigFile = path.join(storyPath('video'), 'narr_chunk_sig.txt');
   let sigMatches = false;
   try { sigMatches = fs.readFileSync(sigFile, 'utf8') === sig; } catch {}
   if (!sigMatches) {
     let cleared = 0;
-    for (const f of fs.readdirSync(VIDEO_DIR)) {
+    for (const f of fs.readdirSync(storyPath('video'))) {
       if (f.startsWith('narr_chunk_') && f.endsWith('.mp3')) {
-        try { fs.unlinkSync(path.join(VIDEO_DIR, f)); cleared++; } catch {}
+        try { fs.unlinkSync(path.join(storyPath('video'), f)); cleared++; } catch {}
       }
     }
     if (cleared) logLine(`stale narration chunks cleared (${cleared}) — regenerating for current voice/text`);
@@ -4485,7 +4519,7 @@ async function generateFullNarration(frames, voice = DEFAULT_VOICE, language = D
   const chunkFiles = [];
   for (let i = 0; i < chunks.length; i++) {
     if (job.cancelRequested) { logLine('narration cancelled by user'); break; }
-    const chunkPath = path.join(VIDEO_DIR, `narr_chunk_${String(i + 1).padStart(2, '0')}.mp3`);
+    const chunkPath = path.join(storyPath('video'), `narr_chunk_${String(i + 1).padStart(2, '0')}.mp3`);
     if (fs.existsSync(chunkPath)) { chunkFiles.push(chunkPath); logLine(`chunk ${i+1}: exists, skip`); continue; }
 
     let chunkSaved = false;
@@ -4507,16 +4541,16 @@ async function generateFullNarration(frames, voice = DEFAULT_VOICE, language = D
   // (a failed chunk leaves no file behind, so it regenerates on the next run
   // even when the signature matches — resume stays safe).
   try { fs.writeFileSync(sigFile, sig); } catch {}// Concatenate all chunk audio files into one narration file
-  const fullAudioPath = path.join(VIDEO_DIR, 'full_narration.mp3');
+  const fullAudioPath = path.join(storyPath('video'), 'full_narration.mp3');
   if (chunkFiles.length === 1) {
     fs.copyFileSync(chunkFiles[0], fullAudioPath);
   } else {
     logLine(`concatenating ${chunkFiles.length} narration chunks...`);
-    const listPath = path.join(VIDEO_DIR, 'narr_concat.txt');
+    const listPath = path.join(storyPath('video'), 'narr_concat.txt');
     await fsp.writeFile(listPath, chunkFiles.map(p => `file '${path.basename(p)}'`).join('\n'));
     await new Promise((resolve) => {
       execFile(ffmpegBin(), ['-y', '-f', 'concat', '-safe', '0', '-i', listPath, '-c', 'copy', fullAudioPath],
-        { cwd: VIDEO_DIR, timeout: 30000 }, () => { try { fs.unlinkSync(listPath); } catch {} resolve(); });
+        { cwd: storyPath('video'), timeout: 30000 }, () => { try { fs.unlinkSync(listPath); } catch {} resolve(); });
     });
   }
 
@@ -4525,8 +4559,8 @@ async function generateFullNarration(frames, voice = DEFAULT_VOICE, language = D
   // Host the track so a combine on ANOTHER instance can still overlay it.
   const narrationUrl = await hostNarrationAudio();
 
-  const overlaid = await overlayNarrationOnFinal(path.join(VIDEO_DIR, 'final_story.mp4'), fullAudioPath, opts);
-  if (overlaid) await archiveToVault({ filePath: path.join(VIDEO_DIR, 'final_story.mp4'), title: 'Finished film with narration', frames });
+  const overlaid = await overlayNarrationOnFinal(path.join(storyPath('video'), 'final_story.mp4'), fullAudioPath, opts);
+  if (overlaid) await archiveToVault({ filePath: path.join(storyPath('video'), 'final_story.mp4'), title: 'Finished film with narration', frames });
   return { ok: !!overlaid, narrationUrl };
 }
 
@@ -4654,7 +4688,7 @@ async function archiveToVault({ title = '', filePath = '', frames = [], ratio = 
 
 async function combineFilm(frames, ratio = '16:9', narrationMode = 'tts', opts = {}) {
   setPhase('combining', 1);
-  const finalPath = path.join(VIDEO_DIR, 'final_story.mp4');
+  const finalPath = path.join(storyPath('video'), 'final_story.mp4');
   try { fs.unlinkSync(finalPath); } catch {}
 
   if (frames.length === 0) { logLine('no frames to combine'); job.phase = 'idle'; return null; }
@@ -4700,7 +4734,7 @@ async function combineFilm(frames, ratio = '16:9', narrationMode = 'tts', opts =
   logLine(`combine: target resolution ${targetW}x${targetH} (${ratio})`);
 
   const sorted = [...frames].sort((a, b) => a.frame - b.frame);
-  const workDir = path.join(VIDEO_DIR, 'clips');
+  const workDir = path.join(storyPath('video'), 'clips');
   fs.mkdirSync(workDir, { recursive: true });
   // Wipe stale clips from previous storyboards — every clip is rebuilt below, so
   // a combine can never mix old footage with the current board.
@@ -4820,15 +4854,15 @@ async function combineFilm(frames, ratio = '16:9', narrationMode = 'tts', opts =
 
   // Final concat — copy mode (instant, no re-encoding)
   logLine(`concatenating ${normClips.length} clips (copy mode)...`);
-  const listPath = path.join(VIDEO_DIR, 'concat_list.txt');
-  await fsp.writeFile(listPath, normClips.map(p => `file '${path.relative(VIDEO_DIR, p).replace(/\\/g, '/')}'`).join('\n'));
+  const listPath = path.join(storyPath('video'), 'concat_list.txt');
+  await fsp.writeFile(listPath, normClips.map(p => `file '${path.relative(storyPath('video'), p).replace(/\\/g, '/')}'`).join('\n'));
 
   const built = await new Promise((resolve) => {
     execFile(ffmpegBin(), [
       '-y', '-f', 'concat', '-safe', '0', '-i', listPath,
       '-c', 'copy', '-movflags', '+faststart',
       finalPath
-    ], { cwd: VIDEO_DIR, timeout: 120000 }, async (err) => {
+    ], { cwd: storyPath('video'), timeout: 120000 }, async (err) => {
       const outExists = !err && fs.existsSync(finalPath) && fs.statSync(finalPath).size > 0 && await probeDuration(finalPath) > 0;
       if (outExists) {
         const stats = await fsp.stat(finalPath).catch(() => null);
@@ -4841,7 +4875,7 @@ async function combineFilm(frames, ratio = '16:9', narrationMode = 'tts', opts =
         execFile(ffmpegBin(), ['-y','-f','concat','-safe','0','-i',listPath,
           '-c:v','libx264','-crf','20','-preset','ultrafast',
           '-c:a','aac','-b:a','128k','-movflags','+faststart', finalPath],
-          { cwd: VIDEO_DIR, timeout: 120000 }, async (e2) => {
+          { cwd: storyPath('video'), timeout: 120000 }, async (e2) => {
             const valid = !e2 && fs.existsSync(finalPath) && fs.statSync(finalPath).size > 0 && await probeDuration(finalPath) > 0;
             if (!valid) { logLine(`final film failed: ${e2 ? e2.message.slice(0,120) : 'output was not a playable video'}`); job.failed.push('final'); try { fs.unlinkSync(finalPath); } catch {} }
             else { const s = await fsp.stat(finalPath).catch(()=>null); logLine(`final film created (re-encode mode): ${s?(s.size/1048576).toFixed(1)+'MB':''} — ${normClips.length} clips`); }
@@ -4862,7 +4896,7 @@ async function combineFilm(frames, ratio = '16:9', narrationMode = 'tts', opts =
   // (sig hash). Narration mode 'prompt' has no separate TTS audio.
   if (built && narrationMode !== 'prompt') {
     try {
-      const fullAudioPath = path.join(VIDEO_DIR, 'full_narration.mp3');
+      const fullAudioPath = path.join(storyPath('video'), 'full_narration.mp3');
       const narrUrl = String(opts.narrationUrl || opts.narration_url || '');
       if (!fs.existsSync(fullAudioPath) && /^https?:\/\//i.test(narrUrl)) {
         logLine('combine: narration audio missing on this instance — recovering from hosted URL');
@@ -4871,7 +4905,7 @@ async function combineFilm(frames, ratio = '16:9', narrationMode = 'tts', opts =
       if (fs.existsSync(fullAudioPath)) {
         let match = !!narrUrl;
         if (!match) {
-          const sig = JSON.parse(fs.readFileSync(path.join(VIDEO_DIR, 'narr_chunk_sig.txt'), 'utf8'));
+          const sig = JSON.parse(fs.readFileSync(path.join(storyPath('video'), 'narr_chunk_sig.txt'), 'utf8'));
           match = sig && sig.hash === crypto.createHash('sha1').update(buildNarrationText(frames)).digest('hex');
         }
         if (match) {
@@ -4915,14 +4949,14 @@ function moveMatches(dir, pattern, destDir) {
 
 async function cleanOutputs() {
   const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-  const fb = path.join(FRAMES_DIR, `backup_${ts}`);
-  const vb = path.join(VIDEO_DIR, `backup_${ts}`);
+  const fb = path.join(storyPath('frames'), `backup_${ts}`);
+  const vb = path.join(storyPath('video'), `backup_${ts}`);
   fs.mkdirSync(fb, { recursive: true });
   fs.mkdirSync(vb, { recursive: true });
 
   const movedFrames = [];
   for (const pat of ['frame_*.png', 'char_*.png']) {
-    movedFrames.push(...moveMatches(FRAMES_DIR, pat, fb));
+    movedFrames.push(...moveMatches(storyPath('frames'), pat, fb));
   }
   const movedVideo = [];
   // Include the full-film narration artifacts: the per-chunk TTS files
@@ -4931,7 +4965,7 @@ async function cleanOutputs() {
   // chunks — the classic "same speech every time" bug. The old per-frame
   // narration_*.mp3 naming is kept for back-compat cleanup.
   for (const pat of ['frame_*.mp4', 'narrated_*.mp4', 'narration_*.mp3', 'narr_chunk_*.mp3', 'full_narration.mp3', 'narr_chunk_sig.txt', 'final_story.mp4']) {
-    movedVideo.push(...moveMatches(VIDEO_DIR, pat, vb));
+    movedVideo.push(...moveMatches(storyPath('video'), pat, vb));
   }
 
   logLine(`cleaned outputs -> ${fb} (${movedFrames.length} files), ${vb} (${movedVideo.length} files)`);
@@ -5184,8 +5218,8 @@ const SESSION_SECRET = process.env.SESSION_SECRET
   || process.env.TAVILY_API_KEY
   || process.env.DATABASE_URL
   || 'storyboard-local-session-secret';
-const USERS_FILE = path.join(STORYBOARD_DIR, 'users.json');
-const SESSIONS_FILE = path.join(STORYBOARD_DIR, 'sessions.json');
+const USERS_FILE = path.join(storyPath('storyboard'), 'users.json');
+const SESSIONS_FILE = path.join(storyPath('storyboard'), 'sessions.json');
 
 let authPool = null;      // pg.Pool when DATABASE_URL present
 let authMode = 'file';    // 'pg' | 'file'
@@ -5236,7 +5270,7 @@ async function initAuthStore() {
         console.log('[Auth] ⚠ WARNING: no DATABASE_URL on Vercel — the free-trial credit system is per-instance only and user accounts do not persist. Add a Postgres database (Vercel Storage → Postgres) and set DATABASE_URL before launching.');
       }
     }
-    await fsp.mkdir(STORYBOARD_DIR, { recursive: true }).catch(() => {});
+    await fsp.mkdir(storyPath('storyboard'), { recursive: true }).catch(() => {});
   })();
   return authInitPromise;
 }
@@ -5294,9 +5328,11 @@ const CREDIT_COSTS = {
 // ===== PERSISTENT STORYBOARD JOB CACHE (Vercel cross-instance survival) =====
 // Completed storyboards live here keyed by userId so a refresh after async job
 // completion retrieves the result. Postgres or JSON fallback. 24h TTL.
-const SB_JOBS_FILE = path.join(STORYBOARD_DIR, 'sb_jobs.json');
+const SB_JOBS_FILE = path.join(storyPath('storyboard'), 'sb_jobs.json');
 
 async function saveStoryboardJob(userId, result) {
+  userId=storyboardCacheKey(userId);
+  const jobFile=storyboardScope.getStore()?path.join(storyPath('storyboard'),'sb_jobs.json'):SB_JOBS_FILE;
   await initAuthStore();
   const expires = Date.now() + 24 * 3600 * 1000; // 24h TTL
   if (authMode === 'pg') {
@@ -5312,12 +5348,14 @@ async function saveStoryboardJob(userId, result) {
     return;
   }
   // FILE MODE
-  const jobs = await readJson(SB_JOBS_FILE) || {};
+  const jobs = await readJson(jobFile) || {};
   jobs[userId] = { result, expires };
-  await writeJson(SB_JOBS_FILE, jobs);
+  await writeJson(jobFile, jobs);
 }
 
 async function loadStoryboardJob(userId) {
+  userId=storyboardCacheKey(userId);
+  const jobFile=storyboardScope.getStore()?path.join(storyPath('storyboard'),'sb_jobs.json'):SB_JOBS_FILE;
   await initAuthStore();
   const now = Date.now();
   if (authMode === 'pg') {
@@ -5332,24 +5370,26 @@ async function loadStoryboardJob(userId) {
     } catch (e) { return null; }
   }
   // FILE MODE
-  const jobs = await readJson(SB_JOBS_FILE) || {};
+  const jobs = await readJson(jobFile) || {};
   const entry = jobs[userId];
   if (!entry || entry.expires < now) {
-    if (entry) { delete jobs[userId]; await writeJson(SB_JOBS_FILE, jobs); }
+    if (entry) { delete jobs[userId]; await writeJson(jobFile, jobs); }
     return null;
   }
   return entry.result;
 }
 
 async function clearStoryboardJob(userId) {
+  userId=storyboardCacheKey(userId);
+  const jobFile=storyboardScope.getStore()?path.join(storyPath('storyboard'),'sb_jobs.json'):SB_JOBS_FILE;
   await initAuthStore();
   if (authMode === 'pg') {
     try { await authPool.query('DELETE FROM sb_jobs WHERE user_id = $1', [userId]); } catch {}
     return;
   }
-  const jobs = await readJson(SB_JOBS_FILE) || {};
+  const jobs = await readJson(jobFile) || {};
   delete jobs[userId];
-  await writeJson(SB_JOBS_FILE, jobs);
+  await writeJson(jobFile, jobs);
 }
 
 async function loadUserMeta(userId) {
@@ -5666,7 +5706,7 @@ async function saveUploadedRef(infl, dataUrl) {
 // produced them, or SJinn's demo video + prose) and distils one template that every
 // generated prompt must follow. Implementation lives in web/trend-template.js.
 const trendTemplates = require('./trend-template')({
-  fs, fsp, path, execFile, ffmpegBin, STORYBOARD_DIR,
+  fs, fsp, path, execFile, ffmpegBin, STORYBOARD_DIR: storyPath('storyboard'),
   logLine, isVercel: IS_VERCEL, parseJsonLenient, extractTrendContent,
   resolveTrendConcept, kebabToTitle, scrapeFlashloop, scrapeSjinn,
   chatText: (messages, maxTokens = 4000, temperature = 0.7) => chatWithLogfareFallback('logfare:auto', messages, maxTokens, temperature)
@@ -5726,8 +5766,8 @@ const routeRequest = async (req, res) => {
     if (p === '/api/narration-status' && req.method === 'GET') {
       try {
         const { frames } = await storyDataFrom({});
-        const sigFile = path.join(VIDEO_DIR, 'narr_chunk_sig.txt');
-        const fullAudioPath = path.join(VIDEO_DIR, 'full_narration.mp3');
+        const sigFile = path.join(storyPath('video'), 'narr_chunk_sig.txt');
+        const fullAudioPath = path.join(storyPath('video'), 'full_narration.mp3');
         const status = { hasAudio: fs.existsSync(fullAudioPath), matchesCurrent: false, withSpeech: frames.filter(f => f.narration || f.dialogue).length };
         if (status.hasAudio) {
           try {
@@ -5886,17 +5926,17 @@ const routeRequest = async (req, res) => {
 
     if (p === '/api/characters') {
       if (IS_VERCEL) return sendJson(res, 200, { characters: [], clientBoard: true });
-      const chars = await readJson(CHARS_JSON) || [];
+      const chars = await readJson(storyPath('charsJson')) || [];
       for (const c of chars) { c.hasRef = fs.existsSync(charRefFile(c.id)); }
       return sendJson(res, 200, { characters: chars });
     }
 
     if (p === '/api/frames') {
       if (IS_VERCEL) return sendJson(res, 200, { characters: [], frames: [], hasFinal: false, clientBoard: true });
-      const frames = await readJson(FRAMES_JSON) || [];
-      const chars = await readJson(CHARS_JSON) || [];
+      const frames = await readJson(storyPath('framesJson')) || [];
+      const chars = await readJson(storyPath('charsJson')) || [];
       for (const f of frames) { f.hasImage = fs.existsSync(frameFile(f.frame)); f.hasVideo = fs.existsSync(videoFile(f.frame)); }
-      const finalStat = await fsp.stat(path.join(VIDEO_DIR, 'final_story.mp4')).catch(() => null);
+      const finalStat = await fsp.stat(path.join(storyPath('video'), 'final_story.mp4')).catch(() => null);
       const hasFinal = !!finalStat && finalStat.size > 0;
       return sendJson(res, 200, { characters: chars, frames, hasFinal, finalVersion: finalStat?.mtimeMs || null });
     }
@@ -6102,14 +6142,14 @@ const routeRequest = async (req, res) => {
         // Vault: archive LAST so the saved copy is the final cut — the narration
         // step rewrites final_story.mp4 after combine. archiveToVault no-ops when
         // no finished film exists (a failed combine never adds a vault entry).
-        steps.push(['vault', () => archiveToVault({ title: body.title || script, filePath: path.join(VIDEO_DIR, 'final_story.mp4'), frames, ratio: body.ratio || '16:9' })]);
+        steps.push(['vault', () => archiveToVault({ title: body.title || script, filePath: path.join(storyPath('video'), 'final_story.mp4'), frames, ratio: body.ratio || '16:9' })]);
 
         for (const [name, fn] of steps) {
           if (job.cancelRequested) { logLine('auto pipeline cancelled by user'); break; }
           try { await fn(); }
           catch (e) { logLine(`auto pipeline: ${name} failed: ${e.message} — continuing`); job.phase = 'idle'; }
         }
-        const finalPath = path.join(VIDEO_DIR, 'final_story.mp4');
+        const finalPath = path.join(storyPath('video'), 'final_story.mp4');
         logLine(fs.existsSync(finalPath)
           ? `auto pipeline COMPLETE — final film ready (${(fs.statSync(finalPath).size / 1048576).toFixed(1)} MB)`
           : 'auto pipeline finished but final film is missing');
@@ -6239,8 +6279,8 @@ const routeRequest = async (req, res) => {
           const dur = novitaDurationFor(vidModel, f.duration_sec);
           return (async () => {
             try {
-              fs.mkdirSync(VIDEO_DIR, { recursive: true });
-              fs.mkdirSync(FRAMES_DIR, { recursive: true });
+              fs.mkdirSync(storyPath('video'), { recursive: true });
+              fs.mkdirSync(storyPath('frames'), { recursive: true });
               // ---- phase 2: finish a task submitted earlier ----
               if (body.pollTask) {
                 const st = await novitaPollOnce(body.pollTask);
@@ -6323,7 +6363,7 @@ const routeRequest = async (req, res) => {
                 // Only persist the board when this call covered the whole board —
                 // in per-frame (partial) mode `frames` is one entry and writing it
                 // would clobber frames.json with a single frame.
-                if (!isPartial) await writeJson(FRAMES_JSON, frames);
+                if (!isPartial) await writeJson(storyPath('framesJson'), frames);
               }
             } catch (e) { logLine(`frame ${frames[0] && frames[0].frame}: clip upload failed: ${e.message} — combine may miss it`); }
             const failed = (job.failed || []).filter(n => frames.some(f => f.frame === n));
@@ -6390,7 +6430,7 @@ if (p === '/api/combine' && req.method === 'POST') {
       let { frames } = await storyDataFrom(body);
       if (!frames.length) return sendJson(res, 400, { error: 'no frames' });
       for (const f of frames) { try { fs.unlinkSync(ttsFile(f.frame)); } catch {} }
-      for (const f of fs.readdirSync(VIDEO_DIR).filter(f => f.startsWith('narr_chunk_') || f === 'full_narration.mp3')) { try { fs.unlinkSync(path.join(VIDEO_DIR, f)); } catch {} }
+      for (const f of fs.readdirSync(storyPath('video')).filter(f => f.startsWith('narr_chunk_') || f === 'full_narration.mp3')) { try { fs.unlinkSync(path.join(storyPath('video'), f)); } catch {} }
       setPhase('narration', 1);
       const engine = body.narrationEngine || body.engine || DEFAULT_NARRATION_ENGINE;
       const narrOpts = { narrVol: body.narrVolume, origVol: body.origVolume, clipUrls: body.clipUrls };
@@ -7381,7 +7421,7 @@ RULES:
         const fmt = m[1].toLowerCase();
         const ext = fmt === 'png' ? 'png' : (fmt === 'webp' ? 'webp' : 'jpg');
         const name = `ref_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}.${ext}`;
-        const file = path.join(FRAMES_DIR, name);
+        const file = path.join(storyPath('frames'), name);
         await fsp.writeFile(file, buf);
         const local = '/frames/' + name;
         let url = local;
@@ -7662,8 +7702,8 @@ RULES:
     if (p === '/api/flashloop/generate-video' && req.method === 'POST') {
       const body = await readBody(req).catch(() => ({}));
       const worker = req[STUDIO_WORKER];
-      const VIDEO_DIR = worker ? worker.videoDir : path.join(ROOT,'video');
-      const FRAMES_DIR = worker ? worker.framesDir : path.join(ROOT,'frames');
+      const flashVideoDir = worker ? worker.videoDir : path.join(ROOT,'video');
+      const flashFramesDir = worker ? worker.framesDir : path.join(ROOT,'frames');
       const { prompt = '', imageUrl = '', ratio = '9:16', resolution = '720P', chainAnchor = '', model: bodyModel = '', duration: bodyDuration = 0, pollTask: pollTaskId = '' } = body || {};
       const sceneN = Math.max(1, Number(body.scene) || 1);
       // A POLL request only carries the task id (the prompt went with the submit),
@@ -7672,14 +7712,14 @@ RULES:
       const MODEL = isNovitaVideoModel(bodyModel) ? bodyModel : 'omni-flash';
       const isNov = isNovitaVideoModel(MODEL);
       const novDur = isNov ? novitaDurationFor(MODEL, Number(bodyDuration) || 8) : 0;
-      const out = path.join(VIDEO_DIR, `flash_scene_${String(sceneN).padStart(2, '0')}.mp4`);
-      const anchorPng = path.join(FRAMES_DIR, `flash_chain_${String(sceneN).padStart(2, '0')}.png`);
+      const out = path.join(flashVideoDir, `flash_scene_${String(sceneN).padStart(2, '0')}.mp4`);
+      const anchorPng = path.join(flashFramesDir, `flash_chain_${String(sceneN).padStart(2, '0')}.png`);
       // Credit gate on the SUBMIT only — polling the same job must not charge twice.
       if (!pollTaskId && !(await requireCredits(req, res, CREDIT_COSTS.flashloopVideo, 'flashloop video'))) return;
       return (async () => {
         try {
-          fs.mkdirSync(VIDEO_DIR, { recursive: true });
-          fs.mkdirSync(FRAMES_DIR, { recursive: true });
+          fs.mkdirSync(flashVideoDir, { recursive: true });
+          fs.mkdirSync(flashFramesDir, { recursive: true });
 
           // ---- phase 2: finish a job submitted earlier ----
           if (pollTaskId) {
@@ -7702,7 +7742,7 @@ RULES:
             let anchorTmp = null;                 // deleted after hosting — never leak these
             if (anchor) {
               try {
-                const tmp = path.join(FRAMES_DIR, `flash_anchor_${Date.now()}.img`);
+                const tmp = path.join(flashFramesDir, `flash_anchor_${Date.now()}.img`);
                 anchorTmp = tmp;
                 await download(anchor, tmp);
                 const jpg = tmp + '.jpg';
@@ -7794,7 +7834,7 @@ RULES:
     if (p === '/api/flashloop/combine' && req.method === 'POST') {
       const body = await readBody(req).catch(() => ({}));
       const worker = req[STUDIO_WORKER];
-      const VIDEO_DIR = worker ? worker.videoDir : path.join(ROOT,'video');
+      const flashVideoDir = worker ? worker.videoDir : path.join(ROOT,'video');
       const normalizeOnly = worker && body.normalizeOnly === true;
       const preNormalized = worker && body.preNormalized === true;
       const sceneList = (Array.isArray(body.scenes) ? body.scenes : []).map(Number).filter(Boolean);
@@ -7814,21 +7854,21 @@ RULES:
           };
           const flashScale = normalizeVideoResolution(body.resolution) === '1080P' ? 1.5 : 1;
           const [w, h] = (DIM_BY_RATIO[ratio] || [1280, 720]).map(d => Math.round(d * flashScale / 2) * 2);
-          fs.mkdirSync(VIDEO_DIR,{recursive:true});
-          const clipsDir = path.join(VIDEO_DIR, 'flash_clips');
+          fs.mkdirSync(flashVideoDir,{recursive:true});
+          const clipsDir = path.join(flashVideoDir, 'flash_clips');
           fs.mkdirSync(clipsDir, { recursive: true });
           const normClips = [];
           let idx = 0;
           for (let sceneIndex = 0; sceneIndex < sceneList.length; sceneIndex++) {
             const n = sceneList[sceneIndex];
-            const src = path.join(VIDEO_DIR, `flash_scene_${String(n).padStart(2, '0')}.mp4`);
+            const src = path.join(flashVideoDir, `flash_scene_${String(n).padStart(2, '0')}.mp4`);
             let source = src;
             if (!fs.existsSync(source) && clipUrls[sceneIndex]) {
               try {
                 const remote = clipUrls[sceneIndex];
                 const fetched = await fetch(remote, { signal: AbortSignal.timeout(studioTimeout(180000)) });
                 if (!fetched.ok) throw new Error(`HTTP ${fetched.status}`);
-                source = path.join(VIDEO_DIR, `flash_remote_${String(n).padStart(2, '0')}.mp4`);
+                source = path.join(flashVideoDir, `flash_remote_${String(n).padStart(2, '0')}.mp4`);
                 await fsp.writeFile(source, Buffer.from(await fetched.arrayBuffer()));
                 logLine(`flashloop combine: downloaded scene ${n} from public clip URL`);
               } catch (e) { logLine(`flashloop combine: scene ${n} remote clip download failed (${e.message})`); }
@@ -7868,7 +7908,7 @@ await new Promise((resolve) => {
             if (fs.existsSync(clip)) { normClips.push(clip); logLine(`flashloop combine: scene ${n} normalized (${hasAudio ? 'audio kept' : 'silent'})`); }
           }
           if (!normClips.length) {
-            logLine(`flashloop combine: no clips resolved — asked for scenes [${sceneList.join(', ')}], received ${clipUrls.filter(Boolean).length} clip URL(s), local files present: ${sceneList.filter(n => fs.existsSync(path.join(VIDEO_DIR, `flash_scene_${String(n).padStart(2, '0')}.mp4`))).join(', ') || 'none'}`);
+            logLine(`flashloop combine: no clips resolved — asked for scenes [${sceneList.join(', ')}], received ${clipUrls.filter(Boolean).length} clip URL(s), local files present: ${sceneList.filter(n => fs.existsSync(path.join(flashVideoDir, `flash_scene_${String(n).padStart(2, '0')}.mp4`))).join(', ') || 'none'}`);
             return sendJson(res, 500, {
               error: 'no scene clips found on this instance',
               detail: `scenes [${sceneList.join(', ')}] — this serverless instance has no local copies and no usable clip URL was supplied. Re-render the video clips (each scene request returns a hosted clip_url that combine re-downloads).`
@@ -7880,13 +7920,13 @@ await new Promise((resolve) => {
             if (!clipUrl) return sendJson(res,502,{error:'Normalized scene upload failed'});
             return sendJson(res,200,{ok:true,clip_url:clipUrl});
           }
-          const listFile = path.join(VIDEO_DIR, 'flash_concat.txt');
-          // Entries relative to VIDEO_DIR (concat -safe 0 resolves them against the list's dir)
-          fs.writeFileSync(listFile, normClips.map(c => `file '${path.relative(VIDEO_DIR, c).replace(/\\/g, '/')}'`).join('\n'));
-          const finalPath = path.join(VIDEO_DIR, 'flash_final.mp4');
+          const listFile = path.join(flashVideoDir, 'flash_concat.txt');
+          // Entries relative to flashVideoDir (concat -safe 0 resolves them against the list's dir)
+          fs.writeFileSync(listFile, normClips.map(c => `file '${path.relative(flashVideoDir, c).replace(/\\/g, '/')}'`).join('\n'));
+          const finalPath = path.join(flashVideoDir, 'flash_final.mp4');
           const okConcat = await new Promise((resolve) => {
             execFile(ffmpegBin(), ['-y', '-f', 'concat', '-safe', '0', '-i', 'flash_concat.txt', '-c', 'copy', '-movflags', '+faststart', 'flash_final.mp4'],
-              { cwd: VIDEO_DIR, timeout: 180000 }, err => resolve(!err));
+              { cwd: flashVideoDir, timeout: 180000 }, err => resolve(!err));
           });
           if (!okConcat || !fs.existsSync(finalPath)) {
             logLine('flashloop combine: copy-concat failed — re-encoding');
@@ -7932,7 +7972,7 @@ const { execFile, execFileSync } = require('child_process');
 
     // Get local viral templates (fallback when no API)
     if (p === '/api/templates' && req.method === 'GET') {
-      const TPL_FILE = path.join(STORYBOARD_DIR, 'viral-templates.json');
+      const TPL_FILE = path.join(storyPath('storyboard'), 'viral-templates.json');
       try {
         const templates = JSON.parse(await fsp.readFile(TPL_FILE, 'utf8'));
         return sendJson(res, 200, { templates });
@@ -8656,8 +8696,8 @@ ${infl.description || '(no description - describe a beautiful confident influenc
 
     // --- static files (supports subdirectories for influencer assets) ---
     let filePath;
-    if (p.startsWith('/frames/')) filePath = path.join(FRAMES_DIR, decodeURIComponent(p.slice('/frames/'.length)));
-    else if (p.startsWith('/video/')) filePath = path.join(VIDEO_DIR, decodeURIComponent(p.slice('/video/'.length)));
+    if (p.startsWith('/frames/')) filePath = path.join(storyPath('frames'), decodeURIComponent(p.slice('/frames/'.length)));
+    else if (p.startsWith('/video/')) filePath = path.join(storyPath('video'), decodeURIComponent(p.slice('/video/'.length)));
     else if (p.startsWith('/vault/')) { res.writeHead(404); return res.end('Use the authenticated vault library.'); }
     else if (p === '/vault') filePath = path.join(PUBLIC, 'vault.html');
     else if (p === '/' || p === '/home') filePath = path.join(PUBLIC, 'home.html');
@@ -8678,7 +8718,7 @@ ${infl.description || '(no description - describe a beautiful confident influenc
       if (!pageUser) return;
     }
 
-    if (!filePath.startsWith(FRAMES_DIR) && !filePath.startsWith(VIDEO_DIR) && !filePath.startsWith(PUBLIC)) {
+    if (!filePath.startsWith(storyPath('frames')) && !filePath.startsWith(storyPath('video')) && !filePath.startsWith(PUBLIC)) {
       res.writeHead(403); return res.end('forbidden');
     }
     const data = await fsp.readFile(filePath);
@@ -8735,12 +8775,12 @@ const studioJobs=createStudioJobs({
 studioQueue.setLocalHandler(studioJobs.process);
 const taskHub=createTasks({root:ROOT,isVercel:IS_VERCEL,studioJobs,getDb:async()=>{await initAuthStore();return authMode==='pg'?authPool:null;}});
 
-const requestHandler = (req, res) => modelscopeImages.run(() => assetVault.run(() => routeRequest(req, res)));
+const requestHandler = (req, res) => withStoryboardRun(req,res,()=>modelscopeImages.run(() => assetVault.run(() => routeRequest(req, res))));
 module.exports = requestHandler;
 module.exports.processStudioJob = studioJobs.process;
 // Exposed for the pipeline/test-*.js regression tests.
 module.exports.__internal = {
-  assetVault, modelscopeImages, submitTask, waitTask, studioJobs, executeStudioStep, pollStudioTask,
+  assetVault, modelscopeImages, submitTask, waitTask, studioJobs, executeStudioStep, pollStudioTask, storyPath, storyboardScope, job, withStoryboardRun, frameFile, videoFile, saveStoryboardJob, loadStoryboardJob,
   flashloopScenePlan,
   storyboardFrameCount, emergencyImageChain, vocalizeAnimationPrompts,
   capProviderImagePrompt, lockSacredCharacter, secularizeForImageFilter,

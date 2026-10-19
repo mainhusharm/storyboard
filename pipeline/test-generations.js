@@ -158,5 +158,33 @@ console.log('\n[5] scheduler queues and caps parallel runs');
   assert.equal(runs.filter(r => r.status === 'done').length, 2, 'both queued runs complete');
   console.log('  ok: queued runs execute through the capped scheduler');
 }
+
+console.log('\n[6] Qwen and Aqua references use individual requests and retain finished references');
+for(const imageModel of ['modelscope:qwen-image-2.1','aqua:qwen-image-3.0-pro']){
+ const ctx=pageContext(),R=makeRun(ctx,{imageModel,narrationMode:'prompt'}),calls=[];
+ R.characters=[{id:'A',reference_image_url:'https://fixture.test/existing.png'},{id:'B'},{id:'C'}];
+ R.frames=[{...frame,generated_image_url:'https://fixture.test/image.png',clip_url:'https://fixture.test/clip.mp4'}];
+ const io={call:async(p,b,r,opts)=>{
+  if(p==='/char-refs'){assert.equal(b.force.length,1);assert.equal(opts.attempts,1);calls.push(b.force[0]);return {ok:true,characters:b.characters.map(c=>b.force.includes(c.id)?{...c,reference_image_url:'https://fixture.test/'+c.id+'.png'}:c)};}
+  if(p==='/videos')return {ok:true,frame:{},clipUrl:'https://fixture.test/clip.mp4'};
+  if(p==='/combine')return {ok:true,finalUrl:'https://fixture.test/final.mp4'};
+  throw Error('unexpected phase '+p);
+ },get:async()=>({}),sleep:async()=>{}};
+ await ctx.executeRun(R,io);assert.equal(R.status,'done');assert.deepEqual(calls,['B','C']);assert.equal(R.characters[0].reference_image_url,'https://fixture.test/existing.png');
+}
+console.log('\n[7] Vercel starts three films together and holds the fourth');
+{
+ let entered=0,peak=0,active=0,release;const gate=new Promise(r=>release=r);
+ const io={call:async(p,b,R)=>{
+  if(p==='/storyboard'){entered++;active++;peak=Math.max(peak,active);await gate;active--;return {ok:true,characters:[],frames:[{...frame}]};}
+  if(p==='/images')return {ok:true,frames:[{...b.framesData[0],generated_image_url:'u'}]};
+  if(p==='/videos')return {ok:true,frame:{},clipUrl:'c'};
+  if(p==='/combine')return {ok:true,finalUrl:'f'};
+  throw Error('unexpected '+p);
+ },get:async()=>({}),sleep:async()=>{}};
+ const ctx=pageContext(io);ctx.MAX_CONCURRENT=3;
+ const runs=Array.from({length:4},(_,i)=>{const R=makeRun(ctx,{narrationMode:'prompt'});R.id='parallel_run_'+i;return R;});
+ runs.forEach(r=>ctx.addRunObject(r));await new Promise(r=>setImmediate(r));assert.equal(entered,3);assert.equal(peak,3);release();await new Promise(r=>setTimeout(r,150));assert.equal(runs.filter(r=>r.status==='done').length,4);assert.equal(peak,3);
+}
 })().catch(e => { console.error(e); process.exitCode = 1; });
 console.log('\nall generations regressions passed');

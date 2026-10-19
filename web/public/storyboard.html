@@ -179,7 +179,7 @@
   <span class="sub">SCRIPT → CHARACTERS → FRAMES → VIDEO → FILM</span>
   <div class="right">
     <a href="/" style="font-size:11px;padding:6px 14px;border:1px solid var(--line2);border-radius:99px;color:var(--dim);cursor:pointer;text-decoration:none;display:flex;align-items:center;gap:5px;font-weight:600;letter-spacing:.5px">🏠 Home</a>
-    <a href="/generations" style="font-size:11px;padding:6px 14px;border:1px solid var(--line2);border-radius:99px;color:var(--teal);text-decoration:none;font-weight:600">🗂 Generations</a>
+    <a href="/generations" style="font-size:11px;padding:6px 14px;border:1px solid var(--line2);border-radius:99px;color:var(--teal);text-decoration:none;font-weight:600">🗂 Parallel stories</a>
     <a href="/tasks" target="_blank" rel="noopener" style="font-size:11px;padding:6px 14px;color:var(--dim);text-decoration:none">Running tasks</a>
     <a href="/vault" style="font-size:11px;padding:6px 14px;border:1px solid var(--line2);border-radius:99px;color:var(--amber2);text-decoration:none;font-weight:600">▣ Vault</a>
     <a href="/trends?source=flashloop" style="font-size:11px;padding:6px 14px;border:1px solid var(--line2);border-radius:99px;background:linear-gradient(135deg,rgba(139,124,246,.15),rgba(236,72,153,.15));color:var(--violet);cursor:pointer;text-decoration:none;display:flex;align-items:center;gap:5px;font-weight:600;letter-spacing:.5px">⚡ Trend Loop</a>
@@ -242,6 +242,7 @@ The Director AI will:
       <label class="f">Creative direction — how the story should look</label>
       <textarea id="look" style="min-height:90px" placeholder="e.g. Epic mythological tone, warm golden palette, slow majestic camera moves, devotional atmosphere, shallow depth of field, film grain, dramatic rim lighting..."></textarea>
       <button class="cta" id="btnStoryboard">🎬 Generate Storyboard</button>
+      <button class="cta" id="btnParallel" type="button" onclick="openParallelStories()">＋ Multiple stories in parallel</button>
       <button class="cta" id="btnAuto" style="background:linear-gradient(135deg,var(--teal),#1a9e8f)">🚀 Create Full Film — auto</button>
     </div>
 
@@ -1275,6 +1276,10 @@ async function retryFailedCharacterRefs(){
   const ids=CHARS.filter(c=>c.reference_error).map(c=>c.id);if(!ids.length)return;
   const r=await postJob('/char-refs',sbPayload({force:ids,imageModel:$('imageModel').value,style:$('style').value}));
   await acceptCharacterResults(r);
+}
+function openParallelStories(){
+  try{localStorage.setItem('sb_parallel_draft',JSON.stringify({settings:Object.fromEntries(['chatModel','imageModel','videoModel','ratio','videoResolution','duration','clipDuration','narrationMode','voice','language','style','consistency','chainContinuity'].map(id=>[id,$(id).type==='checkbox'?$(id).checked:$(id).value])),script:$('script').value||'',title:($('script').value||'').split('\n')[0].replace(/^#+\s*/,'').slice(0,80)}));}catch(e){}
+  window.open('/generations','_blank','noopener');
 }
 function openCharacterRef(index){
   const c=CHARS[index];if(!c)return;
