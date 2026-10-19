@@ -1,5 +1,6 @@
 'use strict';
 const { AsyncLocalStorage } = require('node:async_hooks');
+const { setTimeout: sleep } = require('node:timers/promises');
 const MODEL = 'modelscope:qwen-image-2.1';
 const BASE = 'https://studio-qwen-qwen-image-2-1.api-inference.modelscope.net';
 const PUBLIC_HOST = 'qwen-qwen-image-2-1.ms.show';
@@ -23,13 +24,44 @@ function settings(input = {}, ratio = '16:9') {
   for (const key of ['randomizeSeed','enhancePrompt']) if (input[key]!==undefined&&typeof input[key]!=='boolean') throw failure('Invalid Qwen '+key+'.',true);
   return { width,height,seed,randomize_seed:input.randomizeSeed!==false,enable_extend:input.enhancePrompt!==false,negative_prompt:String(input.negativePrompt||'').slice(0,4000) };
 }
-function failure(message, permanent = false) { return Object.assign(new Error(message), { code:'MODELSCOPE_IMAGE_ERROR', terminal:true, permanent }); }
-function createModelscopeProvider({ getToken, fetchImpl = (...args)=>fetch(...args), log = ()=>{}, requestBudgetMs = Infinity } = {}) {
+function failure(message, permanent = false, details = {}) { return Object.assign(new Error(message), { code:'MODELSCOPE_IMAGE_ERROR', terminal:true, permanent, ...details }); }
+function taskFailure(text, token) {
+  let data;try { data=JSON.parse(text); } catch { data=text; }
+  let detail=typeof data==='string'?data:typeof data?.error==='string'?data.error:typeof data?.message==='string'?data.message:typeof data?.error?.message==='string'?data.error.message:'';
+  detail=detail.replace(/[\u0000-\u001f\u007f]/g,' ').replace(/<[^>]*>/g,' ').replace(/Bearer\s+\S+/gi,'[redacted]');
+  if(token)detail=detail.split(token).join('[redacted]');
+  detail=detail.trim().slice(0,300);
+  // These require user/provider action; prompt, identity and settings stay intact.
+  const permanent=/unauthori[sz]ed|forbidden|invalid.{0,20}(token|key|parameter|input)|(token|key).{0,20}(invalid|expired)|authentication|safety|unsafe|nsfw|moderation|content.{0,15}(filter|policy|block)|policy.{0,15}violation|daily.{0,15}(quota|limit)|quota.{0,15}(exceed|exhaust)|(exceed|exhaust).{0,20}quota|insufficient.{0,15}(credit|balance)/i.test(detail);
+  return failure('ModelScope image task failed'+(detail?': '+detail:'. The studio did not provide a reason.'),permanent,{definitive:true,safeToRetry:!permanent});
+}
+function createModelscopeProvider({ getToken, fetchImpl = (...args)=>fetch(...args), log = ()=>{}, requestBudgetMs = Infinity, retryDelaysMs = [8000,20000], sleepImpl = (ms,signal)=>sleep(ms,undefined,{signal}), now = Date.now } = {}) {
   const context = new AsyncLocalStorage();
-  const run = fn => context.run({ options:{}, deadline:Date.now()+requestBudgetMs },fn);
+  const run = fn => context.run({ options:{}, deadline:now()+requestBudgetMs },fn);
   function setOptions(options) { const scope=context.getStore(); if(scope) scope.options=options||{}; }
   function finishedUrl(marker) { return String(marker).startsWith(PREFIX) ? decodeURIComponent(String(marker).slice(PREFIX.length)) : null; }
   async function generate(prompt, ratio='16:9', references=[], overrides) {
+    const deadline=Math.min(now()+240000,context.getStore()?.deadline||Infinity)-5000;
+    const retryState={inputImages:[]};
+    const delays=retryDelaysMs.slice(0,2);
+    for(let attempt=1;attempt<=delays.length+1;attempt++) {
+      try { return {...await generateAttempt(prompt,ratio,references,overrides,deadline,retryState),attempts:attempt}; }
+      catch(error) {
+        error.attempts=attempt;
+        const delay=error.retryAfterMs||delays[attempt-1]||0;
+        const retry=error.safeToRetry===true && !error.permanent && attempt<=delays.length && deadline-now()-delay>=45000;
+        if(!retry) {
+          if(error.safeToRetry && attempt>1)error.message+=' (after '+attempt+' attempts)';
+          if(error.safeToRetry && attempt<=delays.length)error.message+=' Automatic retry stopped because this request has insufficient time remaining.';
+          throw error;
+        }
+        log('Qwen ModelScope: task failed; retry '+attempt+'/'+delays.length+' in '+Math.ceil(delay/1000)+'s with the same prompt, references and settings.');
+        try { await sleepImpl(delay,AbortSignal.timeout(Math.max(1,deadline-now()))); }
+        catch { throw failure('ModelScope automatic retry stopped at the server time limit.',false,{attempts:attempt}); }
+      }
+    }
+  }
+  async function generateAttempt(prompt, ratio, references, overrides, deadline, retryState) {
     // Accept either a raw token or a copied `Bearer ...` value. The provider
     // adds the Authorization scheme below, avoiding `Bearer Bearer <token>`.
     const token=normalizeToken(getToken?.());
@@ -37,19 +69,30 @@ function createModelscopeProvider({ getToken, fetchImpl = (...args)=>fetch(...ar
     const params=settings(overrides||context.getStore()?.options,ratio);
     if(!String(prompt||'').trim())throw failure('Qwen image prompt is required.',true);
     if(!Array.isArray(references)||references.length>10)throw failure('Qwen accepts at most 10 reference images.',true);
-    const remaining=(context.getStore()?.deadline||Date.now()+240000)-Date.now()-5000;
+    const remaining=deadline-now();
     if(remaining<5000)throw failure('Not enough server time remains for Qwen. Retry this image phase.');
     const signal=AbortSignal.timeout(Math.min(240000,remaining));
     const headers={Authorization:'Bearer '+token};
     const request=async(route,options={})=>{
       const r=await fetchImpl(BASE+route,{...options,headers:{...headers,...options.headers},signal,redirect:'error'});
-      if(!r.ok) { await r.body?.cancel(); throw failure('ModelScope HTTP '+r.status+(r.status===401||r.status===403?': verify MODELSCOPE_API_TOKEN and access to this studio.':r.status===429?': rate limit reached. Retry later.':': image request failed.'),r.status===401||r.status===403); }
+      if(!r.ok) {
+        await r.body?.cancel();
+        const isSubmit=route==='/gradio_api/call/v2/generate_with_enhance';
+        const retryAfter=r.headers.get('retry-after');
+        const seconds=Number(retryAfter);
+        const retryAfterMs=retryAfter?Math.max(0,Number.isFinite(seconds)?seconds*1000:Date.parse(retryAfter)-now()):0;
+        throw failure('ModelScope HTTP '+r.status+(r.status===401||r.status===403?': verify MODELSCOPE_API_TOKEN and access to this studio.':r.status===429?': temporary rate limit.':': image request failed.'),[400,401,402,403,404,422].includes(r.status),{
+          safeToRetry:isSubmit&&r.status===429,
+          reconnectable:!isSubmit&&(r.status===429||r.status>=500),
+          retryAfterMs:Number.isFinite(retryAfterMs)?retryAfterMs:0
+        });
+      }
       return r;
     };
     let eventId='';
     try {
-      const input_images=[];
-      for(let i=0;i<references.length;i++) {
+      const input_images=retryState.inputImages;
+      for(let i=input_images.length;i<references.length;i++) {
         const buffer=references[i];
         if(!Buffer.isBuffer(buffer)||!buffer.length||buffer.length>20*1024*1024)throw failure('Each Qwen reference must be a valid image under 20 MB.',true);
         const isPng=buffer[0]===0x89&&buffer.subarray(1,4).toString()==='PNG';
@@ -67,32 +110,44 @@ function createModelscopeProvider({ getToken, fetchImpl = (...args)=>fetch(...ar
       eventId=submitted.event_id;
       if(!/^[a-zA-Z0-9_-]+$/.test(eventId||''))throw failure('ModelScope did not return an image task.');
       log('Qwen ModelScope: '+(references.length?'editing with '+references.length+' reference(s)':'text-to-image')+' at '+params.width+'x'+params.height);
-      const response=await request('/gradio_api/call/generate_with_enhance/'+eventId);
-      const reader=response.body.getReader();const decoder=new TextDecoder();let pending='';
-      try {
-        while(true){
-          const {done,value}=await reader.read();pending+=decoder.decode(value||new Uint8Array(),{stream:!done});
-          let split;
-          while((split=pending.search(/\r?\n\r?\n/))>=0){
-            const block=pending.slice(0,split);pending=pending.slice(split+(/\r\n\r\n/.test(pending.slice(split,split+4))?4:2));
-            const lines=block.split(/\r?\n/);const event=lines.find(l=>l.startsWith('event:'))?.slice(6).trim();
-            const text=lines.filter(l=>l.startsWith('data:')).map(l=>l.slice(5).trimStart()).join('\n');
-            if(event==='error')throw failure('ModelScope generation failed. Retry later; check studio availability and quota.');
-            if(event!=='complete')continue; // Never expose intermediate or placeholder images.
-            let data;try{data=JSON.parse(text);}catch{throw failure('ModelScope returned an invalid final result.');}
-            const image=data?.[0];
-            if(!image?.path?.startsWith('/tmp/gradio/'))throw failure('ModelScope completed without an image.');
-            const url=new URL(image.url||'/gradio_api/file='+image.path,BASE);
-            if(url.protocol!=='https:'||![new URL(BASE).hostname,PUBLIC_HOST].includes(url.hostname)||!url.pathname.startsWith('/gradio_api/file='))throw failure('ModelScope returned an unexpected image address.');
-            log('Qwen ModelScope: image ready (seed '+data[1]+')');
-            return {url:url.href,seed:data[1],enhancedPrompt:data[2]||'',width:params.width,height:params.height};
-          }
-          if(done)break;
+      for(let connection=0;connection<3;connection++) {
+        try {
+          const response=await request('/gradio_api/call/generate_with_enhance/'+eventId);
+          const reader=response.body.getReader();const decoder=new TextDecoder();let pending='';
+          try {
+            while(true){
+              const {done,value}=await reader.read();pending+=decoder.decode(value||new Uint8Array(),{stream:!done});
+              let split;
+              while((split=pending.search(/\r?\n\r?\n/))>=0){
+                const block=pending.slice(0,split);pending=pending.slice(split+(/\r\n\r\n/.test(pending.slice(split,split+4))?4:2));
+                const lines=block.split(/\r?\n/);const event=lines.find(l=>l.startsWith('event:'))?.slice(6).trim();
+                const text=lines.filter(l=>l.startsWith('data:')).map(l=>l.slice(5).trimStart()).join('\n');
+                if(event==='error')throw taskFailure(text,token);
+                if(event!=='complete')continue; // Never expose intermediate or placeholder images.
+                let data;try{data=JSON.parse(text);}catch{throw failure('ModelScope returned an invalid final result.');}
+                const image=data?.[0];
+                if(!image?.path?.startsWith('/tmp/gradio/'))throw failure('ModelScope completed without an image.');
+                const url=new URL(image.url||'/gradio_api/file='+image.path,BASE);
+                if(url.protocol!=='https:'||![new URL(BASE).hostname,PUBLIC_HOST].includes(url.hostname)||!url.pathname.startsWith('/gradio_api/file='))throw failure('ModelScope returned an unexpected image address.');
+                log('Qwen ModelScope: image ready (seed '+data[1]+')');
+                return {url:url.href,seed:data[1],enhancedPrompt:data[2]||'',width:params.width,height:params.height};
+              }
+              if(done)break;
+            }
+          } finally { await reader.cancel().catch(()=>{}); reader.releaseLock(); }
+          throw failure('ModelScope ended before completing this image. Its submitted task may still be running.',false,{reconnectable:true});
+        } catch(error) {
+          // GET reconnects consume the SAME event ID; they never submit an image.
+          if(signal.aborted || error.definitive || error.permanent || (error.code==='MODELSCOPE_IMAGE_ERROR'&&!error.reconnectable) || connection===2)throw error;
+          const delay=error.retryAfterMs||[1500,4000][connection];
+          if(deadline-now()-delay<1000)throw error;
+          log('Qwen ModelScope: reconnecting to existing task '+eventId+' ('+(connection+1)+'/2); no new generation.');
+          await sleepImpl(delay,signal);
         }
-      } finally { await reader.cancel().catch(()=>{}); reader.releaseLock(); }
-      throw failure('ModelScope ended before completing this image.');
+      }
+
     } catch(error) {
-      if(error.code==='MODELSCOPE_IMAGE_ERROR')throw error;
+      if(error.code==='MODELSCOPE_IMAGE_ERROR'){if(eventId)error.eventId=eventId;throw error;}
       throw failure('ModelScope '+(eventId?'task '+eventId+' was submitted but did not finish in time; it may still be running. Retry later.':'image request could not complete. Check your connection and retry.'));
     }
   }

@@ -901,6 +901,11 @@ async function imagePhaseBatch(path, body) {
     result = await callPhase(path, single, { singleImage: true, attempts: 1 });
     if (characters) await acceptCharacterResults(result); else await acceptImageResults(result);
     if (!result || result.error || result.ok === false) return result;
+    if (body.imageModel === 'modelscope:qwen-image-2.1') {
+      const item = characters ? CHARS.find(c => c.id === ids[i]) : FRAMES.find(f => f.frame === ids[i]);
+      const retries = characters ? item?.reference_retries : item?.image_retries;
+      if (retries) logLocal('Qwen '+(characters?'reference':'image')+' '+(i+1)+'/'+ids.length+' recovered after '+retries+' automatic retr'+(retries===1?'y':'ies')+'.','ok');
+    }
   }
   return { ...result, ...(characters ? { characters: CHARS } : { frames: FRAMES }) };
 }

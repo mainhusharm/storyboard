@@ -28,10 +28,14 @@ Other controls: seed (0–2147483647), randomize seed, enhance prompt, and negat
 
 Storyboard sends each Qwen character/frame in a separate Vercel invocation and carries completed results into the next request. Manual batches and the automatic film pipeline use the same handling. Upload, submission and SSE completion share a bounded time budget. Intermediate images are ignored, because Gradio can emit a placeholder before finishing.
 
-Accepted jobs are not automatically resubmitted after a timeout, stream failure or browser disconnect; the original task may still be running. Errors preserve the storyboard and finished assets. Choose a failed phase/frame to retry. ModelScope failures do not silently change image providers.
+An explicit Gradio error event confirms that an image task failed. Temporary failures now receive up to two automatic retries, after 8 and 20 seconds, using the same prompt, reference uploads, dimensions, seed and other controls. A rejected submission HTTP 429 also retries and respects Retry-After. Authentication, validation, moderation and explicit exhausted-quota errors stop immediately. The generic error event does not prove that a quota was reached; upstream error details are shown when available, with credentials redacted.
+
+A lost or truncated result stream receives up to two GET reconnects to its existing event ID, after 1.5 and 4 seconds. Stream reconnects never submit another generation. Accepted jobs are not automatically resubmitted after a timeout, unresolved stream failure, browser disconnect, ambiguous submission 5xx or lost acknowledgement; the original task may still be running. Uploads, streams, retries and backoff share one bounded request budget, and a new attempt starts only when at least 45 seconds remain after its backoff. A slow request may therefore stop before using both retries.
+
+Successful retry counts appear in the Storyboard console. Completed frames and character references remain intact as the single-image batch continues. Errors preserve the storyboard and finished assets; persistent failures stop the pipeline before videos. ModelScope failures do not change image providers or rewrite prompts.
 
 Only final combined movies are automatically saved to the vault. Qwen images and Gradio links remain working generation assets and are not added to Blob storage individually.
 
 ## Verification
 
-Run npm run test:modelscope for offline provider, authenticated HTTP integration, reference uploads, settings, request isolation and Vercel batching tests. Existing vault tests remain npm run test:vault. A real reference upload and image-to-image render through web/modelscope.js succeeded on 2026-10-18; Vercel requires its own environment token before deployment can generate.
+Run npm run test:modelscope for offline provider, authenticated HTTP integration, reference uploads, settings, request isolation, Vercel batching, bounded retry/reconnect and frame-4 recovery tests. Existing vault tests remain npm run test:vault. A real reference upload and image-to-image render through web/modelscope.js succeeded on 2026-10-18; Vercel requires its own environment token before deployment can generate.

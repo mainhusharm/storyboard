@@ -2111,6 +2111,7 @@ async function submitTask(pathAndQuery, logFn = logLine, outInfo = null) {
     const query = new URLSearchParams(pq.slice(pq.indexOf('?') + 1));
     try {
       const result = await modelscopeImages.generate(query.get('prompt') || '', query.get('ratio') || '1:1');
+      if(outInfo)outInfo.modelscopeAttempts=result.attempts;
       return modelscopeImages.marker(result.url);
     } catch (error) { if (outInfo) outInfo.error = error; logFn('ModelScope image: ' + error.message); return null; }
   }
@@ -2213,6 +2214,7 @@ async function submitImg2ImgTask(prompt, refUrls, imageModel = 'seedream-5', rat
       const refs = await Promise.all(refUrls.slice(0, 10).map(url => refImageBuffer(url)));
       if (refs.some(buffer => !buffer?.length)) throw Object.assign(new Error('A Qwen reference image could not be loaded. Re-upload it before retrying.'), { terminal: true, permanent: true });
       const result = await modelscopeImages.generate(prompt, ratio, refs);
+      if(outInfo)outInfo.modelscopeAttempts=result.attempts;
       return modelscopeImages.marker(result.url);
     } catch (error) { if (outInfo) outInfo.error = error; logLine('ModelScope reference image: ' + error.message); return null; }
   }
@@ -3427,6 +3429,7 @@ async function generateCharRefs(characters, imageModel = 'seedream-5', style = '
       if (url && await download(url, out)) {
         c.reference_image_url = IS_VERCEL && isLogfareLocal(url) ? await uploadToImageHost(out, logLine) : url;
         delete c.reference_error;
+        c.reference_retries=Math.max(0,(info.modelscopeAttempts||1)-1);
         job.ok++;
         logLine(`${c.id}: REF DONE (${label})`);
         return true;
@@ -3643,6 +3646,7 @@ async function generateImages(frames, imageModel, ratio, style, consistency = tr
         let storedUrl = url;
         if (IS_VERCEL && isLogfareLocal(url)) storedUrl = await uploadToImageHost(frameFile(f.frame), logLine);
         f.generated_image_url = storedUrl;
+        f.image_retries=Math.max(0,(info.modelscopeAttempts||1)-1);
         delete f.image_error;
         urlMap.set(f.frame, storedUrl);
         job.ok++;
@@ -7399,7 +7403,7 @@ RULES:
           if (refs.some(buffer => !buffer?.length)) return sendJson(res, 400, { error: 'A Qwen reference could not be loaded. Re-upload the image.' });
           const promptText = trendPromptPrefix(source, slug, trendName, tagline) + String(prompt);
           const result = await modelscopeImages.generate(promptText, ratio, refs);
-          return sendJson(res, 200, { ok: true, imageUrl: result.url, model: selectedModel, provider: 'modelscope', mode: refs.length ? 'i2i' : 't2i', seed: result.seed, width: result.width, height: result.height, enhancedPrompt: result.enhancedPrompt });
+          return sendJson(res, 200, { ok: true, imageUrl: result.url, model: selectedModel, provider: 'modelscope', attempts: result.attempts, mode: refs.length ? 'i2i' : 't2i', seed: result.seed, width: result.width, height: result.height, enhancedPrompt: result.enhancedPrompt });
         }
 
         // ---- Novita provider (qwen-image-3.0-pro / wan2.7-image-pro / wanx2.1) ----

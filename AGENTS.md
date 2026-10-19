@@ -461,3 +461,16 @@ hosting. Preserve provider task IDs, do not re-submit paid work on queue retry,
 and retain owner/source context for background vault saves. A stale ambiguous
 paid submit stops with an explicit error; polling resumes the existing task.
 Details: BACKGROUND-JOBS.md; npm run test:studio-jobs.
+
+### ModelScope transient recovery
+
+web/modelscope.js retries explicit failed Gradio tasks at most twice (8s/20s),
+with unchanged prompts, settings, seeds and cached reference upload paths.
+Submission HTTP 429 respects Retry-After. Authentication, validation, moderation
+and explicit exhausted-quota errors stop. Result-stream failures reconnect GET
+to the SAME event ID at most twice (1.5s/4s); never POST again after an ambiguous
+submission, timeout, browser disconnect or unresolved stream. All attempts and
+backoff share one request budget; reserve 45s before a new generation. Preserve
+terminal=true so outer prompt-repair ladders do not add more submissions. Retry
+counts reach Storyboard references/frames and its console. Regressions:
+pipeline/test-modelscope-retries.js (included in npm run test:modelscope).

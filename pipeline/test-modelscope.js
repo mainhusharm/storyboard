@@ -39,11 +39,11 @@ test('references upload bytes first and use Gallery image entries, never remote 
   await assert.rejects(provider.generate('x','1:1',Array(11).fill(png)),/at most 10/);
   await assert.rejects(provider.generate('x','1:1',[Buffer.from('not an image')]),/PNG, JPEG or WebP/);
 });
-test('authentication, stream errors, premature EOF and unsafe results fail without duplicate submissions',async()=>{
+test('authentication, policy errors, premature EOF and unsafe results do not resubmit generations',async()=>{
   let calls=[];const absent=createModelscopeProvider({getToken:()=>'',fetchImpl:fakeFetch(calls)});
   await assert.rejects(absent.generate('x'),/MODELSCOPE_API_TOKEN/);assert.equal(calls.length,0);
-  for(const response of ['event: error\ndata: "GPU unavailable"\n\n','event: generating\ndata: null\n\n',complete('https://untrusted.test/image.png')]){
-    calls=[];const provider=createModelscopeProvider({getToken:()=>'test-token',fetchImpl:fakeFetch(calls,response)});
+  for(const response of ['event: error\ndata: "Content safety policy blocked this image"\n\n','event: generating\ndata: null\n\n',complete('https://untrusted.test/image.png')]){
+    calls=[];const provider=createModelscopeProvider({getToken:()=>'test-token',fetchImpl:fakeFetch(calls,response),sleepImpl:async()=>{}});
     await assert.rejects(provider.generate('x'),e=>e.terminal===true);
     assert.equal(calls.filter(c=>c.url.includes('/call/v2/')).length,1);
   }
