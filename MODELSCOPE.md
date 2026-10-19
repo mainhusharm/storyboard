@@ -20,7 +20,7 @@ The configured studio is https://studio-qwen-qwen-image-2-1.api-inference.models
 | 4:3 | 1184 × 864 | 2368 × 1728 |
 | 3:4 | 864 × 1184 | 1728 × 2368 |
 
-These are the studio's named ratio presets. **1K** is the default. Custom dimensions override the aspect ratio for generated images; final movies keep their selected movie ratio. Each dimension must be a multiple of 8 from 256 to 2688. Character-reference requests use the square preset unless custom dimensions are selected.
+The preset dropdown matches the ModelScope studio: Custom, all five 2K choices, then all five 1K choices with their dimensions and aspect ratios. **2K** is selected initially, following the current studio aspect ratio. Choosing a preset also updates the studio aspect ratio. Previous saved 1K/2K settings are retained. Custom dimensions override the aspect ratio for generated images; final movies keep their selected movie ratio. Each dimension must be a multiple of 8 from 256 to 2688. Character-reference requests use the square preset unless custom dimensions are selected.
 
 Other controls: seed (0–2147483647), randomize seed, enhance prompt, and negative prompt. Turn off seed randomization to reuse a specific seed. Settings are remembered in this browser; no credentials are stored in browser settings. The provider reports the actual generated seed in server progress logs and the Flashloop/SJinn API response.
 
