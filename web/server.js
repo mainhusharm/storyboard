@@ -1837,6 +1837,8 @@ async function generateAquaImage(model, prompt, ratio = '9:16', imageUrl = '') {
   aquaImageBlock = null;
   const body = { model: id, prompt: String(prompt || ''), ratio: aquaRatio(ratio) };
   if (imageUrl) body.image = imageUrl;
+  const requestRoute = typeof assetVault !== 'undefined' ? assetVault.context.getStore()?.route || 'pipeline' : 'pipeline';
+  logLine(`Aqua request: model=${id}, ratio=${body.ratio}, mode=${imageUrl ? 'i2i' : 't2i'}, prompt_chars=${body.prompt.length}, route=${requestRoute}`);
   let lastErr = null;
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
@@ -2063,6 +2065,7 @@ async function submitTask(pathAndQuery, logFn = logLine, outInfo = null) {
   if (lfModel && isAquaImageModel(decodeURIComponent(lfModel[1]))) {
     const qv = (k, dflt) => { const m = new RegExp(`[?&]${k}=([^&]*)`).exec(pq); return m ? decodeURIComponent(m[1]) : dflt; };
     try {
+      logFn('Storyboard Aqua image: model=' + decodeURIComponent(lfModel[1]) + ', ratio=' + aquaRatio(qv('ratio', '1:1')));
       const url = await generateAquaImage(decodeURIComponent(lfModel[1]), qv('prompt', ''), qv('ratio', '1:1'), '');
       const file = path.join(FRAMES_DIR, `aqua_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}.png`);
       await aquaImageToFile(url, file);
@@ -4546,6 +4549,7 @@ function stillImageToVideo(imagePath, targetSec, outputPath) {
 // behind the `logfare-local:` marker), so every chain member goes through the same
 // submit → wait → download path.
 function emergencyImageChain(preferred) {
+  if (isAquaImageModel(preferred)) return [preferred]; // Preserve the explicitly selected provider.
   const chain = [preferred, 'flux-2-klein-9b', 'nano-banana-pro'].filter(Boolean);
   return chain.filter((m, i) => chain.indexOf(m) === i &&
     (IMAGE_MODELS.includes(m) || isModelscopeImageModel(m) || isLogfareImageModel(m) || isNovitaImageModel(m) || isAquaImageModel(m)));
@@ -7401,11 +7405,10 @@ RULES:
             }
             return sendJson(res, 200, { ok: true, imageUrl, model: selectedModel, mode: ref ? 'i2i' : 't2i', provider: 'aqua' });
           } catch (e) {
-            // Cloudflare can still challenge datacenter IPs no matter the headers.
-            // Don't dead-end the user: fall through to the PaxSenix image path.
-            logLine('aqua image failed: ' + e.message + ' — falling back to PaxSenix');
-            aquaFailureNote = e.message;
-            selectedModel = 'nano-banana-2';
+            // Preserve the selected Aqua provider; a fallback can make another
+            // studio appear to work while actually generating with PaxSenix.
+            logLine('aqua image failed; selected provider retained: ' + e.message);
+            return sendJson(res, 503, { error: e.message, code: e.code || 'AQUA_IMAGE_ERROR', model: selectedModel, provider: 'aqua' });
           }
         }
 

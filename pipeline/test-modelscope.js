@@ -90,18 +90,18 @@ test('Storyboard adapters route text and multiple-reference images directly to Q
 
 test('Vercel Qwen batches use one request per character/frame and carry previous successes forward',async()=>{
   const vm=require('node:vm');const text=await fs.readFile(path.join(__dirname,'../web/public/storyboard.html'),'utf8');
-  const code=text.slice(text.indexOf('async function qwenImagePhase('),text.indexOf('async function callPhase('));
+  const code=text.slice(text.indexOf('async function imagePhaseBatch('),text.indexOf('async function callPhase('));
   const calls=[];const context={USER_CANCELLED:false,CHARS:[{id:'A'},{id:'B'}],FRAMES:[{frame:1},{frame:2}],logLocal(){},
     callPhase:async(route,body,options)=>{calls.push({route,body,options});return route==='/char-refs'?{ok:true,characters:body.characters.map(c=>body.force.includes(c.id)?{...c,reference_image_url:'https://image/'+c.id}:c)}:{ok:true,frames:body.frames.map(frame=>({frame,generated_image_url:'https://image/'+frame}))};},
     acceptCharacterResults:async result=>{context.CHARS=result.characters;},
     acceptImageResults:async result=>{context.FRAMES=context.FRAMES.map(f=>result.frames.find(n=>n.frame===f.frame)||f);}};
   vm.createContext(context);vm.runInContext(code,context);
-  await context.qwenImagePhase('/char-refs',{imageModel:MODEL,force:true});
+  await context.imagePhaseBatch('/char-refs',{imageModel:MODEL,force:true});
   assert.equal(calls.length,2);assert.equal(calls[0].body.force.length,1);assert.equal(calls[1].body.characters[0].reference_image_url,'https://image/A');assert.equal(calls[1].options.attempts,1);
-  calls.length=0;await context.qwenImagePhase('/images',{imageModel:MODEL,frames:[1,2]});
+  calls.length=0;await context.imagePhaseBatch('/images',{imageModel:MODEL,frames:[1,2]});
   assert.equal(calls.length,2);assert.equal(calls[1].body.framesData[0].generated_image_url,'https://image/1');
   calls.length=0;context.callPhase=async()=>{calls.push(1);return {ok:false,error:'provider unavailable'};};context.acceptImageResults=async()=>{};
-  const failed=await context.qwenImagePhase('/images',{frames:[1,2]});assert.equal(failed.ok,false);assert.equal(calls.length,1,'stop a failed batch without resubmitting');
+  const failed=await context.imagePhaseBatch('/images',{frames:[1,2]});assert.equal(failed.ok,false);assert.equal(calls.length,1,'stop a failed batch without resubmitting');
 });
 test('a disconnected Qwen browser request is not automatically submitted again',async()=>{
   const vm=require('node:vm');const text=await fs.readFile(path.join(__dirname,'../web/public/storyboard.html'),'utf8');

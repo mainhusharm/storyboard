@@ -103,6 +103,12 @@ consistency**, generates frame images, animates them via Grok Video / Omni Flash
   generation task. Verify with node pipeline/test-aqua-image-responses.js.
   Local live checks on 2026-10-17 succeeded for nanobanana-pro and agnes-image;
   this does not prove that Vercel egress is accepted by Aqua's Cloudflare rules.
+  Keep Aqua selected: no automatic cross-provider fallback in Storyboard,
+  Flashloop/SJinn, or emergency still generation during combine. Storyboard sends
+  one Aqua character/frame per Vercel request, matching single-image studio
+  actions. Log the actual model, ratio, mode, prompt length and route without
+  credentials or reference bytes. Identical-payload comparison, Cloudflare
+  provider retention, and batch tests: npm run test:aqua.
 - **Vercel: videos render ONE FRAME PER REQUEST** — on Vercel a serverless invocation dies at
   300s, so a whole-board synchronous `/api/videos` always times out. The client detects Vercel via
   `/api/health` and loops frames one-per-request (`runVideosVercel`), passing the previous frame's

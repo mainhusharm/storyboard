@@ -842,9 +842,9 @@ let SUBMITTING=false;
   if(!(await guardBusy())) return null;
   clearLocalLog();
   SUBMITTING=true;
-  if(body?.imageModel==='modelscope:qwen-image-2.1')USER_CANCELLED=false;
+  if((body?.imageModel==='modelscope:qwen-image-2.1'||body?.imageModel?.startsWith('aqua:')))USER_CANCELLED=false;
   try{
-    const r=IS_VERCEL_CLIENT&&body?.imageModel==='modelscope:qwen-image-2.1'&&['/char-refs','/images'].includes(path) ? await callPhase(path,body) : await api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const r=IS_VERCEL_CLIENT&&(body?.imageModel==='modelscope:qwen-image-2.1'||body?.imageModel?.startsWith('aqua:'))&&['/char-refs','/images'].includes(path) ? await callPhase(path,body) : await api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     if(r&&r.error){LOCAL_RESULT='failed';logLocal(`${path}: ${r.error}`,'err');alert(r.error);}
     return r;
   } catch(e) { LOCAL_RESULT='failed';logLocal(`${path}: ${e.message}`,'err');alert('Error: '+e.message); return null; }
@@ -889,7 +889,7 @@ $('btnAuto').onclick=async()=>{
 // that served the storyboard submit may still be finishing its background work
 // when the next phase arrives. That is a queueing delay, not a failure — so wait
 // it out instead of aborting the whole pipeline with a "Pipeline failed: busy".
-async function qwenImagePhase(path, body) {
+async function imagePhaseBatch(path, body) {
   const characters = path === '/char-refs';
   const ids = characters
     ? (Array.isArray(body.force) ? body.force : CHARS.map(c => c.id))
@@ -897,21 +897,21 @@ async function qwenImagePhase(path, body) {
   let result = { ok: true };
   for (let i = 0; i < ids.length; i++) {
     if (USER_CANCELLED) throw new Error('cancelled');
-    logLocal('Qwen '+(characters?'reference':'image')+' '+(i+1)+'/'+ids.length+'…');
-    // Give each image a fresh Vercel invocation and carry completed references
+    logLocal((body.imageModel?.startsWith('aqua:')?'Aqua':'Qwen')+' '+(characters?'reference':'image')+' '+(i+1)+'/'+ids.length+'…');
+    // Give each Aqua/Qwen image a fresh Vercel invocation and carry completed references
     // forward; large boards must not share a single 300-second render budget.
     const single = { ...body, characters: CHARS, framesData: FRAMES,
       ...(characters ? { force: [ids[i]] } : { frames: [ids[i]] }) };
-    result = await callPhase(path, single, { qwenSingle: true, attempts: 1 });
+    result = await callPhase(path, single, { singleImage: true, attempts: 1 });
     if (characters) await acceptCharacterResults(result); else await acceptImageResults(result);
     if (!result || result.error || result.ok === false) return result;
   }
   return { ...result, ...(characters ? { characters: CHARS } : { frames: FRAMES }) };
 }
 async function callPhase(path, body, opts = {}) {
-  const qwenImage = body?.imageModel === 'modelscope:qwen-image-2.1' && ['/char-refs','/images'].includes(path);
-  if (IS_VERCEL_CLIENT && qwenImage && !opts.qwenSingle) return qwenImagePhase(path, body);
-  const attempts = opts.attempts || (qwenImage ? 1 : 24);
+  const providerImage = (body?.imageModel === 'modelscope:qwen-image-2.1' || body?.imageModel?.startsWith('aqua:')) && ['/char-refs','/images'].includes(path);
+  if (IS_VERCEL_CLIENT && providerImage && !opts.singleImage) return imagePhaseBatch(path, body);
+  const attempts = opts.attempts || (providerImage ? 1 : 24);
   const timeoutMs = opts.timeoutMs || 280000; // under Vercel's 300s function kill
   for (let i = 0; i < attempts; i++) {
     let r = null;
