@@ -18,12 +18,14 @@
   const out=[];
   if(queue){
    if(typeof RUNS==='undefined')return out;
-   for(const r of RUNS)if(active(r.status)&&!tracked.has(r.id))tracked.set(r.id,{id:uid(),run:r});
+   for(const r of RUNS)if(!r.cloudId&&!r.cloudSubmitting&&active(r.status)&&!tracked.has(r.id))tracked.set(r.id,{id:uid(),run:r});
    for(const [key,e] of tracked){const r=e.run;
+    if(r.cloudId||r.cloudSubmitting){out.push({id:e.id,title:r.title,queue:true,status:'interrupted',percent:0,message:'Continued as a saved cloud job. Open its Cloud job entry.'});tracked.delete(key);continue;}
     out.push({id:e.id,title:r.title||'Storyboard film',queue:true,status:active(r.status)?r.status:status(r.status),percent:r.status==='done'?100:progressOf(r),message:r.log?.at(-1)?.m||r.phase||'Queued',progressLabel:r.phase||r.status});
     e.cancel=()=>{if(!r.cancelled){window.cancelRun(r.id);if(!r.running)setStatus(r,'cancelled');}};
    }
   }else{
+   if((typeof CLOUD_JOB!=='undefined'&&CLOUD_JOB)||(typeof CLOUD_SUBMITTING!=='undefined'&&CLOUD_SUBMITTING)){if(single){out.push({id:single.id,title:single.title,status:'interrupted',percent:0,message:'Continued as a saved cloud job. Open its Cloud job entry.'});tracked.delete('single');single=null;}return out;}
    const busy=(typeof LOCAL_BUSY!=='undefined'&&LOCAL_BUSY)||(typeof SUBMITTING!=='undefined'&&SUBMITTING);
    if(busy&&!single){single={id:uid(),title:(document.getElementById('script')?.value||'Storyboard generation').replace(/^[#\s]+/,'').replace(/\s+/g,' ').slice(0,120)};tracked.set('single',single);}
    if(single){

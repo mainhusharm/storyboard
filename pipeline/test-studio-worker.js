@@ -60,3 +60,26 @@ test('cloud queue trigger and studio UI cannot depend on browser orchestration',
  const config=JSON.parse(await fs.readFile(path.join(__dirname,'../vercel.json'),'utf8'));assert.equal(config.functions['api/studio-worker.js'].experimentalTriggers[0].topic,'studio-generation');
  const ui=await fs.readFile(path.join(__dirname,'../web/public/flashloop-studio.html'),'utf8');const makeVideo=ui.slice(ui.indexOf("$('btnMakeVideo').onclick"));assert.match(makeVideo,/queueStudioJob/);assert.match(ui,/\/api\/studio-jobs/);assert.doesNotMatch(makeVideo,/\/api\/flashloop\/(generate-video|combine|generate-i2i)/);assert.match(ui,/restoreStudioJobs\(\)/);
 });
+
+test('Storyboard cloud film survives browser disconnect, locks animatic medium and prepares clips in separate steps',async()=>{
+ const start=await request('/api/studio-jobs',alice,{method:'POST',body:JSON.stringify({kind:'storyboard',requestKey:'story-cloud-key-123456',script:'Krishna protects the village.',title:'Govardhan cloud film',imageModel:'aqua:qwen-image-3.0-pro',videoModel:'grok-video',style:'animatic',ratio:'4:3',narrationMode:'prompt',consistency:true,characters:[{id:'A',name:'Krishna',description:'A blue child with yellow dhoti',reference_prompt:'A photorealistic anime portrait of Krishna in yellow dhoti'}],framesData:[1,2].map(frame=>({frame,duration_sec:1,image_prompt:'Photorealistic anime Krishna in yellow dhoti beside a hill',animation_prompt:'Realistic live-action Krishna lifts the hill',characters_present:['A'],narration:'Krishna protects the village.'}))})});
+ assert.equal(start.status,202);const id=(await start.json()).job.id;const offset=external.length;
+ await new Promise(r=>server.close(r));let steps=0,prepared=0;
+ while(messages.length){await handler.processStudioJob(messages.shift().m);const saved=await handler.__internal.studioJobs.get(alice.user,id);if(saved.phase==='normalize')prepared++;assert.ok(++steps<20,JSON.stringify(saved));}
+ assert.equal(prepared,2,'each scene gets its own normalization delivery');
+ await listen();const final=(await(await request('/api/studio-jobs/'+id,alice)).json()).job;
+ assert.equal(final.status,'completed',JSON.stringify(final));assert.equal(final.percent,100);assert.match(final.result.url,/^\/api\/vault\//);assert.equal(final.board.frames.length,2);
+ const calls=external.slice(offset);const imageCalls=calls.filter(r=>r.url==='https://api.aquadevs.com/v1/images/generations');assert.equal(imageCalls.length,3,'one reference and two images');
+ for(const call of imageCalls){const prompt=JSON.parse(call.body).prompt;assert.match(prompt,/Animatic ONLY/);assert.doesNotMatch(prompt,/photorealistic|live-action|anime portrait/i);assert.match(prompt,/Krishna/);}
+ const videos=calls.filter(r=>r.url.includes('/ai-video/'));assert.equal(videos.length,2);for(const c of videos){assert.match(c.url,/\/grok-video\?/);assert.match(new URL(c.url).searchParams.get('prompt'),/Animatic ONLY/);}
+ const tasks=(await(await request('/api/tasks',alice)).json()).tasks;const task=tasks.find(t=>t.id==='cloud_'+id);assert.equal(task.background,true);assert.equal(task.openUrl,'/storyboard?job='+id);
+ const vault=await(await request('/api/vault',alice)).json();assert.ok(vault.vault.some(e=>e.source==='storyboard'));
+});
+
+test('recovering Storyboard Combine fits saved narration without extending the scene or losing its audio',async()=>{
+ const ffmpeg=require('ffmpeg-static'),voicePath=path.join(root,'long-narration.mp3');execFileSync(ffmpeg,['-y','-f','lavfi','-i','sine=frequency=440:duration=1.2','-c:a','libmp3lame',voicePath],{stdio:'ignore'});hosted.set('https://fixture.test/long-voice.mp3',await fs.readFile(voicePath));
+ const job=await handler.__internal.studioJobs.start(alice.user,{kind:'storyboard',mode:'combine',requestKey:'story-combine-tts-12345',title:'Saved narration recovery',style:'anime',ratio:'4:3',narrationMode:'tts',narrationUrl:'https://fixture.test/long-voice.mp3',framesData:[{frame:1,duration_sec:1,clip_url:'https://fixture.test/video.mp4',narration:'Already recorded'}]});
+ let rounds=0;while(messages.length){await handler.processStudioJob(messages.shift().m);assert.ok(++rounds<5);}
+ const saved=await handler.__internal.studioJobs.get(alice.user,job.id);assert.equal(saved.status,'completed',JSON.stringify(saved));const result=await request(saved.result.url,alice);assert.equal(result.status,200);const final=path.join(root,'duration-proof.mp4');await fs.writeFile(final,Buffer.from(await result.arrayBuffer()));
+ const probe=require('node:child_process').spawnSync(ffmpeg,['-i',final,'-f','null','-'],{encoding:'utf8'});assert.equal(probe.status,0);assert.match(probe.stderr,/Audio: aac/);assert.match(probe.stderr,/1024x768/);const duration=/Duration: (\d+):(\d+):([\d.]+)/.exec(probe.stderr);assert.ok(duration);const seconds=Number(duration[1])*3600+Number(duration[2])*60+Number(duration[3]);assert.ok(seconds<0.8,'the 0.4s clip was not stretched to the 1.2s narration: '+seconds);
+});

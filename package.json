@@ -12,7 +12,8 @@
     "test:aqua": "node pipeline/test-aqua-image-responses.js && node pipeline/test-aqua-storyboard.js && node pipeline/test-vercel-image-batches.js",
     "test:studio-jobs": "node --test pipeline/test-studio-jobs.js pipeline/test-studio-worker.js pipeline/test-studio-ui.js",
     "test:tasks": "node --test pipeline/test-tasks.js",
-    "test:parallel": "node --test pipeline/test-parallel-stories.js && node pipeline/test-generations.js"
+    "test:parallel": "node --test pipeline/test-parallel-stories.js && node pipeline/test-generations.js",
+    "test:storyboard-cloud": "node --test pipeline/test-storyboard-cloud.js pipeline/test-storyboard-cloud-ui.js"
   },
   "keywords": [],
   "author": "",

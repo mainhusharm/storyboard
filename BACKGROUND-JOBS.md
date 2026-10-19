@@ -32,7 +32,7 @@ https://vercel.com/docs/queues/sdk. Queues supports Hobby; published included
 usage and limits: https://vercel.com/docs/queues/pricing. Queue operations and
 worker function compute consume the project's normal platform allowances.
 This implementation uses no cron polling and needs no always-on laptop for
-Vercel jobs. It does not alter Storyboard's separate browser queue.
+Vercel jobs. Storyboard full-film jobs now use the same queue.
 
 ## Durability and limits
 
@@ -82,5 +82,26 @@ their parent script so reopening a result restores the correct story context.
 Storyboard has a separate Parallel stories page at /generations. It accepts
 bulk scripts with the same separator and runs three films together on Vercel
 (one locally), isolating output files, board caches and progress by account/run.
-Keep that page open while it runs; this queue still needs browser orchestration.
+Accepted Vercel films run in cloud workers. Keep that page open only to submit drafts still waiting for a free slot.
 Use /tasks for named progress and cancellation across the studios.
+
+## Storyboard full films and recovery
+
+New Vercel Create Full Film and Combine actions save a Storyboard cloud job.
+Every reference, image, scene narration, submitted video task and prepared clip
+is checkpointed in Postgres. The browser can close and the laptop can turn off
+after acceptance. Reopen the film through /tasks or /generations to view its
+saved board, settings, progress and result. Cloud jobs share the three-active-job
+limit with Flashloop/SJinn. Individual manual phase actions remain browser calls.
+
+Normalization runs once per scene in its own delivery. It retains source audio,
+bounds the cut to the selected scene duration and fits narration without extending
+the video. Assembly joins these prepared clips without normalizing the entire
+film again. A provider or host failure is still actionable; offline fixture
+success cannot prove live provider access or production queue delivery.
+
+Old Browser connection / connection lost cards describe older browser-driven
+runs. They cannot become durable automatically. If the original page still has
+all hosted scene clips, refresh and click Combine to queue recovery without
+regenerating images or videos. Missing clip URLs need attention first. Previously
+finished images and clips cannot change visual style without being re-rendered.

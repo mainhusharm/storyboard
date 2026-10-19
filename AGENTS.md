@@ -478,7 +478,7 @@ pipeline/test-modelscope-retries.js (included in npm run test:modelscope).
 ## Running tasks dashboard
 
 /tasks (web/public/tasks.html + tasks.js/tasks.css) combines account-owned
-Flashloop/SJinn durable jobs with browser-driven Storyboard and /generations
+Storyboard/Flashloop/SJinn durable jobs with legacy browser-driven Storyboard
 activity. web/tasks.js owns /api/tasks, /api/tasks/heartbeat and owner-scoped
 DELETE /api/tasks/:id. Cloud cancellation uses studioJobs.cancel; never use
 the legacy global /api/cancel from this dashboard. Browser cancellation is
@@ -511,3 +511,37 @@ limit is three active jobs per account across both studios. Saved story selectio
 restores its own scenes, and image jobs carry their parent story snapshot so
 images cannot attach to another story. Do not move sequencing into the browser.
 Regression tests: npm run test:parallel and npm run test:studio-jobs.
+
+## Storyboard cloud films and strict visual styles
+
+On Vercel, Create Full Film and Combine submit kind=storyboard to the same private
+queue as Flashloop/SJinn. web/storyboard-jobs.js checkpoints the board, each
+reference, each image, each voice track, video task IDs, prepared clips and the
+final URL. web/public/storyboard-cloud.js only accepts and observes jobs; it never
+drives generation phases. Reopening restores the job by ID, including its style,
+board and private vault URL. /generations also accepts cloud jobs and restores
+them from the server. The account-wide active-job limit is three across all
+studios. Not-yet-accepted queue drafts still need an open page. Manual individual
+phase buttons and old browser jobs retain legacy semantics. Do not claim that
+old disconnected browser runs were migrated automatically. Combine can adopt
+a saved board only when every scene has a hosted clip URL; it must not buy
+new images or videos.
+
+Each cloud normalization handles one scene, trims to its planned duration (never
+pads a short provider clip), keeps audio, and fits that scene narration with
+pitch-preserving atempo before mixing. The final worker joins prepared clips
+without re-encoding the whole film. Existing full narration can be recovered
+from its hosted URL and fitted at assembly. Paid submits with ambiguous results
+are never replayed on queue redelivery; pure normalization can retry; assembly ambiguity requires attention because its
+existing account credit gate must not be debited twice.
+
+Animatic is a dedicated pencil storyboard style. web/visual-style.js removes
+conflicting media and reasserts the selected style before every image prompt cap
+and after every prompt repair. The same medium is applied to animation prompts
+before narration is inserted. reference_style prevents an older, different-style
+reference from steering a new image. Do not remove identity, clothing or action
+when removing rendering descriptors. Task reporting skips accepted/submitting
+cloud films so they cannot also create stale Browser connection cards.
+
+Tests: npm run test:storyboard-cloud, npm run test:studio-jobs, npm run test:tasks,
+npm run test:aqua, npm run test:modelscope and npm run test:parallel.

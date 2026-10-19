@@ -93,7 +93,7 @@ video{width:100%;border-radius:8px;background:#000}
   <button class="primary" id="btnAdd" style="margin-top:12px;width:100%">➕ Add to queue</button>
 </div>
 
-<div class="panel"><details><summary style="cursor:pointer;font-weight:600">Add several stories at once</summary><p class="hint">Separate full scripts with a line containing --- . Up to 20 can be queued; 3 run together on Vercel. Keep this queue tab open for Storyboard runs.</p><textarea id="batchStories" placeholder="Story one script…
+<div class="panel"><details><summary style="cursor:pointer;font-weight:600">Add several stories at once</summary><p class="hint">Separate full scripts with a line containing --- . Up to 20 can be listed here; 3 cloud jobs can run together across the studios. Accepted cloud jobs continue with your laptop off; keep the page open to submit waiting stories.</p><textarea id="batchStories" placeholder="Story one script…
 ---
 Story two script…"></textarea><button id="btnBatch" class="primary" style="margin-top:12px">Add stories to queue</button></details></div>
 <div class="grid" id="runs"></div>
@@ -101,6 +101,8 @@ Story two script…"></textarea><button id="btnBatch" class="primary" style="mar
 
 </div>
 <script src="/auth.js"></script>
+<script src="/storyboard-cloud.js"></script>
+<script src="/modelscope-controls.js"></script>
 <script>
 // Auth guard (shared resilient guard, same as the other tool pages).
 (async function(){
@@ -158,6 +160,7 @@ async function waitForLocalJob(R,IO){
   throw new Error('local storyboard generation did not finish in time');
 }
 async function executeRun(R, IO=DEFAULT_IO){
+  if(IS_VERCEL_CLIENT&&IO===DEFAULT_IO)return executeCloudRun(R);
   const O=R.opts;
   const req=(path,body,opts)=>IO.call(path,body,R,opts);
   try{
@@ -277,6 +280,17 @@ async function pollTask(R,IO,f,submitted,fetchOpts){
   return {error:`render still running after 45 min (task ${submitted.task}). Check this task before submitting another paid render.`};
 }
 
+
+async function executeCloudRun(R){
+ R.cloudSubmitting=!R.cloudId;
+ try{
+  R.status='running';R.running=true;saveRuns();renderRuns();
+  if(!R.cloudId){R.cloudRequestKey=R.cloudRequestKey||crypto.randomUUID();saveRuns();const j=await SBStoryCloud.submit({...R.opts,chatModel:R.opts.chatModel,script:R.script,title:R.title,framesData:R.frames,characters:R.characters,clipUrls:R.clipUrls,narrationUrl:R.narrUrl||'',chainContinuity:R.opts.chainContinuity},R.cloudRequestKey);R.cloudId=j.id;R.cloudSubmitting=false;saveRuns();}
+  await new Promise(resolve=>{const stop=SBStoryCloud.watch(R.cloudId,j=>{R.cloudPercent=j.percent;R.phase=j.message;R.status=j.status==='completed'?'done':j.status;R.running=SBStoryCloud.active(j);R.frames=j.board?.frames||R.frames;R.characters=j.board?.characters||R.characters;R.clipUrls=Object.fromEntries(R.frames.filter(f=>f.clip_url).map(f=>[f.frame,f.clip_url]));R.thumbUrl=R.frames.find(f=>f.generated_image_url)?.generated_image_url||'';R.resultUrl=j.result?.url||'';R.log=(j.logs||[]).map(m=>({m,t:new Date(j.updatedAt).toLocaleTimeString(),c:j.error?'err':''}));saveRuns();renderRuns();if(!R.running){stop();resolve();}},e=>{runLog(R,'Cloud job saved; reconnecting to progress… '+e.message);});});
+ }catch(e){if(e.statusCode===409){R.status='queued';runLog(R,'Waiting for a free cloud slot…');await sleep(15000);}else{R.status='failed';runLog(R,e.message,'err');}}
+ finally{R.cloudSubmitting=false;R.running=false;saveRuns();renderRuns();}
+}
+
 // ---------- scheduler ----------
 let ACTIVE=0;
 var RUNNER_IO=DEFAULT_IO; // tests inject a mocked IO here
@@ -294,6 +308,7 @@ function pump(){
 // ---------- UI ----------
 function statusBadge(s){return `<span class="status ${esc(s)}">${esc(s.toUpperCase())}</span>`}
 function progressOf(R){
+  if(R.cloudId)return R.cloudPercent||0;
   const F=R.frames||[]; if(!F.length) return 0;
   const done=F.filter(f=>R.clipUrls&&R.clipUrls[String(f.frame)]).length;
   if(R.resultUrl) return 100;
@@ -332,9 +347,9 @@ function renderRuns(){
   for(const R of RUNS){ const lg=$('log_'+R.id); if(lg) lg.scrollTop=lg.scrollHeight; }
 }
 function renderConc(){$('concPill').textContent=`${ACTIVE} running · up to ${MAX_CONCURRENT} in parallel`}
-window.cancelRun=function(id){const R=findRun(id);if(!R)return;R.cancelled=true;setStatus(R,'cancelling');try{R.ctrl&&R.ctrl.abort('cancel')}catch(e){}runLog(R,'cancelling…','err')}
-window.resumeRun=function(id){const R=findRun(id);if(!R)return;R.cancelled=false;R.ctrl=new AbortController();R.status='queued';R.running=false;runLog(R,'resuming from saved progress…');saveRuns();pump()}
-window.restartRun=function(id){const R=findRun(id);if(!R)return;R.cancelled=false;R.ctrl=new AbortController();R.status='queued';R.running=false;R.characters=[];R.frames=[];R.clipUrls={};R.narrUrl='';R.resultUrl='';R.thumbUrl='';R.log=[];runLog(R,'restarting fresh…');saveRuns();pump()}
+window.cancelRun=function(id){const R=findRun(id);if(!R)return;if(R.cloudId){SBStoryCloud.cancel(R.cloudId).then(j=>{R.status=j.status;R.cancelled=true;saveRuns();renderRuns();});return;}R.cancelled=true;setStatus(R,'cancelling');try{R.ctrl&&R.ctrl.abort('cancel')}catch(e){}runLog(R,'cancelling…','err')}
+window.resumeRun=function(id){const R=findRun(id);if(!R)return;if(R.cloudId){R.cloudId='';R.cloudRequestKey='';}R.cancelled=false;R.ctrl=new AbortController();R.status='queued';R.running=false;runLog(R,'resuming from saved progress…');saveRuns();pump()}
+window.restartRun=function(id){const R=findRun(id);if(!R)return;R.cloudId='';R.cloudRequestKey='';R.cancelled=false;R.ctrl=new AbortController();R.status='queued';R.running=false;R.characters=[];R.frames=[];R.clipUrls={};R.narrUrl='';R.resultUrl='';R.thumbUrl='';R.log=[];runLog(R,'restarting fresh…');saveRuns();pump()}
 window.deleteRun=function(id){if(!confirm('Remove this generation from the list?'))return;RUNS=RUNS.filter(r=>r.id!==id);saveRuns();renderRuns()}
 
 // ---------- form ----------
@@ -346,7 +361,7 @@ function newRunFromForm(){
   const R={ id:'r_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,7), createdAt:Date.now(), title, script,
     status:'queued', phase:'', running:false, cancelled:false, log:[], characters:[], frames:[], clipUrls:{}, narrUrl:'', resultUrl:'', thumbUrl:'',
     ctrl:new AbortController(),
-    opts:{ chatModel:$('chatModel').value, imageModel:$('imageModel').value, videoModel:$('videoModel').value,
+    opts:{ ...(window.SBModelscope?.payload()||{}),chatModel:$('chatModel').value, imageModel:$('imageModel').value, videoModel:$('videoModel').value,
       ratio:$('ratio').value, resolution:$('videoResolution').value, duration:Number($('duration').value)||60, clipDuration:Number($('clipDuration').value)||6,
       narrationMode:$('narrationMode').value||'prompt', voice:$('voice').value||'female', language:$('language').value||'en', style:$('style').value||'cinematic',
       consistency:$('consistency').checked, chainContinuity:$('chainContinuity').checked, narrationEngine:'fish' } };
@@ -375,7 +390,7 @@ $('btnBatch').onclick=()=>{
     const IMG_LABELS={'aqua:nanobanana-pro':'Nano Banana Pro — AquaDevs','aqua:agnes-image':'Agnes Image — AquaDevs',
       'xclis:gpt-image-2.5-sunburst-az':'GPT Image 2.5 Sunburst AZ — xclis','xclis:gpt-image-2.5-sunburst':'GPT Image 2.5 Sunburst — xclis','xclis:gpt-image-2.5-flare-az':'GPT Image 2.5 Flare AZ — xclis','xclis:gpt-image-2.5-flare':'GPT Image 2.5 Flare — xclis'};
     $('imageModel').innerHTML=(m.image||[]).map(x=>`<option value="${esc(x)}">${esc(IMG_LABELS[x]||x)}</option>`).join('');
-    $('videoModel').innerHTML=(m.video||[]).map(x=>`<option>${esc(x)}</option>`).join('');
+    $('videoModel').innerHTML=(m.video||[]).map(x=>`<option value="${esc(x.id||x)}">${esc(x.label||x)}</option>`).join('');
     $('narrationMode').innerHTML=(m.narrationModes||[]).map(x=>`<option value="${esc(x.id||x)}">${esc(x.label||x)}</option>`).join('');
     $('voice').innerHTML=(m.voices||[]).map(x=>`<option value="${esc(x.id||x)}">${esc(x.label||x)}</option>`).join('');
     $('language').innerHTML=(m.languages||[]).map(x=>`<option value="${esc(x.id||x)}">${esc(x.label||x)}</option>`).join('');
@@ -385,8 +400,11 @@ $('btnBatch').onclick=()=>{
   // A page reload can't keep async loops alive — mark still-"running" runs as
   // interrupted so the user can Resume them from their saved progress.
   let changed=false;
-  for(const R of RUNS) if(R.status==='running'||R.status==='cancelling'){R.status='interrupted';R.running=false;changed=true;}
+  for(const R of RUNS) if(!R.cloudId&&(R.status==='running'||R.status==='cancelling')){R.status='interrupted';R.running=false;changed=true;}
   if(changed) saveRuns();
+  if(IS_VERCEL_CLIENT){
+    try{for(const j of await SBStoryCloud.list()){let R=RUNS.find(r=>r.cloudId===j.id);if(!R){R={id:'saved_'+j.id,cloudId:j.id,title:j.title,createdAt:j.createdAt,opts:{ratio:'',resolution:'',videoModel:''},frames:[],characters:[],clipUrls:{},log:[]};RUNS.push(R);}R.status=j.status==='completed'?'done':j.status;R.cloudPercent=j.percent;R.resultUrl=j.result?.url||'';R.frames=j.board?.frames||[];R.characters=j.board?.characters||[];R.phase=j.message;R.script=j.script||R.script;R.opts={...R.opts,...j.options,chatModel:j.options?.model,chainContinuity:j.options?.chained};R.narrUrl=j.options?.narrationUrl||'';R.log=(j.logs||[]).map(m=>({m,t:new Date(j.updatedAt).toLocaleTimeString(),c:''}));if(SBStoryCloud.active(j)){ACTIVE++;executeCloudRun(R).finally(()=>{ACTIVE--;pump();});}}}catch(e){console.warn('Cloud story list:',e.message);}
+  }
   renderRuns(); renderConc(); pump();
 })();
 </script>

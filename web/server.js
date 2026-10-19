@@ -59,6 +59,7 @@ const defaultStoryPaths={frames:FRAMES_DIR,video:VIDEO_DIR,storyboard:STORYBOARD
 function storyPath(key){return (storyboardScope.getStore()?.paths||defaultStoryPaths)[key];}
 function storyboardCacheKey(userId){return storyboardScope.getStore()?userId+':'+storyboardScope.getStore().key:userId;}
 async function withStoryboardRun(req,res,fn){
+  if(req[STUDIO_WORKER]?.storyPaths){const state={paths:req[STUDIO_WORKER].storyPaths,job:{phase:'idle',done:0,total:0,ok:0,failed:[],log:[],cancelRequested:false}};await Promise.all(['frames','video','storyboard'].map(k=>fsp.mkdir(state.paths[k],{recursive:true})));return storyboardScope.run(state,fn);}
   const run=String(req.headers['x-storyboard-run']||'');
   if(!IS_VERCEL||!run)return fn();
   if(!/^[a-zA-Z0-9_-]{8,100}$/.test(run))return sendJson(res,400,{error:'Invalid story run ID.'});
@@ -1491,6 +1492,7 @@ function safeImageModel(model) {
 
 const STYLES = {
   cinematic:    { label:'Cinematic', prefix:'cinematic film still, photorealistic, 8K HDR, professional color grading, ', suffix:', cinematic lighting, anamorphic lens flare, film grain, ultra detailed', neg_extra:'flat lighting, amateur, video game, cartoon' },
+  animatic:     { label:'Animatic', prefix:'2D hand-drawn pencil storyboard animatic, rough graphite linework, grayscale sketch panels, ', suffix:', limited-motion storyboard drawing, consistent pencil lines, no finished cel animation', neg_extra:'photorealistic, photography, anime, cel shaded, 3D render, realistic skin, watercolor' },
   anime:        { label:'Anime', prefix:'anime key visual, cel-shaded, vibrant saturated colors, manga aesthetic, ', suffix:', clean lineart, detailed background, sakuga quality, anime 8K', neg_extra:'photorealistic, 3D render, western cartoon, ugly, deformed' },
   realistic:    { label:'Realistic', prefix:'documentary photography, hyperrealistic, unfiltered, ', suffix:', natural available light, photojournalistic, RAW image, 8K detail', neg_extra:'stylized, artistic, painterly, oversaturated, HDR' },
   fantasy:      { label:'Fantasy', prefix:'fantasy art, epic, magical, ', suffix:', ethereal glow, painterly detail, concept art quality, 8K', neg_extra:'modern, urban, photorealistic, mundane, flat' },
@@ -1508,18 +1510,7 @@ const STYLES = {
 };
 const STYLE_KEYS = Object.keys(STYLES);
 
-function applyStyle(prompt, styleKey) {
-  const s = STYLES[styleKey] || STYLES.cinematic;
-  let p = String(prompt || '');
-  // Stylized looks (anime, ghibli, watercolor, noir...) LOSE the style fight when
-  // the LLM-baked prompt screams "photorealistic" — strip contradicting realism
-  // keywords first so the selected style actually wins.
-  if (!['cinematic', 'realistic', 'vintage'].includes(styleKey)) {
-    p = p.replace(/\b(photorealistic|hyper-?realistic|photoreal|ultra[- ]realistic|realistic skin texture|RAW photo(?:graph)?|live[- ]action)\b/gi, ' ').replace(/\s{2,}/g, ' ');
-  }
-  // Style keywords at the END (image models weight the end more heavily)
-  return p.trim() + ' — ' + s.suffix.slice(2) + ', ' + s.prefix.trim().slice(0, -2);
-}
+function applyStyle(prompt, styleKey) { return require('./visual-style').lockVisualStyle(prompt,styleKey,STYLES); }
 
 // ---------------- in-memory job state ----------------
 const defaultJob = { phase: 'idle', total: 0, done: 0, ok: 0, failed: [], log: [], startedAt: null, lastProgressAt: null, cancelRequested: false, cancelling: false };
@@ -3242,8 +3233,8 @@ async function generateStoryboard(script, model, targetDuration = 120, look = ''
   // selected visual style so it never bakes in a contradicting "photorealistic"
   // look when the user picked anime/ghibli/watercolor/etc.
   const styleObj = STYLES[style] || STYLES.cinematic;
-  const styleSystem = style && style !== 'cinematic'
-    ? `\n\nVISUAL STYLE (MANDATORY): The entire film is rendered in "${styleObj.label}" style (${styleObj.prefix.trim().replace(/, $/, '')}). Write every image_prompt, reference_prompt, lighting and mood to MATCH this style. NEVER use wording that contradicts it — for a stylized look do NOT write "photorealistic", "realistic", or "live-action".`
+  const styleSystem = style
+    ? `\n\nVISUAL STYLE (MANDATORY): The entire film is rendered in "${styleObj.label}" style (${styleObj.prefix.trim().replace(/, $/, '')}). Write every image_prompt, reference_prompt, lighting and mood to MATCH this style. NEVER use wording that contradicts it — the selected medium overrides conflicting rendering instructions in the script. Preserve actions, identities and story facts. Use only this medium in references, images AND animation_prompt.`
     : '';
 
   logLine(`target: ${targetDuration}s → ${frameCount} frames × ${secPerFrame}s each${lookBlock ? ' — with creative direction' : ''}${langBlock ? ` — narration in ${langName}` : ''}`);
@@ -3448,7 +3439,7 @@ async function generateCharRefs(characters, imageModel = 'seedream-5', style = '
     let lastFailure = null;
     const refAttempt = async (label, p, modelOverride) => {
       const mdl = modelOverride || imageModel;
-      p = capProviderImagePrompt(p);
+      p = capProviderImagePrompt(applyStyle(p, style));
       const q = `${imageEndpoint(mdl)}?prompt=${encodeURIComponent(p)}&model=${encodeURIComponent(mdl)}&ratio=1:1`;
       const info = {};
       const task = await submitTask(q, logLine, info);
@@ -3462,8 +3453,9 @@ async function generateCharRefs(characters, imageModel = 'seedream-5', style = '
       const url = await waitTask(task, perTaskMin, logLine, waitInfo);
       if (job.cancelRequested) return 'cancel';
       if (url && await download(url, out)) {
-        c.reference_image_url = IS_VERCEL && isLogfareLocal(url) ? await uploadToImageHost(out, logLine) : url;
+        c.reference_image_url = (IS_VERCEL || studioExecutionContext.getStore()) && isLogfareLocal(url) ? await uploadToImageHost(out, logLine) : url;
         delete c.reference_error;
+        c.reference_style=style;
         c.reference_retries=Math.max(0,(info.modelscopeAttempts||1)-1);
         job.ok++;
         logLine(`${c.id}: REF DONE (${label})`);
@@ -3520,7 +3512,7 @@ async function generateCharRefs(characters, imageModel = 'seedream-5', style = '
       }
     }
     // 4) essentials-only portrait — a clean character portrait beats no anchor
-    const essentials = `character portrait of ${c.name || c.id}, waist-up 3/4 view, neutral background, soft directional key light, 85mm portrait lens`;
+    const essentials = `character portrait of ${c.description || c.name || c.id}, waist-up 3/4 view, neutral background, soft directional key light, 85mm portrait lens`;
     r = await refAttempt('essentials fallback', essentials);
     if (r === 'cancel') return;
     if (r !== true) {
@@ -3612,7 +3604,7 @@ async function repairImagePrompt(frameNum, prompt, imageModel) {
 async function generateImages(frames, imageModel, ratio, style, consistency = true, characters = []) {
   const styleLabel = STYLES[style]?.label || 'Cinematic';
   setPhase('images', frames.length);
-  const refById = new Map((characters || []).map(c => [c.id, c.reference_image_url]).filter(([, u]) => !!u));
+  const refById = new Map((characters || []).map(c => [c.id, c.reference_style===style?c.reference_image_url:'']).filter(([, u]) => !!u));
   const useRefs = consistency && refById.size > 0;
   logLine(`image phase: ${frames.length} frame(s) — ${imageModel} @ ${ratio} — style: ${styleLabel} — character lock: ${useRefs ? 'ON' : 'off'}`);
   
@@ -3647,7 +3639,7 @@ async function generateImages(frames, imageModel, ratio, style, consistency = tr
     const refsFor = () => (f.characters_present || []).map(id => refById.get(id)).filter(Boolean).slice(0, isModelscopeImageModel(imageModel) ? 10 : 3);
     const imgAttempt = async (label, p, useRef, modelOverride) => {
       const mdl = modelOverride || imageModel;
-      p = capProviderImagePrompt(p);
+      p = capProviderImagePrompt(applyStyle(p, style));
       let task = null;
       const info = {};
       if (useRef) {
@@ -3679,8 +3671,8 @@ async function generateImages(frames, imageModel, ratio, style, consistency = tr
         // Logfare returns a local marker, which cannot survive a Vercel cold
         // start. Publish the still and send it back to the browser for handoff.
         let storedUrl = url;
-        if (IS_VERCEL && isLogfareLocal(url)) storedUrl = await uploadToImageHost(frameFile(f.frame), logLine);
-        f.generated_image_url = storedUrl;
+        if ((IS_VERCEL || studioExecutionContext.getStore()) && isLogfareLocal(url)) storedUrl = await uploadToImageHost(frameFile(f.frame), logLine);
+        f.generated_image_url = storedUrl; f.image_style=style;
         f.image_retries=Math.max(0,(info.modelscopeAttempts||1)-1);
         delete f.image_error;
         urlMap.set(f.frame, storedUrl);
@@ -3715,7 +3707,7 @@ async function generateImages(frames, imageModel, ratio, style, consistency = tr
     }
     // 4) last resort: essentials-only prompt without character refs — a plain
     // on-model frame beats a blank hole in the final film
-    const essentials = `cinematic film still of ${f.summary || 'the scene'}${(f.characters_present || []).length ? `, featuring ${f.characters_present.join(' and ')}` : ''}, dramatic lighting, ${ratio}`;
+    const essentials = `scene depicting ${f.summary || 'the scene'}${(f.characters_present || []).length ? `, featuring ${f.characters_present.join(' and ')}` : ''}, dramatic lighting, ${ratio}`;
     r = await imgAttempt('essentials fallback', essentials, false);
     if (r !== true && r !== 'cancel') {
       // Carry the LAST provider reason into the reported error — a bare "all
@@ -4341,13 +4333,21 @@ async function overlayNarrationOnFinal(finalPath, fullAudioPath, opts = {}) {
   const origVol = mixVolume(opts.origVol, 0.4);
   const hasAudio = await probeHasAudio(finalPath);
   const tempPath = finalPath + '.narr.mp4';
+  let narrationFilter='volume='+narrVol;
+  if(opts.fitDuration){
+    const videoDuration=await probeDuration(finalPath),audioDuration=await probeDuration(fullAudioPath);
+    if(!(videoDuration>0&&audioDuration>0))throw Error('Narration or video has no playable duration.');
+    let ratio=audioDuration/videoDuration;const tempo=[];while(ratio>2){tempo.push('atempo=2');ratio/=2;}while(ratio<0.5){tempo.push('atempo=0.5');ratio/=0.5;}tempo.push('atempo='+ratio.toFixed(6));
+    narrationFilter=tempo.join(',')+',apad,atrim=duration='+videoDuration+','+narrationFilter;
+    logLine('Fitting narration to '+videoDuration.toFixed(1)+' seconds without extending the video.');
+  }
   logLine(`overlaying narration on final video (original audio: ${hasAudio ? 'mix' : 'replace'}, narration ${narrVol}×, film audio ${origVol}×)...`);
   const success = await new Promise((resolve) => {
     if (hasAudio) {
       // Mix original audio + narration
       execFile(ffmpegBin(), [
         '-y', '-i', finalPath, '-i', fullAudioPath,
-        '-filter_complex', `[0:a]volume=${origVol}[orig];[1:a]volume=${narrVol}[narr];[orig][narr]amix=inputs=2:duration=first[a]`,
+        '-filter_complex', `[0:a]volume=${origVol}[orig];[1:a]${narrationFilter}[narr];[orig][narr]amix=inputs=2:duration=first[a]`,
         '-map', '0:v', '-map', '[a]',
         '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k',
         '-shortest', tempPath
@@ -4357,7 +4357,7 @@ async function overlayNarrationOnFinal(finalPath, fullAudioPath, opts = {}) {
       // narration never truncates the film (apad → -shortest cuts at video end).
       execFile(ffmpegBin(), [
         '-y', '-i', finalPath, '-i', fullAudioPath,
-        '-filter_complex', '[1:a]apad[a]',
+        '-filter_complex', '[1:a]'+narrationFilter+',apad[a]',
         '-map', '0:v:0', '-map', '[a]',
         '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k',
         '-shortest', tempPath
@@ -5949,7 +5949,7 @@ const routeRequest = async (req, res) => {
       const targetDuration = Math.max(10, Math.min(600, Number(duration) || 120));
       const secPerFrame = Number(clipDuration) || 6;
       setPhase('storyboard', 1); logLine(`storyboard generation: ${model || MODELS[0]} — target ${targetDuration}s — ${secPerFrame}s per clip — style: ${STYLES[style]?.label || 'Cinematic'} — language: ${LANGUAGES.find(l => l.id === language)?.label || 'English'}`);
-  if (IS_VERCEL) return (async () => {
+  if (IS_VERCEL || req[STUDIO_WORKER]) return (async () => {
     try {
       const { characters, frames } = await generateStoryboard(script, model || MODELS[0], targetDuration, look || '', language || DEFAULT_LANGUAGE, secPerFrame, style);
       job.ok = 1; job.done = 1;
@@ -6174,7 +6174,7 @@ const routeRequest = async (req, res) => {
       }
       if (body.force === true) { for (const c of chars) { try { fs.unlinkSync(charRefFile(c.id)); } catch {} } }
       else if (Array.isArray(body.force)) { for (const id of body.force) { try { fs.unlinkSync(charRefFile(id)); } catch {} } }
-      if (IS_VERCEL) return (async () => {
+      if (IS_VERCEL || req[STUDIO_WORKER]) return (async () => {
         try {
           await generateCharRefs(chars, body.imageModel || IMAGE_MODELS[0], body.style || 'cinematic', { only: requestedIds });
           job.phase = 'idle';
@@ -6212,7 +6212,7 @@ const routeRequest = async (req, res) => {
       const imgCost = Math.max(1, Math.round(frames.reduce((s, f) => s + (f.duration_sec || 6), 0) * CREDIT_COSTS.imagesPerSec));
       if (!(await requireCredits(req, res, imgCost, 'generate images'))) return;
       const { chars } = await storyDataFrom(body);
-      if (IS_VERCEL) return runJobOnVercel(res, async () => {
+      if (IS_VERCEL || req[STUDIO_WORKER]) return runJobOnVercel(res, async () => {
         await generateImages(frames, body.imageModel || IMAGE_MODELS[0], body.ratio || '16:9', body.style || 'cinematic', body.consistency !== false, chars);
         job.phase = 'idle';
         // Truth-check: only claim success for frames whose PNG actually landed on
@@ -6251,6 +6251,7 @@ const routeRequest = async (req, res) => {
       // Videos button and the client-driven auto pipeline both land here (the old
       // code only embedded it in the local /api/run-all pipeline, so those paths
       // rendered silent clips and the combined film had no vocals at all).
+      if(!body.pollTask&&body.style)frames=frames.map(f=>({...f,animation_prompt:applyStyle(f.animation_prompt,body.style)}));
       if (!body.pollTask && body.narrationMode === 'prompt') {
         const before = frames.length;
         frames = vocalizeAnimationPrompts(frames);
@@ -6434,7 +6435,7 @@ if (p === '/api/combine' && req.method === 'POST') {
       setPhase('narration', 1);
       const engine = body.narrationEngine || body.engine || DEFAULT_NARRATION_ENGINE;
       const narrOpts = { narrVol: body.narrVolume, origVol: body.origVolume, clipUrls: body.clipUrls };
-      if (IS_VERCEL) return runJobOnVercel(res, async () => {
+      if (IS_VERCEL || req[STUDIO_WORKER]) return runJobOnVercel(res, async () => {
         const nr = await generateFullNarration(frames, body.voice || DEFAULT_VOICE, body.language || DEFAULT_LANGUAGE, engine, narrOpts);
         job.phase = 'idle';
         // Hand the hosted narration URL back so the client can pass it to combine
@@ -7704,12 +7705,14 @@ RULES:
       const worker = req[STUDIO_WORKER];
       const flashVideoDir = worker ? worker.videoDir : path.join(ROOT,'video');
       const flashFramesDir = worker ? worker.framesDir : path.join(ROOT,'frames');
-      const { prompt = '', imageUrl = '', ratio = '9:16', resolution = '720P', chainAnchor = '', model: bodyModel = '', duration: bodyDuration = 0, pollTask: pollTaskId = '' } = body || {};
+      const { prompt:rawPrompt = '', imageUrl = '', ratio = '9:16', resolution = '720P', chainAnchor = '', model: bodyModel = '', duration: bodyDuration = 0, pollTask: pollTaskId = '' } = body || {};
+      let prompt=rawPrompt;
+      if(worker?.source==='storyboard'){prompt=applyStyle(prompt,body.style);if(body.narrationMode==='prompt')prompt=vocalizeAnimationPrompts([{animation_prompt:prompt,narration:body.narration,dialogue:body.dialogue}])[0].animation_prompt;}
       const sceneN = Math.max(1, Number(body.scene) || 1);
       // A POLL request only carries the task id (the prompt went with the submit),
       // so the prompt check only applies when submitting a new render.
       if (!pollTaskId && !prompt) return sendJson(res, 400, { error: 'prompt required' });
-      const MODEL = isNovitaVideoModel(bodyModel) ? bodyModel : 'omni-flash';
+      const MODEL = isNovitaVideoModel(bodyModel) || (worker?.source==='storyboard'&&['grok-video','veo-3.1','omni-flash'].includes(bodyModel)) ? bodyModel : 'omni-flash';
       const isNov = isNovitaVideoModel(MODEL);
       const novDur = isNov ? novitaDurationFor(MODEL, Number(bodyDuration) || 8) : 0;
       const out = path.join(flashVideoDir, `flash_scene_${String(sceneN).padStart(2, '0')}.mp4`);
@@ -7847,7 +7850,7 @@ RULES:
           // Anything unknown falls back to 16:9. `resolution` (720P/1080P, sent by
           // the Make Video picker) scales the ratio-exact base dimensions — a
           // 1080P wan render is no longer downscaled back to 720P at combine.
-          const ratio = normalizeVideoRatio(body.ratio || '9:16', body.model && isNovitaVideoModel(body.model) ? body.model : 'omni-flash');
+          const ratio = worker?.source==='storyboard'&&['16:9','9:16','1:1','4:3','3:4'].includes(body.ratio)?body.ratio:normalizeVideoRatio(body.ratio || '9:16', body.model && isNovitaVideoModel(body.model) ? body.model : 'omni-flash');
           const DIM_BY_RATIO = {
             '16:9': [1280, 720], '9:16': [720, 1280], '1:1': [1024, 1024],
             '4:3': [1024, 768], '3:4': [768, 1024]
@@ -7883,14 +7886,15 @@ idx++;
             // Uses the shared probeHasAudio() helper (ffmpeg-static, not ffprobe —
             // ffprobe is not on PATH in Vercel's runtime).
             const hasAudio = await probeHasAudio(source);
-await new Promise((resolve) => {
+            const sourceDuration=worker?.source==='storyboard'?await probeDuration(source):0;
+const normalizedOk=await new Promise((resolve) => {
               // Normalize (scale/pad/fps) so every clip is concat-safe. KEEP the
               // source audio when it exists; only add a silent track for clips
               // that have none, so no audio is ever thrown away.
               const args = ['-y', '-i', source];
               if (!hasAudio) args.push('-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100');
               args.push(
-                '-vf', `scale=${w}:${h}:force_original_aspect_ratio=decrease,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2,fps=24`,
+                '-vf', `scale=${w}:${h}:force_original_aspect_ratio=decrease,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=24`,
                 '-c:v', 'libx264', '-crf', '20', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p',
                 '-c:a', 'aac', '-b:a', '128k', '-ar', '44100', '-ac', '2',
                 // video is always mapped explicitly — once any -map is present,
@@ -7902,9 +7906,18 @@ await new Promise((resolve) => {
               // -shortest is only safe for the silent track, which we bound to the
               // clip ourselves; with real audio it would truncate the video early.
               if (!hasAudio) args.push('-shortest');
+              if(worker?.source==='storyboard'){
+                const target=Math.min(sourceDuration,Number(body.targetDuration)||sourceDuration);
+                args.push('-t',String(target));
+              }
               args.push(clip);
-              execFile(ffmpegBin(), args, { timeout: 120000 }, () => resolve());
+              execFile(ffmpegBin(), args, { timeout: 120000 }, err => resolve(!err));
             });
+            if(worker&&!normalizedOk)throw Error('Scene '+n+' preparation failed. Completed scenes were retained.');
+            if(worker?.source==='storyboard'&&body.narrationUrl&&fs.existsSync(clip)){
+              const voice=path.join(flashVideoDir,'voice.mp3');if(!await download(body.narrationUrl,voice))throw Error('Scene narration could not be downloaded.');
+              if(!await overlayNarrationOnFinal(clip,voice,{narrVol:body.narrVolume,origVol:body.origVolume,fitDuration:true}))throw Error('Scene narration could not be mixed.');
+            }
             if (fs.existsSync(clip)) { normClips.push(clip); logLine(`flashloop combine: scene ${n} normalized (${hasAudio ? 'audio kept' : 'silent'})`); }
           }
           if (!normClips.length) {
@@ -7929,6 +7942,7 @@ await new Promise((resolve) => {
               { cwd: flashVideoDir, timeout: 180000 }, err => resolve(!err));
           });
           if (!okConcat || !fs.existsSync(finalPath)) {
+            if(worker&&preNormalized)throw Error('Prepared clips could not be joined. Saved clips are retained; the entire film was not re-encoded.');
             logLine('flashloop combine: copy-concat failed — re-encoding');
             await new Promise((resolve) => {
               execFile(ffmpegBin(), ['-y', '-f', 'concat', '-safe', '0', '-i', listFile, '-c:v', 'libx264', '-crf', '20', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', finalPath],
@@ -7936,6 +7950,7 @@ await new Promise((resolve) => {
             });
           }
           if (!fs.existsSync(finalPath)) return sendJson(res, 500, { error: 'combine failed' });
+          if(worker?.source==='storyboard'&&preNormalized&&body.narrationUrl){const voice=path.join(flashVideoDir,'full_voice.mp3');if(!await download(body.narrationUrl,voice)||!await overlayNarrationOnFinal(finalPath,voice,{narrVol:body.narrVolume,origVol:body.origVolume,fitDuration:true}))throw Error('Saved narration could not be mixed.');}
           // Same serverless trap as the scene clips: /video/flash_final.mp4 only
           // exists on THIS instance, so the browser's next request (possibly a
           // different instance) would 404. Host the finished film too and return
@@ -8749,9 +8764,10 @@ async function pollStudioTask(task) {
   } catch (e) { return {pending:true}; }
 }
 async function executeStudioStep(job, route, body) {
-  if (!['/api/flashloop/generate-i2i','/api/flashloop/generate-video','/api/flashloop/combine','/api/flashloop/generate-prompt','/api/flashloop/generate-outline','/api/flashloop/generate-scene'].includes(route)) throw new Error('Invalid internal studio route');
+  if (!['/api/storyboard','/api/char-refs','/api/images','/api/narration','/api/flashloop/generate-i2i','/api/flashloop/generate-video','/api/flashloop/combine','/api/flashloop/generate-prompt','/api/flashloop/generate-outline','/api/flashloop/generate-scene'].includes(route)) throw new Error('Invalid internal studio route');
   const runDir='studio_'+job.id+'_'+crypto.randomUUID();
-  const scope={user:job.user,videoDir:path.join(ROOT,'video',runDir),framesDir:path.join(ROOT,'frames',runDir)};
+  const scope={user:job.user,source:job.input.source,videoDir:path.join(ROOT,'video',runDir),framesDir:path.join(ROOT,'frames',runDir)};
+  if(job.input.kind==='storyboard'){const dir=path.join(ROOT,'studio-work',runDir),storyboard=path.join(dir,'storyboard');scope.storyPaths={frames:scope.framesDir,video:scope.videoDir,storyboard,framesJson:path.join(storyboard,'frames.json'),charsJson:path.join(storyboard,'characters.json')};}
   const req=Readable.from([JSON.stringify(body)]);
   Object.assign(req,{method:'POST',url:route,headers:{host:'localhost'},[STUDIO_WORKER]:scope});
   try {
@@ -8764,7 +8780,7 @@ async function executeStudioStep(job, route, body) {
     });
   } finally {
     // These invocation-owned directories contain only hosted, temporary media.
-    await Promise.all([scope.videoDir,scope.framesDir].map(dir=>fsp.rm(dir,{recursive:true,force:true}).catch(()=>{})));
+    await Promise.all([scope.videoDir,scope.framesDir,...(scope.storyPaths?[scope.storyPaths.storyboard]:[])].map(dir=>fsp.rm(dir,{recursive:true,force:true}).catch(()=>{})));
   }
 }
 const studioJobs=createStudioJobs({
@@ -8780,7 +8796,7 @@ module.exports = requestHandler;
 module.exports.processStudioJob = studioJobs.process;
 // Exposed for the pipeline/test-*.js regression tests.
 module.exports.__internal = {
-  assetVault, modelscopeImages, submitTask, waitTask, studioJobs, executeStudioStep, pollStudioTask, storyPath, storyboardScope, job, withStoryboardRun, frameFile, videoFile, saveStoryboardJob, loadStoryboardJob,
+  STYLES, applyStyle, assetVault, modelscopeImages, submitTask, waitTask, studioJobs, executeStudioStep, pollStudioTask, storyPath, storyboardScope, job, withStoryboardRun, frameFile, videoFile, saveStoryboardJob, loadStoryboardJob,
   flashloopScenePlan,
   storyboardFrameCount, emergencyImageChain, vocalizeAnimationPrompts,
   capProviderImagePrompt, lockSacredCharacter, secularizeForImageFilter,

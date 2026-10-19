@@ -366,6 +366,7 @@ The Director AI will:
 </div>
 
 <script src="/auth.js"></script>
+<script src="/storyboard-cloud.js"></script>
 <script src="/modelscope-controls.js"></script>
 <script>
 // Auth guard — shared resilient guard (window.SBAuth). Retries transient
@@ -411,7 +412,7 @@ function finalBoardKey(){
   return JSON.stringify(FRAMES.map(f=>[f.frame,f.image_prompt,f.animation_prompt,f.narration,f.dialogue,f.duration_sec]));
 }
 function rememberFinalFilm(url){
-  if(!/^https?:\/\//i.test(String(url||'')))throw new Error('Combine did not return a playable film URL. Please retry Combine.');
+  if(!/^https?:\/\//i.test(String(url||''))&&!/^\/api\/vault\/[a-zA-Z0-9_-]+\/content(?:\?|$)/.test(String(url||'')))throw new Error('Combine did not return a playable film URL. Please retry Combine.');
   FINAL_FILM={url,board:finalBoardKey()};
   try{localStorage.setItem('sb_final_url',url);localStorage.setItem('sb_final_board',FINAL_FILM.board)}catch(e){}  renderFinalFilm();
 }
@@ -429,7 +430,7 @@ function renderFinalFilm(data={}){
       const url=localStorage.getItem('sb_final_url'),savedBoard=localStorage.getItem('sb_final_board');
       // Retain hosted films saved by the earlier client; new films are scoped to
       // their storyboard so starting a new story never shows an old final cut.
-      if(/^https?:\/\//i.test(url||'')&&(!savedBoard||savedBoard===board))FINAL_FILM={url,board};
+      if((/^https?:\/\//i.test(url||'')||/^\/api\/vault\/[a-zA-Z0-9_-]+\/content(?:\?|$)/.test(url||''))&&(!savedBoard||savedBoard===board))FINAL_FILM={url,board};
     }catch(e){}
   }
   const localUrl='/video/final_story.mp4'+(data.finalVersion?'?v='+data.finalVersion:'');
@@ -735,6 +736,8 @@ function openModal(n){
 }
 function closeModal(){$('overlay').classList.remove('open')}
 
+let CLOUD_SUBMITTING=false;
+let CLOUD_JOB=null,stopCloudWatch=null,cloudRequestKey='',cloudRequestBody='';
 let LOCAL_BUSY=false;
 // Set only when the board was hydrated from an ephemeral source (inline Vercel
 // response or localStorage) — i.e. when server-side /tmp may be gone. Phase calls
@@ -762,6 +765,7 @@ async function acceptImageResults(result){
   for(const err of result.errors||[])logLocal(`frame ${err.frame}: ${err.message}`,'err');
 }
 async function poll(){
+  if(CLOUD_JOB){renderCloudFilm(CLOUD_JOB);return;}
   let s={phase:'idle',done:0,total:0,log:[]};
   try{s=await api('/status')}catch(e){}
   // LOCAL_BUSY covers long synchronous jobs (e.g. storyboard on Vercel) whose
@@ -804,6 +808,7 @@ async function poll(){
 let PHASE_ABORT=null;
 let USER_CANCELLED=false;
 async function cancelJob(){
+  if(CLOUD_JOB){if(confirm('Cancel this cloud film?')){CLOUD_JOB=await SBStoryCloud.cancel(CLOUD_JOB.id);renderCloudFilm(CLOUD_JOB);}return;}
   if(!confirm('Cancel the current task?')) return;
   USER_CANCELLED=true;
   LOCAL_RESULT='cancelled';
@@ -816,6 +821,7 @@ async function cancelJob(){
 // Force-clear any stuck jobs on the server (reaps all non-idle state immediately).
 async function forceClean(){
   if(!confirm('Force-clear any stuck jobs? This will reset the pipeline state.')) return;
+  if(CLOUD_JOB){await SBStoryCloud.cancel(CLOUD_JOB.id);stopCloudWatch?.();CLOUD_JOB=null;localStorage.removeItem('sb_cloud_job');poll();return;}
   try{
     await api('/force-clean',{method:'POST'});
     LOCAL_BUSY=false;
@@ -827,6 +833,7 @@ async function forceClean(){
 // the running task and wait for it to fully stop, then proceed.
 async function guardBusy(){
   if(SUBMITTING) return false; // a run is already being submitted (double-click guard)
+  if(CLOUD_JOB){if(SBStoryCloud.active(CLOUD_JOB)&&!confirm('This film is running in the cloud. Leave it running and open a new workspace?'))return false;stopCloudWatch?.();CLOUD_JOB=null;}
   if(LOCAL_BUSY){ // inline storyboard request already in flight
     if(!confirm('A task is currently running. Cancel it and start this new one?')) return false;
     try{ await api('/cancel',{method:'POST'}); }catch(e){}
@@ -884,11 +891,11 @@ $('btnAuto').onclick=async()=>{
   if(script.length<10)return alert('Paste a script first.');
   if(!confirm(`Full auto pipeline: archives old renders, then builds storyboard → character refs → images → ${$('narrationMode').value==='tts'?'TTS narration → ':''}videos → final film. Language: ${$('language').selectedOptions[0]?.text||'English'}. This can take 20–60 minutes. Start?`))return;
   if(!(await guardBusy()))return;
-  if(IS_VERCEL_CLIENT) return runAutoVercel(script);
+  if(IS_VERCEL_CLIENT) return queueCloudFilm({script});
   clearLocalLog();
   const r=await api('/run-all',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
     ...(window.SBModelscope?.payload()||{}),script,model:$('chatModel').value,duration:Number($('duration').value),look:$('look').value,
-    style:$('style').value,imageModel:$('imageModel').value,videoModel:$('videoModel').value,ratio:$('ratio').value,
+    style:$('style').value,imageModel:$('imageModel').value,videoModel:$('videoModel').value,style:$('style').value,ratio:$('ratio').value,
     voice:$('voice').value,consistency:$('consistency').checked,language:$('language').value,narrationMode:$('narrationMode').value,narrationEngine:$('narrationEngine').value,narrVolume:Number($('narrVolume').value),origVolume:Number($('origVolume').value),chainContinuity:$('chainContinuity').checked,clipDuration:Number($('clipDuration').value),resolution:$('videoResolution').value
   })}).catch(e=>{alert('Error: '+e.message);return{error:e.message}});
   if(r.error)alert(r.error);
@@ -1076,7 +1083,7 @@ async function runAutoVercel(script){
       let j=null;
       for(let attempt=1;attempt<=3;attempt++){
         try{
-          const body=sbPayload({frames:[f.frame],ratio:opts.ratio,videoModel:opts.videoModel,chainContinuity:opts.chainContinuity,narrationMode:opts.narrationMode,resolution:opts.resolution});
+          const body=sbPayload({frames:[f.frame],ratio:opts.ratio,videoModel:opts.videoModel,style:opts.style,chainContinuity:opts.chainContinuity,narrationMode:opts.narrationMode,resolution:opts.resolution});
           if(prevChain)body.chainAnchor=prevChain;
           j=await callPhase('/videos',body);
           // Wan (Novita) renders run 4-30 minutes — far longer than any single
@@ -1184,7 +1191,7 @@ async function pollVideoTask(frameNum, task, body, idx, total){
 // next frame can anchor across separate invocations.
 $('btnVideos').onclick=async()=>{
   if(IS_VERCEL_CLIENT) return runVideosVercel();
-  await postJob('/videos',sbPayload({ratio:$('ratio').value,resolution:$('videoResolution').value,videoModel:$('videoModel').value,force:true,chainContinuity:$('chainContinuity').checked,narrationMode:$('narrationMode').value}));
+  await postJob('/videos',sbPayload({ratio:$('ratio').value,resolution:$('videoResolution').value,videoModel:$('videoModel').value,style:$('style').value,force:true,chainContinuity:$('chainContinuity').checked,narrationMode:$('narrationMode').value}));
 };
 async function runVideosVercel(){
   if(SUBMITTING) return;
@@ -1217,7 +1224,7 @@ async function runVideosVercel(){
         // NEVER retry the submit: every submission is a NEW paid render.
         if(r&&r.pending&&r.task){
           logLocal(`frame ${f.frame}: rendering in the background — wan clips can take a while, no need to watch this screen`);
-          r=await pollVideoTask(f.frame,r.task,{frames:[f.frame],ratio:$('ratio').value,videoModel:$('videoModel').value,chainContinuity:chained,narrationMode:$('narrationMode').value,resolution:$('videoResolution').value},i+1,targets.length);
+          r=await pollVideoTask(f.frame,r.task,{frames:[f.frame],ratio:$('ratio').value,videoModel:$('videoModel').value,style:$('style').value,chainContinuity:chained,narrationMode:$('narrationMode').value,resolution:$('videoResolution').value},i+1,targets.length);
           break;
         }
         if(r.error||r.ok===false){logLocal(`frame ${f.frame}: attempt ${attempt} failed — ${String(r.error||'render did not complete').replace(/^frame \d+: /,'')}`,'err');if(attempt<3){logLocal(`frame ${f.frame}: retrying in 10s (attempt ${attempt+1}/3)…`,'');await new Promise(res=>setTimeout(res,10000));}else break;continue;}
@@ -1249,6 +1256,7 @@ $('btnNarration').onclick=async()=>{
   if(r&&r.narrationUrl){try{localStorage.setItem('sb_narr_url',r.narrationUrl)}catch(e){}}
 };
 $('btnCombine').onclick=async()=>{
+  if(IS_VERCEL_CLIENT)return queueCloudFilm({mode:'combine',framesData:FRAMES,characters:CHARS,clipUrls:loadClipUrls(),narrationUrl:localStorage.getItem('sb_narr_url')||''});
   // Cross-instance recovery: clips + narration live on the instance that rendered
   // them — pass their hosted URLs so combine can re-download anything missing.
   const clipUrls=loadClipUrls();
@@ -1302,7 +1310,24 @@ async function saveCharacterRef(index){
   await regenChar(c.id,true);openCharacterRef(CHARS.findIndex(x=>x.id===c.id));
 }
 
-init();
+function cloudFilmOptions(){return {...(window.SBModelscope?.payload()||{}),model:$('chatModel').value,duration:Number($('duration').value),look:$('look').value,style:$('style').value,imageModel:$('imageModel').value,videoModel:$('videoModel').value,ratio:$('ratio').value,voice:$('voice').value,language:$('language').value,narrationMode:$('narrationMode').value,narrationEngine:$('narrationEngine').value,narrVolume:Number($('narrVolume').value),origVolume:Number($('origVolume').value),consistency:$('consistency').checked,chainContinuity:$('chainContinuity').checked,clipDuration:Number($('clipDuration').value),resolution:$('videoResolution').value,title:($('script').value||'Storyboard film').split('\n').find(s=>s.trim())?.replace(/^#+\s*/,'').slice(0,120)};}
+function renderCloudFilm(j){
+ $('phasepill').classList.toggle('busy',SBStoryCloud.active(j));$('phasetxt').textContent='CLOUD · '+(j.status==='running'?(j.message||j.phase):j.status.toUpperCase());$('gprog').firstElementChild.style.width=j.percent+'%';$('btnCancel').style.display=SBStoryCloud.active(j)?'':'none';
+ $('log').textContent=(j.logs||[]).join('\n');$('log').scrollTop=$('log').scrollHeight;
+ if(j.result?.url)rememberFinalFilm(j.result.url);
+}
+function watchCloudFilm(j){
+ stopCloudWatch?.();CLOUD_JOB=j;if(j.script)$('script').value=j.script;for(const [id,key] of Object.entries({chatModel:'model',style:'style',imageModel:'imageModel',videoModel:'videoModel',ratio:'ratio',videoResolution:'resolution',clipDuration:'clipDuration',narrationMode:'narrationMode',narrationEngine:'narrationEngine',voice:'voice',language:'language',duration:'duration'})){const value=j.options?.[key],el=$(id);if(value!==undefined&&Array.from(el?.options||[]).some(o=>o.value===String(value)))el.value=value;}localStorage.setItem('sb_cloud_job',j.id);renderCloudFilm(j);
+ stopCloudWatch=SBStoryCloud.watch(j.id,async latest=>{CLOUD_JOB=latest;renderCloudFilm(latest);if(latest.board?.frames?.length){CHARS=latest.board.characters;FRAMES=latest.board.frames;OFFLINE_BOARD=true;localStorage.setItem('sb_chars',JSON.stringify(CHARS));localStorage.setItem('sb_frames',JSON.stringify(FRAMES));await refresh({characters:CHARS,frames:FRAMES});}},e=>{$('phasetxt').textContent='Cloud film saved · reconnecting to progress…';});
+}
+async function queueCloudFilm(extra){
+ if(SUBMITTING)return;SUBMITTING=true;CLOUD_SUBMITTING=true;
+ try{const body={...cloudFilmOptions(),...extra};const serialized=JSON.stringify(body);if(serialized!==cloudRequestBody){cloudRequestBody=serialized;cloudRequestKey=crypto.randomUUID();}const j=await SBStoryCloud.submit(body,cloudRequestKey);cloudRequestKey='';cloudRequestBody='';LOCAL_BUSY=false;watchCloudFilm(j);logLocal('Film saved in the cloud. It continues with your laptop off. Open Running tasks to follow every story.','ok');}
+ catch(e){alert(e.message);}finally{SUBMITTING=false;CLOUD_SUBMITTING=false;}
+}
+async function restoreCloudFilm(){try{const id=new URLSearchParams(location.search).get('job')||localStorage.getItem('sb_cloud_job');if(id)watchCloudFilm(await SBStoryCloud.get(id));}catch(e){logLocal('Could not load saved cloud progress: '+e.message,'err');}}
+
+init().then(restoreCloudFilm);
 </script>
 <script src="/task-monitor.js" data-mode="storyboard"></script>
 </body>

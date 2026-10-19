@@ -3,6 +3,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const TERMINAL = new Set(['completed', 'failed', 'cancelled']);
+const storyboardFlow=require('./storyboard-jobs');
 const TTL = 7 * 86400000;
 const fail = (message, statusCode = 400) => Object.assign(new Error(message), { statusCode });
 const copy = value => JSON.parse(JSON.stringify(value));
@@ -88,6 +89,7 @@ function createJobStore({ root, getDb, isVercel }) {
   };
 }
 function validateInput(body) {
+  if(body.kind==='storyboard')return storyboardFlow.validate(body);
   const kind = body.kind === 'prompt' ? 'prompt' : body.kind === 'image' ? 'image' : 'film';
   if (kind === 'prompt') {
     const text=(v,n)=>String(v||'').slice(0,n);
@@ -120,6 +122,7 @@ function validateInput(body) {
     trendName: text(body.trendName,160), tagline: text(body.tagline,1000), slug:text(body.slug,200), sceneIndex:Math.max(0,Number(body.sceneIndex)||0) };
 }
 function publicJob(j) {
+  if(j.input.kind==='storyboard')return storyboardFlow.publicJob(j);
   return { id:j.id, kind:j.input.kind||'film', source:j.input.source, title:j.input.title, status:j.status, createdAt:j.createdAt, updatedAt:j.updatedAt,
     sceneCount:j.scenes.length, completedScenes:j.scenes.filter(s => j.input.kind==='prompt'?s.draft:j.input.kind==='image'?s.image:s.clip).length, message:j.message, error:j.error,
     scenes:j.scenes.map((s,i) => ({ scene:i+1, imageUrl:s.image, clip_url:s.clip, chain_image_url:s.chain, status:s.stage })),
@@ -129,6 +132,7 @@ function createStudioJobs({ store, publish, execute, pollImage, now = Date.now, 
   const note = (j, message) => { j.message = message; j.logs.push(message); j.logs = j.logs.slice(-120); };
   async function schedule(j, delay = 0) { if (j && !TERMINAL.has(j.status)) await publish({ id:j.id }, delay); }
   function next(j) {
+    if(j.input.kind==='storyboard')return storyboardFlow.next(j);
     if (j.input.kind==='prompt') {
       if(j.input.totalScenes===1)return {kind:'prompt-single',key:'prompt-single'};
       if(!j.outline)return {kind:'outline',key:'outline'};
@@ -156,11 +160,13 @@ function createStudioJobs({ store, publish, execute, pollImage, now = Date.now, 
       if (TERMINAL.has(j.status)) return;
       if (j.leaseUntil > now()) throw fail('Job step is already running.',503);
       if (now() - j.createdAt > 24 * 3600000) { j.status='failed'; j.error='This film exceeded the 24-hour job limit. Completed scenes were retained.'; note(j,j.error); return; }
-      if (j.inflight && !['image-poll','video-poll'].includes(j.inflight.kind)) {
+      if (j.inflight && !['image-poll','video-poll','normalize'].includes(j.inflight.kind)) {
         j.status='failed'; j.error='A worker stopped during '+j.inflight.kind+'. Saved scenes are retained. The step was not submitted again to avoid duplicate charges.'; note(j,j.error); return;
       }
       operation = next(j); j.inflight=operation; j.leaseUntil=now()+leaseMs; j.leaseToken=token; j.status='running';
       const label={'image':'generating image','image-poll':'image rendering','video':'starting video','video-poll':'video rendering','normalize':'preparing final cut','outline':'planning script','write-scene':'writing script','prompt-single':'writing script'};
+      j.phase=operation.kind;
+      if(j.input.kind==='storyboard'){note(j,storyboardFlow.label(j,operation));return;}
       note(j, operation.kind==='combine' ? 'Combining final film…' : (operation.i===undefined?'':('Scene '+(operation.i+1)+'/'+j.scenes.length+': '))+label[operation.kind]+'…');
     });
     if (!claimed || !operation) return;
@@ -168,7 +174,8 @@ function createStudioJobs({ store, publish, execute, pollImage, now = Date.now, 
     let result, error;
     const base = { source:input.source,title:input.title,ratio:input.ratio,resolution:input.resolution,model:input.model,duration:input.duration };
     try {
-      if (op.kind==='prompt-single') result=await execute(claimed,'/api/flashloop/generate-prompt',{...input,sceneDuration:input.duration});
+      if(input.kind==='storyboard')result=await storyboardFlow.execute(claimed,op,execute);
+      else if (op.kind==='prompt-single') result=await execute(claimed,'/api/flashloop/generate-prompt',{...input,sceneDuration:input.duration});
       else if (op.kind==='outline') result=await execute(claimed,'/api/flashloop/generate-outline',input);
       else if (op.kind==='write-scene') {
         const beat=claimed.outline[op.i]||{},previous=claimed.outline[op.i-1]||{};
@@ -189,6 +196,7 @@ function createStudioJobs({ store, publish, execute, pollImage, now = Date.now, 
       if (j.status==='cancelled') return;
       if (error) { j.status='failed'; j.error=String(error.message||error); note(j,j.error); return; }
       const s=j.scenes[op.i];
+      if(input.kind==='storyboard'){try{storyboardFlow.apply(j,op,result);if(j.status==='completed')note(j,'FINAL FILM READY');}catch(e){j.status='failed';j.error=e.message;note(j,e.message);}return;}
       if (op.kind==='prompt-single') {
         if(!Array.isArray(result.scenes)||!result.scenes.length){j.status='failed';j.error='No script scenes were returned.';}
         else {j.result=result;j.scenes=result.scenes.map(draft=>({draft,stage:'ready'}));j.status='completed';note(j,'Script ready.');}
@@ -223,8 +231,10 @@ function createStudioJobs({ store, publish, execute, pollImage, now = Date.now, 
     async start(user, body) {
       if (!/^[a-zA-Z0-9_-]{16,100}$/.test(body.requestKey||'')) throw fail('A unique request key is required.');
       const input=validateInput(body), timestamp=now();
-      const j=await store.create({id:crypto.randomUUID(),ownerId:user.id,user:{id:user.id,email:user.email,name:user.name},requestKey:body.requestKey,input,
-        scenes:input.scenes.map(s=>({image:s.imageUrl||'',stage:'queued'})),status:'queued',createdAt:timestamp,updatedAt:timestamp,logs:['Generation saved. Waiting for background worker…'],message:'Queued',cursor:0});
+      const initial={id:crypto.randomUUID(),ownerId:user.id,user:{id:user.id,email:user.email,name:user.name},requestKey:body.requestKey,input,
+        scenes:input.scenes.map(s=>({image:s.imageUrl||'',stage:'queued'})),status:'queued',createdAt:timestamp,updatedAt:timestamp,logs:['Generation saved. Waiting for background worker…'],message:'Queued',cursor:0};
+      if(input.kind==='storyboard')storyboardFlow.initialize(initial);
+      const j=await store.create(initial);
       try { await schedule(j); } catch (e) { throw fail('The generation was saved, but the background queue could not be reached. Retry with the same request key. '+e.message,503); }
       return publicJob(j);
     },

@@ -5,15 +5,16 @@ const TERMINAL=new Set(['completed','failed','cancelled','interrupted']);
 const error=(message,statusCode=400)=>Object.assign(new Error(message),{statusCode});
 function cloudTask(job){
  const n=job.sceneCount||1,done=job.completedScenes||0;let percent=null,label;
- if(job.kind==='film'){
+ if(job.kind==='storyboard'){percent=job.percent;label=job.message||'Waiting for cloud worker';}
+ else if(job.kind==='film'){
   const normalized=job.scenes.filter(s=>s.status==='ready').length;
   percent=Math.floor((done*2+normalized)/(3*n+1)*100);label=done+'/'+n+' scenes rendered · '+normalized+'/'+n+' prepared';
  }else if(job.kind==='prompt'){
   const planned=done>0||/writing script|Script ready/i.test(job.message||'');percent=Math.floor((done+(planned?1:0))/(n+1)*100);label=done+'/'+n+' scenes written';
  }else label=job.status==='queued'?'Waiting to start':ACTIVE.has(job.status)?'Waiting for image provider':job.status==='completed'?'Image ready':'Image generation '+job.status;
  if(job.status==='completed')percent=100;else if(percent!==null)percent=Math.min(99,percent);
- return {id:'cloud_'+job.id,title:job.title,source:job.source,kind:job.kind,status:job.status,percent,progressLabel:label,message:job.error||job.message,
-  createdAt:job.createdAt,updatedAt:job.updatedAt,background:true,cancelable:ACTIVE.has(job.status),openUrl:'/flashloop-studio?source='+job.source,resultUrl:job.result?.url||'',logs:(job.logs||[]).slice(-5)};
+ return {id:'cloud_'+job.id,title:job.title,source:job.source,kind:job.kind==='storyboard'?'film':job.kind,status:job.status,percent,progressLabel:label,message:job.error||job.message,
+  createdAt:job.createdAt,updatedAt:job.updatedAt,background:true,cancelable:ACTIVE.has(job.status),openUrl:job.source==='storyboard'?'/storyboard?job='+encodeURIComponent(job.id):'/flashloop-studio?source='+job.source,resultUrl:job.result?.url||'',logs:(job.logs||[]).slice(-5)};
 }
 function createTasks({root,isVercel,getDb,studioJobs,now=Date.now}){
  let schema,serial=Promise.resolve();const file=path.join(root,'task-activity','tasks.json');
