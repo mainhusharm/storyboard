@@ -180,6 +180,7 @@
   <div class="right">
     <a href="/" style="font-size:11px;padding:6px 14px;border:1px solid var(--line2);border-radius:99px;color:var(--dim);cursor:pointer;text-decoration:none;display:flex;align-items:center;gap:5px;font-weight:600;letter-spacing:.5px">🏠 Home</a>
     <a href="/generations" style="font-size:11px;padding:6px 14px;border:1px solid var(--line2);border-radius:99px;color:var(--teal);text-decoration:none;font-weight:600">🗂 Generations</a>
+    <a href="/tasks" target="_blank" rel="noopener" style="font-size:11px;padding:6px 14px;color:var(--dim);text-decoration:none">Running tasks</a>
     <a href="/vault" style="font-size:11px;padding:6px 14px;border:1px solid var(--line2);border-radius:99px;color:var(--amber2);text-decoration:none;font-weight:600">▣ Vault</a>
     <a href="/trends?source=flashloop" style="font-size:11px;padding:6px 14px;border:1px solid var(--line2);border-radius:99px;background:linear-gradient(135deg,rgba(139,124,246,.15),rgba(236,72,153,.15));color:var(--violet);cursor:pointer;text-decoration:none;display:flex;align-items:center;gap:5px;font-weight:600;letter-spacing:.5px">⚡ Trend Loop</a>
     <a href="/trends?source=sjinn" style="font-size:11px;padding:6px 14px;border:1px solid var(--line2);border-radius:99px;background:linear-gradient(135deg,rgba(6,182,212,.15),rgba(59,130,246,.15));color:#06b6d4;cursor:pointer;text-decoration:none;display:flex;align-items:center;gap:5px;font-weight:600;letter-spacing:.5px">🎬 SJinn AI</a>
@@ -845,13 +846,15 @@ let SUBMITTING=false;
   if(SUBMITTING) return null;
   if(!(await guardBusy())) return null;
   clearLocalLog();
+  LOCAL_PHASE=({'/char-refs':'CHARACTER REFERENCES','/images':'IMAGES','/videos':'VIDEOS','/narration':'NARRATION','/combine':'COMBINING'}[path]||'STORYBOARD');LOCAL_RESULT='running';
   SUBMITTING=true;
-  if((body?.imageModel==='modelscope:qwen-image-2.1'||body?.imageModel?.startsWith('aqua:')))USER_CANCELLED=false;
+  USER_CANCELLED=false;
   try{
     const r=IS_VERCEL_CLIENT&&(body?.imageModel==='modelscope:qwen-image-2.1'||body?.imageModel?.startsWith('aqua:'))&&['/char-refs','/images'].includes(path) ? await callPhase(path,body) : await api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-    if(r&&r.error){LOCAL_RESULT='failed';logLocal(`${path}: ${r.error}`,'err');alert(r.error);}
+    if(r&&(r.error||r.ok===false)){LOCAL_RESULT='failed';if(r.error){logLocal(`${path}: ${r.error}`,'err');alert(r.error);}}
+    else if(IS_VERCEL_CLIENT&&!r?.pending)LOCAL_RESULT=USER_CANCELLED?'cancelled':'complete';
     return r;
-  } catch(e) { LOCAL_RESULT='failed';logLocal(`${path}: ${e.message}`,'err');alert('Error: '+e.message); return null; }
+  } catch(e) { LOCAL_RESULT=USER_CANCELLED?'cancelled':'failed';logLocal(`${path}: ${e.message}`,'err');if(!USER_CANCELLED)alert('Error: '+e.message); return null; }
   finally { SUBMITTING=false; refreshCredits(); }
 }
 
@@ -861,17 +864,18 @@ $('btnStoryboard').onclick=async()=>{
   if(FRAMES.length && !confirm('This will archive existing renders and start a new storyboard. Continue?')) return;
   if(!(await guardBusy()))return;
   clearLocalLog();
-  LOCAL_BUSY=true;poll();
+  LOCAL_BUSY=true;LOCAL_PHASE='STORYBOARD';LOCAL_RESULT='running';USER_CANCELLED=false;poll();
   try{
     await api('/clean-outputs',{method:'POST'});
     resetStoryboardAssets();
     // Vercel kills functions at 300s — abort the fetch at 290s so the user gets
     // a clear error instead of an endless hang when the storyboard stalls.
     const r=await api('/storyboard',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({script,model:$('chatModel').value,duration:Number($('duration').value),look:$('look').value,language:$('language').value,style:$('style').value,clipDuration:Number($('clipDuration').value)}),signal:IS_VERCEL_CLIENT?AbortSignal.timeout(290000):undefined});
-    if(r.error){alert(r.error);return}
+    if(r.error){LOCAL_RESULT='failed';alert(r.error);return}
+    if(IS_VERCEL_CLIENT)LOCAL_RESULT=USER_CANCELLED?'cancelled':'complete';
     // On Vercel the storyboard comes back inline (ephemeral /tmp) — render it directly.
     if(r.characters&&r.frames){OFFLINE_BOARD=true;await refresh({characters:r.characters,frames:r.frames});}
-  }catch(e){alert('Error: '+e.message)}
+  }catch(e){LOCAL_RESULT=USER_CANCELLED?'cancelled':'failed';alert('Error: '+e.message)}
   finally{LOCAL_BUSY=false;poll();}
 };
 $('btnAuto').onclick=async()=>{
@@ -1295,5 +1299,6 @@ async function saveCharacterRef(index){
 
 init();
 </script>
+<script src="/task-monitor.js" data-mode="storyboard"></script>
 </body>
 </html>

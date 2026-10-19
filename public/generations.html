@@ -1,0 +1,375 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Generations — Storyboard Studio</title>
+<style>
+:root{--bg:#0b0e14;--panel:#12161f;--panel2:#171c27;--line:#232a38;--line2:#2e3648;--txt:#e8ecf4;--dim:#8b94a7;--teal:#2dd4bf;--amber:#f0a32e;--violet:#8b7cf6;--red:#f87171;--ok:#34d399}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--txt);font:14px/1.5 system-ui,-apple-system,'Segoe UI',sans-serif;padding-bottom:60px}
+header{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:12px 18px;border-bottom:1px solid var(--line);position:sticky;top:0;background:rgba(11,14,20,.92);backdrop-filter:blur(8px);z-index:10}
+header h1{font-size:16px;letter-spacing:.5px}
+header .sub{font-size:11px;color:var(--dim)}
+.pill{display:inline-flex;align-items:center;gap:6px;font-size:11px;padding:5px 12px;border:1px solid var(--line2);border-radius:99px;color:var(--dim)}
+a{color:var(--teal)}
+.wrap{max-width:1180px;margin:0 auto;padding:18px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:16px}
+label.f{display:block;font-size:11px;color:var(--dim);margin:10px 0 4px;letter-spacing:.4px;text-transform:uppercase}
+textarea,input[type=text],select{width:100%;background:var(--panel2);border:1px solid var(--line2);border-radius:8px;color:var(--txt);padding:9px 10px;font:13px/1.5 inherit}
+textarea{min-height:110px;resize:vertical}
+button{background:var(--panel2);border:1px solid var(--line2);color:var(--txt);padding:9px 14px;border-radius:8px;cursor:pointer;font-weight:600;font-size:13px}
+button:hover{border-color:var(--teal)}
+button.primary{background:linear-gradient(135deg,var(--teal),#1a9e8f);border:none;color:#04211d}
+button.danger{border-color:var(--red);color:var(--red)}
+button:disabled{opacity:.5;cursor:default}
+.row{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px}
+.duo{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:14px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden;display:flex;flex-direction:column}
+.card .thumb{height:120px;background:#060810 center/cover no-repeat;display:flex;align-items:center;justify-content:center;color:var(--dim);font-size:30px;border-bottom:1px solid var(--line)}
+.card .body{padding:12px;display:flex;flex-direction:column;gap:8px;flex:1}
+.card h3{font-size:13.5px;line-height:1.3}
+.meta{font-size:11px;color:var(--dim)}
+.status{display:inline-flex;align-items:center;gap:6px;font-size:10.5px;font-weight:700;letter-spacing:.5px;padding:3px 9px;border-radius:99px;border:1px solid}
+.status.running{color:var(--teal);border-color:rgba(45,212,191,.4);animation:pulse 1.6s infinite}
+.status.queued{color:var(--dim)}
+.status.done{color:var(--ok);border-color:rgba(52,211,153,.4)}
+.status.failed,.status.cancelled{color:var(--red);border-color:rgba(248,113,113,.4)}
+.status.interrupted{color:var(--amber);border-color:rgba(240,163,46,.4)}
+.status.cancelling{color:var(--amber);border-color:rgba(240,163,46,.4);animation:pulse 1.2s infinite}
+@keyframes pulse{50%{opacity:.55}}
+.bar{height:5px;background:var(--panel2);border-radius:99px;overflow:hidden}
+.bar>div{height:100%;background:linear-gradient(90deg,var(--teal),var(--violet));transition:width .5s}
+.log{font:11px/1.55 ui-monospace,Consolas,monospace;background:#060810;border:1px solid var(--line);border-radius:8px;padding:8px;max-height:120px;overflow-y:auto;color:var(--dim);white-space:pre-wrap}
+.log .err{color:var(--red)}.log .ok{color:var(--ok)}
+.actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:auto}
+video{width:100%;border-radius:8px;background:#000}
+.hint{font-size:11px;color:var(--dim);line-height:1.5}
+.empty{padding:40px;text-align:center;color:var(--dim)}
+</style>
+</head>
+<body>
+<header>
+  <h1>🗂 Generations</h1>
+  <span class="sub">PARALLEL FILM FACTORY</span>
+  <span class="pill" id="concPill">…</span>
+  <span style="flex:1"></span>
+  <a href="/storyboard" style="font-size:11px;padding:6px 14px;border:1px solid var(--line2);border-radius:99px;text-decoration:none;color:var(--dim);font-weight:600">🎬 Studio</a>
+  <a href="/tasks" target="_blank" rel="noopener" style="font-size:11px;padding:6px 14px;color:var(--dim);text-decoration:none">Running tasks</a>
+    <a href="/vault" style="font-size:11px;padding:6px 14px;border:1px solid var(--line2);border-radius:99px;text-decoration:none;color:var(--amber);font-weight:600">▣ Vault</a>
+</header>
+<div class="wrap">
+
+<div class="panel">
+  <h3 style="font-size:14px;margin-bottom:4px">➕ New film generation</h3>
+  <p class="hint">Each generation runs the full pipeline — storyboard → references → images → narration → videos → combine. Multiple films run in parallel; cancel any of them independently.</p>
+  <label class="f">Script</label>
+  <textarea id="script" placeholder="Paste a full story script…"></textarea>
+  <div class="row" style="margin-top:6px">
+    <div><label class="f">Title (optional)</label><input type="text" id="title" placeholder="Auto from script"></div>
+    <div><label class="f">Chat model</label><select id="chatModel"></select></div>
+    <div><label class="f">Image model</label><select id="imageModel"></select></div>
+    <div><label class="f">Video model</label><select id="videoModel"></select></div>
+  </div>
+  <div class="row">
+    <div><label class="f">Aspect ratio</label><select id="ratio">
+      <option value="16:9" selected>16:9 — landscape</option><option value="9:16">9:16 — portrait</option>
+      <option value="1:1">1:1 — square</option><option value="4:3">4:3 — classic TV</option><option value="3:4">3:4 — portrait</option></select></div>
+    <div><label class="f">Wan resolution</label><select id="videoResolution"><option value="720P">720P — faster</option><option value="1080P" selected>1080P — higher detail</option></select></div>
+    <div><label class="f">Target film length (sec)</label><input type="text" id="duration" value="60"></div>
+    <div><label class="f">Seconds per clip</label><input type="text" id="clipDuration" value="6"></div>
+  </div>
+  <div class="row">
+    <div><label class="f">Narration mode</label><select id="narrationMode"></select></div>
+    <div><label class="f">Narration voice</label><select id="voice"></select></div>
+    <div><label class="f">Language</label><select id="language"></select></div>
+    <div><label class="f">Style</label><select id="style"></select></div>
+  </div>
+  <div class="duo" style="margin-top:10px">
+    <label style="display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--dim);cursor:pointer"><input type="checkbox" id="consistency" checked style="accent-color:var(--teal)"> Character consistency (img2img anchors)</label>
+    <label style="display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--dim);cursor:pointer"><input type="checkbox" id="chainContinuity" checked style="accent-color:var(--amber)"> Seamless scene chaining (sequential)</label>
+  </div>
+  <button class="primary" id="btnAdd" style="margin-top:12px;width:100%">➕ Add to queue</button>
+</div>
+
+<div class="grid" id="runs"></div>
+<div id="emptyState" class="panel empty" style="display:none">No generations yet — paste a script above and press <b>Add to queue</b>.</div>
+
+</div>
+<script src="/auth.js"></script>
+<script>
+// Auth guard (shared resilient guard, same as the other tool pages).
+(async function(){
+  const j = window.SBAuth ? await SBAuth.me() : await fetch('/api/auth/me',{cache:'no-store'}).then(r=>r.ok?r.json():{unauth:r.status===401}).catch(()=>({}));
+  if(j && j.user){} else if(j && j.unauth){ location.replace('/login?mode=signup&next='+encodeURIComponent(location.pathname+location.search)); }
+})();
+
+const $=id=>document.getElementById(id);
+const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+var IS_VERCEL_CLIENT=false, MAX_CONCURRENT=1; // var: the offline tests override these bindings
+
+// ---------- registry (persisted) ----------
+const REG_KEY='sb_generations';
+function loadRuns(){try{return JSON.parse(localStorage.getItem(REG_KEY)||'[]')}catch(e){return[]}}
+function saveRuns(){try{localStorage.setItem(REG_KEY,JSON.stringify(RUNS.slice(0,50)))}catch(e){}}
+let RUNS=loadRuns();
+function findRun(id){return RUNS.find(r=>r.id===id)}
+function runLog(R,msg,cls=''){R.log.push({t:new Date().toLocaleTimeString(),m:String(msg),c:cls});if(R.log.length>60)R.log.shift();saveRuns();renderRuns();}
+function setStatus(R,s){R.status=s;saveRuns();renderRuns();}
+
+// ---------- API helper with per-run abort + busy retry ----------
+async function callApi(path, body, R, {attempts=1, timeoutMs=300000}={}){
+  for(let i=0;i<attempts;i++){
+    if(R && R.cancelled) throw new Error('cancelled');
+    let res;
+    try{
+      res = await fetch('/api'+path,{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify(body||{}),signal:R&&R.ctrl?R.ctrl.signal:AbortSignal.timeout(timeoutMs)});
+    }catch(e){
+      if(R && R.cancelled) throw new Error('cancelled');
+      if(i===attempts-1) throw e;
+      await sleep(4000); continue;
+    }
+    if(res.status===409 && i<attempts-1){ await sleep(5000); continue; } // another run holds the local job
+    const t=await res.text();let j;try{j=JSON.parse(t)}catch(e){throw new Error('API '+res.status+': '+(t||'').slice(0,140))}
+    if(res.status===401){location.replace('/login?mode=signup&next='+encodeURIComponent('/generations'));throw new Error('session expired')}
+    return j;
+  }
+}
+function sleep(ms){return new Promise(r=>setTimeout(r,ms))}
+async function getApi(path){const r=await fetch('/api'+path,{cache:'no-store'});const t=await r.text();let j;try{j=JSON.parse(t)}catch(e){throw new Error('API '+r.status)}return j}
+
+// ---------- the runner (IO injectable for tests) ----------
+const DEFAULT_IO={ call:callApi, get:getApi, sleep };
+function cancelled(R){return !!(R&&R.cancelled)}
+async function waitForLocalJob(R,IO){
+  // Local server: the storyboard phase answers 202 and works through the global
+  // job. Poll until idle, then read the finished board back.
+  for(let i=0;i<300;i++){
+    if(cancelled(R)) throw new Error('cancelled');
+    const st=await IO.get('/status');
+    if(st && st.phase==='idle') return true;
+    await IO.sleep(2000);
+  }
+  throw new Error('local storyboard generation did not finish in time');
+}
+async function executeRun(R, IO=DEFAULT_IO){
+  const O=R.opts;
+  const req=(path,body,opts)=>IO.call(path,body,R,opts);
+  try{
+    setStatus(R,'running');
+    // ---- Phase 1: storyboard ----
+    if(!R.characters||!R.characters.length||!R.frames||!R.frames.length){
+      R.phase='storyboard'; runLog(R,'phase 1/6: storyboard…'); saveRuns();
+      const body={script:R.script,model:O.chatModel,duration:Number(O.duration)||60,look:'',language:O.language,clipDuration:Number(O.clipDuration)||6,style:O.style};
+      let j=await req('/storyboard',body,{attempts:20,timeoutMs:300000});
+      if(j&&j.started){ await waitForLocalJob(R,IO); const fr=await IO.get('/frames'); const ch=await IO.get('/characters'); j={ok:true,frames:fr.frames,characters:ch.characters}; }
+      if(!j||j.error||!Array.isArray(j.frames)||!j.frames.length) throw new Error((j&&j.error)||'storyboard generation failed');
+      R.characters=j.characters||[]; R.frames=j.frames;
+      const totalDur=R.frames.reduce((s,f)=>s+(f.duration_sec||0),0);
+      runLog(R,`storyboard ready: ${R.characters.length} characters, ${R.frames.length} frames (${totalDur}s)`,'ok'); saveRuns();
+    }
+    if(cancelled(R)) throw new Error('cancelled');
+    // ---- Phase 2: character references ----
+    if(R.characters.some(c=>!c.reference_image_url)){
+      R.phase='char-refs'; runLog(R,'phase 2/6: character references…'); saveRuns();
+      const j=await req('/char-refs',{characters:R.characters,imageModel:O.imageModel,style:O.style,force:true},{attempts:20});
+      if(!j||j.error||j.ok===false) throw new Error((j&&j.error)||'character references failed');
+      if(Array.isArray(j.characters)) R.characters=j.characters;
+      runLog(R,'character references done','ok'); saveRuns();
+    }
+    if(cancelled(R)) throw new Error('cancelled');
+    // ---- Phase 3: frame images ----
+    R.phase='images';
+    const imgTargets=R.frames.filter(f=>!f.generated_image_url);
+    for(let i=0;i<imgTargets.length;i++){
+      if(cancelled(R)) throw new Error('cancelled');
+      const f=imgTargets[i];
+      runLog(R,`phase 3/6: image ${R.frames.length-imgTargets.length+i+1}/${R.frames.length}…`);
+      const j=await req('/images',{frames:[f.frame],framesData:[f],characters:R.characters,imageModel:O.imageModel,ratio:O.ratio,style:O.style,consistency:O.consistency!==false},{attempts:8});
+      if(j&&j.frames&&j.frames[0]) Object.assign(f,j.frames[0]);
+      if(!f.generated_image_url) throw new Error('image render failed for frame '+f.frame);
+      if(!R.thumbUrl) R.thumbUrl=f.generated_image_url;
+      saveRuns(); renderRuns();
+    }
+    runLog(R,'images done','ok');
+    if(cancelled(R)) throw new Error('cancelled');
+    // ---- Phase 4: narration ----
+    if(O.narrationMode==='tts' && !R.narrUrl){
+      R.phase='narration'; runLog(R,'phase 4/6: narration…'); saveRuns();
+      const j=await req('/narration',{framesData:R.frames,characters:R.characters,voice:O.voice,language:O.language,narrationEngine:O.narrationEngine||'fish',narrationMode:'tts'},{attempts:8});
+      if(j&&j.ok&&j.narrationUrl){R.narrUrl=j.narrationUrl;runLog(R,'narration done','ok')}
+      else runLog(R,'narration unavailable — continuing without a voice track','err');
+      saveRuns();
+    }
+    if(cancelled(R)) throw new Error('cancelled');
+    // ---- Phase 5: videos (per frame; wan renders poll in the background) ----
+    R.phase='videos';
+    const vidTargets=R.frames.filter(f=>f.animation_prompt&&!R.clipUrls[String(f.frame)]);
+    let prevChain=R.frames.length?lastChain(R):'';
+    for(let i=0;i<vidTargets.length;i++){
+      if(cancelled(R)) throw new Error('cancelled');
+      const f=vidTargets[i];
+      runLog(R,`phase 5/6: video ${vidTargets.length-i} remaining — frame ${f.frame}…`);
+      let j=null;
+      for(let attempt=1;attempt<=3;attempt++){
+        if(cancelled(R)) throw new Error('cancelled');
+        try{
+          const body={frames:[f.frame],framesData:[f],videoModel:O.videoModel,ratio:O.ratio,resolution:O.resolution,force:true,chainContinuity:O.chainContinuity===true,narrationMode:O.narrationMode};
+          if(O.chainContinuity===true&&prevChain)body.chainAnchor=prevChain;
+          j=await req('/videos',body,{attempts:1,timeoutMs:320000});
+        }catch(e){ if(cancelled(R)) throw new Error('cancelled'); j={error:e.message}; }
+        if(j&&j.pending&&j.task){
+          runLog(R,`frame ${f.frame}: rendering in the background — long clips can take a while`);
+          j=await pollTask(R,IO,f,j,{attempts:1,timeoutMs:90000});
+          break; // a submitted render settles either way — never auto-resubmit a paid render
+        }
+        if(j&&!j.error&&j.ok!==false) break;
+        if(attempt<3){ runLog(R,`frame ${f.frame}: attempt ${attempt} failed — retrying in 10s…`,'err'); await IO.sleep(10000); }
+      }
+      if(!j||j.error||j.ok===false) throw new Error((j&&j.error)||('video render failed for frame '+f.frame));
+      if(j.frame) Object.assign(f,j.frame);
+      if(j.clipUrl) R.clipUrls[String(f.frame)]=j.clipUrl;
+      if(f.chain_image_url) prevChain=f.chain_image_url;
+      runLog(R,`frame ${f.frame}: video done`,'ok'); saveRuns(); renderRuns();
+    }
+    runLog(R,'videos done','ok');
+    if(cancelled(R)) throw new Error('cancelled');
+    // ---- Phase 6: combine ----
+    R.phase='combine'; runLog(R,'phase 6/6: combining final film…'); saveRuns();
+    const clipUrls={}; for(const f of R.frames) if(R.clipUrls[String(f.frame)]) clipUrls[String(f.frame)]=R.clipUrls[String(f.frame)];
+    const j=await req('/combine',{framesData:R.frames,characters:R.characters,ratio:O.ratio,resolution:O.resolution,narrationMode:O.narrationMode,narrVolume:1,origVolume:1,clipUrls,narrationUrl:R.narrUrl||'',imageModel:O.imageModel,title:R.title},{attempts:8});
+    if(!j||j.error||j.ok===false||!j.finalUrl) throw new Error((j&&j.error)||'combine failed');
+    R.resultUrl=j.finalUrl; setStatus(R,'done');
+    runLog(R,'🎬 FINAL FILM READY','ok');
+  }catch(e){
+    if(cancelled(R)||/cancelled/.test(String(e.message))){ setStatus(R,'cancelled'); runLog(R,'Run cancelled — finished assets are kept in this run.','err'); }
+    else { setStatus(R,'failed'); runLog(R,'Run stopped during '+(R.phase||'the pipeline')+': '+e.message,'err'); runLog(R,'Resume to continue from where it stopped, or Restart for a fresh run.',''); }
+  }finally{
+    R.phase=''; R.running=false; saveRuns(); renderRuns(); pump();
+  }
+}
+function lastChain(R){const withChain=R.frames.filter(f=>f.chain_image_url).sort((a,b)=>a.frame-b.frame);return withChain.length?withChain[withChain.length-1].chain_image_url:''}
+// Background poll for two-phase (Wan/Novita) video tasks — pending means keep
+// waiting, never a failure. Cancel is checked on every tick.
+async function pollTask(R,IO,f,submitted,fetchOpts){
+  const body={frames:[f.frame],framesData:[f],videoModel:R.opts.videoModel,ratio:R.opts.ratio,resolution:R.opts.resolution,chainContinuity:R.opts.chainContinuity===true,narrationMode:R.opts.narrationMode,pollTask:submitted.task,force:true};
+  const started=Date.now(); let consecutiveErrors=0,lastStatus='';
+  while(Date.now()-started<2700000){ // 45-min ceiling per scene
+    await IO.sleep(15000);
+    if(cancelled(R)) throw new Error('cancelled');
+    let j=null;
+    try{ j=await IO.call('/videos',body,R,fetchOpts); consecutiveErrors=0; }
+    catch(e){ if(cancelled(R)) throw new Error('cancelled'); if(++consecutiveErrors>=6) return {error:'polling failed repeatedly: '+e.message}; continue; }
+    if(j&&j.pending){ if(j.status&&j.status!==lastStatus){lastStatus=j.status;runLog(R,`frame ${f.frame}: ${String(lastStatus).toLowerCase()}`);} continue; }
+    return j||{error:'no response'};
+  }
+  return {error:`render still running after 45 min (task ${submitted.task}). Check this task before submitting another paid render.`};
+}
+
+// ---------- scheduler ----------
+let ACTIVE=0;
+var RUNNER_IO=DEFAULT_IO; // tests inject a mocked IO here
+function pump(){
+  const queued=RUNS.filter(r=>r.status==='queued');
+  for(const R of queued){
+    if(ACTIVE>=MAX_CONCURRENT) break;
+    if(R.running) continue;
+    R.running=true; ACTIVE++;
+    executeRun(R, RUNNER_IO).finally(()=>{ACTIVE--;pump();});
+  }
+  renderConc();
+}
+
+// ---------- UI ----------
+function statusBadge(s){return `<span class="status ${esc(s)}">${esc(s.toUpperCase())}</span>`}
+function progressOf(R){
+  const F=R.frames||[]; if(!F.length) return 0;
+  const done=F.filter(f=>R.clipUrls&&R.clipUrls[String(f.frame)]).length;
+  if(R.resultUrl) return 100;
+  if(R.phase==='combine') return 95;
+  if(R.phase==='videos') return 40+Math.round(50*done/Math.max(1,F.length));
+  if(R.phase==='narration') return 38;
+  if(R.phase==='images') return 15+Math.round(20*F.filter(f=>f.generated_image_url).length/Math.max(1,F.length));
+  if(R.phase==='char-refs') return 10;
+  if(R.phase==='storyboard') return 4;
+  return 0;
+}
+function renderRuns(){
+  const el=$('runs'); if(!el) return;
+  $('emptyState').style.display=RUNS.length?'none':'';
+  el.innerHTML=RUNS.map(R=>{
+    const pct=progressOf(R);
+    const logTail=(R.log||[]).slice(-6).map(l=>`<span class="${l.c}">[${esc(l.t)}] ${esc(l.m)}</span>`).join('\n')||'—';
+    const actions=[];
+    if(['running','cancelling'].includes(R.status)) actions.push(`<button class="danger" onclick="cancelRun('${R.id}')">✕ Cancel</button>`);
+    if(['interrupted','failed','cancelled'].includes(R.status)) actions.push(`<button onclick="resumeRun('${R.id}')">▶ Resume</button>`);
+    if(['failed','cancelled','done','interrupted'].includes(R.status)) actions.push(`<button onclick="restartRun('${R.id}')">⟲ Restart</button>`);
+    actions.push(`<button onclick="deleteRun('${R.id}')">🗑</button>`);
+    return `<div class="card">
+      <div class="thumb" style="${R.thumbUrl?`background-image:url('${esc(R.thumbUrl)}')`:''}">${R.thumbUrl?'':'🎬'}</div>
+      <div class="body">
+        <div>${statusBadge(R.status)} <span class="meta">${esc(new Date(R.createdAt||Date.now()).toLocaleString())}</span></div>
+        <h3>${esc(R.title||'Untitled film')}</h3>
+        <div class="meta">${(R.frames||[]).length} scenes · ${esc(R.opts.ratio)} · ${esc(R.opts.resolution)} · ${esc(R.opts.videoModel)}</div>
+        <div class="bar"><div style="width:${pct}%"></div></div>
+        <div class="log" id="log_${esc(R.id)}">${logTail}</div>
+        ${R.resultUrl?`<video src="${esc(R.resultUrl)}" controls preload="metadata"></video><a href="${esc(R.resultUrl)}" download target="_blank" rel="noopener" style="font-size:12px">⬇ Download film</a>`:''}
+        <div class="actions">${actions.join('')}</div>
+      </div>
+    </div>`;
+  }).join('');
+  for(const R of RUNS){ const lg=$('log_'+R.id); if(lg) lg.scrollTop=lg.scrollHeight; }
+}
+function renderConc(){$('concPill').textContent=`${ACTIVE} running · up to ${MAX_CONCURRENT} in parallel`}
+window.cancelRun=function(id){const R=findRun(id);if(!R)return;R.cancelled=true;setStatus(R,'cancelling');try{R.ctrl&&R.ctrl.abort('cancel')}catch(e){}runLog(R,'cancelling…','err')}
+window.resumeRun=function(id){const R=findRun(id);if(!R)return;R.cancelled=false;R.ctrl=new AbortController();R.status='queued';R.running=false;runLog(R,'resuming from saved progress…');saveRuns();pump()}
+window.restartRun=function(id){const R=findRun(id);if(!R)return;R.cancelled=false;R.ctrl=new AbortController();R.status='queued';R.running=false;R.characters=[];R.frames=[];R.clipUrls={};R.narrUrl='';R.resultUrl='';R.thumbUrl='';R.log=[];runLog(R,'restarting fresh…');saveRuns();pump()}
+window.deleteRun=function(id){if(!confirm('Remove this generation from the list?'))return;RUNS=RUNS.filter(r=>r.id!==id);saveRuns();renderRuns()}
+
+// ---------- form ----------
+function addRunObject(R){RUNS.unshift(R);saveRuns();renderRuns();pump();}
+function newRunFromForm(){
+  const script=($('script').value||'').trim();
+  if(script.length<10) return alert('Paste a script (at least 10 characters).');
+  const title=($('title').value||'').trim()||script.replace(/\s+/g,' ').slice(0,60);
+  const R={ id:'r_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,7), createdAt:Date.now(), title, script,
+    status:'queued', phase:'', running:false, cancelled:false, log:[], characters:[], frames:[], clipUrls:{}, narrUrl:'', resultUrl:'', thumbUrl:'',
+    ctrl:new AbortController(),
+    opts:{ chatModel:$('chatModel').value, imageModel:$('imageModel').value, videoModel:$('videoModel').value,
+      ratio:$('ratio').value, resolution:$('videoResolution').value, duration:Number($('duration').value)||60, clipDuration:Number($('clipDuration').value)||6,
+      narrationMode:$('narrationMode').value||'prompt', voice:$('voice').value||'female', language:$('language').value||'en', style:$('style').value||'cinematic',
+      consistency:$('consistency').checked, chainContinuity:$('chainContinuity').checked, narrationEngine:'fish' } };
+  addRunObject(R);
+  $('script').value=''; $('title').value='';
+}
+$('btnAdd').onclick=newRunFromForm;
+
+// ---------- boot ----------
+(async function init(){
+  try{ const h=await getApi('/health'); IS_VERCEL_CLIENT=!!(h&&h.vercel); }catch(e){}
+  MAX_CONCURRENT=IS_VERCEL_CLIENT?3:1; // local server runs one job at a time
+  try{
+    const m=await getApi('/models');
+    $('chatModel').innerHTML=(m.chat||[]).map(x=>`<option>${esc(x)}</option>`).join('');
+    const IMG_LABELS={'aqua:nanobanana-pro':'Nano Banana Pro — AquaDevs','aqua:agnes-image':'Agnes Image — AquaDevs',
+      'xclis:gpt-image-2.5-sunburst-az':'GPT Image 2.5 Sunburst AZ — xclis','xclis:gpt-image-2.5-sunburst':'GPT Image 2.5 Sunburst — xclis','xclis:gpt-image-2.5-flare-az':'GPT Image 2.5 Flare AZ — xclis','xclis:gpt-image-2.5-flare':'GPT Image 2.5 Flare — xclis'};
+    $('imageModel').innerHTML=(m.image||[]).map(x=>`<option value="${esc(x)}">${esc(IMG_LABELS[x]||x)}</option>`).join('');
+    $('videoModel').innerHTML=(m.video||[]).map(x=>`<option>${esc(x)}</option>`).join('');
+    $('narrationMode').innerHTML=(m.narrationModes||[]).map(x=>`<option value="${esc(x.id||x)}">${esc(x.label||x)}</option>`).join('');
+    $('voice').innerHTML=(m.voices||[]).map(x=>`<option value="${esc(x.id||x)}">${esc(x.label||x)}</option>`).join('');
+    $('language').innerHTML=(m.languages||[]).map(x=>`<option value="${esc(x.id||x)}">${esc(x.label||x)}</option>`).join('');
+    $('style').innerHTML=(m.styles||[]).map(x=>`<option value="${esc(x.key)}">${esc(x.label)}</option>`).join('');
+  }catch(e){}
+  // A page reload can't keep async loops alive — mark still-"running" runs as
+  // interrupted so the user can Resume them from their saved progress.
+  let changed=false;
+  for(const R of RUNS) if(R.status==='running'||R.status==='cancelling'){R.status='interrupted';R.running=false;changed=true;}
+  if(changed) saveRuns();
+  renderRuns(); renderConc(); pump();
+})();
+</script>
+<script src="/task-monitor.js" data-mode="queue"></script>
+</body>
+</html>

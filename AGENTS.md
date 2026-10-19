@@ -474,3 +474,21 @@ backoff share one request budget; reserve 45s before a new generation. Preserve
 terminal=true so outer prompt-repair ladders do not add more submissions. Retry
 counts reach Storyboard references/frames and its console. Regressions:
 pipeline/test-modelscope-retries.js (included in npm run test:modelscope).
+
+## Running tasks dashboard
+
+/tasks (web/public/tasks.html + tasks.js/tasks.css) combines account-owned
+Flashloop/SJinn durable jobs with browser-driven Storyboard and /generations
+activity. web/tasks.js owns /api/tasks, /api/tasks/heartbeat and owner-scoped
+DELETE /api/tasks/:id. Cloud cancellation uses studioJobs.cancel; never use
+the legacy global /api/cancel from this dashboard. Browser cancellation is
+a stored request acknowledged by task-monitor.js in the original page.
+Storyboards without heartbeats for 90s are connection_lost, not running or
+completed. No provider percentage is invented: unknown image progress stays
+indeterminate; film bars use completed render/normalization milestones.
+Only private progress metadata is stored (Postgres sb_task_activity; local
+ignored task-activity/). Task monitoring does not submit provider generations
+or turn the Storyboard browser pipeline into a durable worker. Keep studio
+links opening tasks in another tab so navigation preserves browser orchestration.
+Tests: npm run test:tasks (API owner isolation, stale state, cancel signaling,
+progress, desktop/mobile dashboard), plus npm run test:studio-jobs.

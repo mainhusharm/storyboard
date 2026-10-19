@@ -78,8 +78,8 @@ function createJobStore({ root, getDb, isVercel }) {
     },
     async list(ownerId, source) {
       const pool = await db();
-      const rows = pool ? (await pool.query('SELECT data FROM sb_studio_runs WHERE owner_id=$1 AND updated_at>$2 ORDER BY updated_at DESC LIMIT 50', [ownerId, Date.now() - TTL])).rows.map(r => r.data) : await local(rows => rows.filter(j => j.ownerId === ownerId && j.updatedAt > Date.now() - TTL));
-      return rows.filter(j => !source || j.input.source === source).sort((a,b) => b.createdAt - a.createdAt).slice(0, 20);
+      const rows = pool ? (await pool.query(`SELECT data FROM sb_studio_runs WHERE owner_id=$1 AND updated_at>$2 ORDER BY CASE WHEN data->>'status' IN ('queued','running') THEN 0 ELSE 1 END, updated_at DESC LIMIT 50`, [ownerId, Date.now() - TTL])).rows.map(r => r.data) : await local(rows => rows.filter(j => j.ownerId === ownerId && j.updatedAt > Date.now() - TTL));
+      return rows.filter(j => !source || j.input.source === source).sort((a,b) => Number(!TERMINAL.has(b.status))-Number(!TERMINAL.has(a.status)) || b.createdAt - a.createdAt).slice(0, 20);
     },
     async active() {
       const pool = await db();

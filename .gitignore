@@ -57,3 +57,6 @@ storyboard/trend-templates.json
 
 # Durable local background jobs (private prompts and account ownership)
 studio-jobs/
+
+# Private browser task activity
+task-activity/

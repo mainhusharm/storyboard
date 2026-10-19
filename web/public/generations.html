@@ -56,7 +56,8 @@ video{width:100%;border-radius:8px;background:#000}
   <span class="pill" id="concPill">…</span>
   <span style="flex:1"></span>
   <a href="/storyboard" style="font-size:11px;padding:6px 14px;border:1px solid var(--line2);border-radius:99px;text-decoration:none;color:var(--dim);font-weight:600">🎬 Studio</a>
-  <a href="/vault" style="font-size:11px;padding:6px 14px;border:1px solid var(--line2);border-radius:99px;text-decoration:none;color:var(--amber);font-weight:600">▣ Vault</a>
+  <a href="/tasks" target="_blank" rel="noopener" style="font-size:11px;padding:6px 14px;color:var(--dim);text-decoration:none">Running tasks</a>
+    <a href="/vault" style="font-size:11px;padding:6px 14px;border:1px solid var(--line2);border-radius:99px;text-decoration:none;color:var(--amber);font-weight:600">▣ Vault</a>
 </header>
 <div class="wrap">
 
@@ -369,5 +370,6 @@ $('btnAdd').onclick=newRunFromForm;
   renderRuns(); renderConc(); pump();
 })();
 </script>
+<script src="/task-monitor.js" data-mode="queue"></script>
 </body>
 </html>

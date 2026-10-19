@@ -56,9 +56,40 @@
           "value": "no-store, max-age=0"
         }
       ]
+    },
+    {
+      "source": "/tasks",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-store, max-age=0"
+        }
+      ]
+    },
+    {
+      "source": "/tasks.html",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-store, max-age=0"
+        }
+      ]
+    },
+    {
+      "source": "/generations",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-store, max-age=0"
+        }
+      ]
     }
   ],
   "rewrites": [
+    {
+      "source": "/tasks",
+      "destination": "/tasks.html"
+    },
     {
       "source": "/",
       "destination": "/home.html"
@@ -118,6 +149,10 @@
     {
       "source": "/api/:a/:b/:c/:d",
       "destination": "/api/_route?p=/api/:a/:b/:c/:d"
+    },
+    {
+      "source": "/generations",
+      "destination": "/generations.html"
     }
   ],
   "crons": [

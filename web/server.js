@@ -12,6 +12,7 @@ const { MODEL: MODELSCOPE_IMAGE_MODEL, createModelscopeProvider } = require('./m
 const { Readable } = require('node:stream');
 const { createJobStore, createStudioJobs } = require('./studio-jobs');
 const studioQueue = require('./studio-queue');
+const { createTasks } = require('./tasks');
 const STUDIO_WORKER = Symbol('trusted studio worker');
 const studioExecutionContext = new (require('node:async_hooks').AsyncLocalStorage)();
 function studioTimeout(ms) {
@@ -5822,6 +5823,18 @@ const routeRequest = async (req, res) => {
 
     if (await assetVault.handle(req, res, u)) return;
 
+    if (p === '/api/tasks' || p.startsWith('/api/tasks/')) {
+      try {
+        if(p==='/api/tasks'&&req.method==='GET')return sendJson(res,200,await taskHub.list(req.user));
+        if(p==='/api/tasks/heartbeat'&&req.method==='POST')return sendJson(res,200,await taskHub.heartbeat(req.user,(await readBody(req)).tasks));
+        if(req.method==='DELETE'){
+          const task=await taskHub.cancel(req.user,decodeURIComponent(p.slice('/api/tasks/'.length)));
+          return sendJson(res,task?200:404,task?{ok:true,task}:{error:'Task not found.'});
+        }
+        return sendJson(res,404,{error:'Task endpoint not found.'});
+      }catch(e){return sendJson(res,e.statusCode||503,{error:e.message});}
+    }
+
     if (p === '/api/studio-jobs' || p.startsWith('/api/studio-jobs/')) {
       try {
         if (p === '/api/studio-jobs' && req.method === 'POST') {
@@ -8650,6 +8663,7 @@ ${infl.description || '(no description - describe a beautiful confident influenc
     else if (p === '/' || p === '/home') filePath = path.join(PUBLIC, 'home.html');
     else if (p === '/login' || p === '/signup') filePath = path.join(PUBLIC, 'login.html');
     else if (p === '/storyboard' || p === '/index') filePath = path.join(PUBLIC, 'storyboard.html');
+    else if (p === '/tasks') filePath = path.join(PUBLIC, 'tasks.html');
     else if (p === '/generations') filePath = path.join(PUBLIC, 'generations.html');
     else if (p === '/influencer') filePath = path.join(PUBLIC, 'influencer.html');
     else if (p === '/trends') filePath = path.join(PUBLIC, 'trends.html');
@@ -8659,7 +8673,7 @@ ${infl.description || '(no description - describe a beautiful confident influenc
     // Protect tool pages (local server): require a valid session, redirect to /login.
     // The landing page (/) is PUBLIC so new visitors can see the product first.
     // On Vercel the static pages are gated client-side via /api/auth/me instead.
-    if (!IS_VERCEL && (p === '/vault' || p === '/vault.html' || p === '/storyboard' || p === '/index' || p === '/influencer' || p === '/trends' || p === '/flashloop-studio' || p === '/generations' || /^\/effects\/[^/]+$/.test(p))) {
+    if (!IS_VERCEL && (p === '/vault' || p === '/vault.html' || p === '/storyboard' || p === '/index' || p === '/influencer' || p === '/trends' || p === '/flashloop-studio' || p === '/generations' || p === '/tasks' || p === '/tasks.html' || /^\/effects\/[^/]+$/.test(p))) {
       const pageUser = await requirePageAuth(req, res);
       if (!pageUser) return;
     }
@@ -8719,6 +8733,7 @@ const studioJobs=createStudioJobs({
   pollImage:async task=>{const result=await pollStudioTask(task);if(result.failed)throw new Error(result.error);return result.url?{imageUrl:result.url}:{pending:true};}
 });
 studioQueue.setLocalHandler(studioJobs.process);
+const taskHub=createTasks({root:ROOT,isVercel:IS_VERCEL,studioJobs,getDb:async()=>{await initAuthStore();return authMode==='pg'?authPool:null;}});
 
 const requestHandler = (req, res) => modelscopeImages.run(() => assetVault.run(() => routeRequest(req, res)));
 module.exports = requestHandler;
