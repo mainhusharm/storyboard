@@ -388,7 +388,7 @@ $('btnBatch').onclick=()=>{
   try{
     const m=await getApi('/models');
     $('chatModel').innerHTML=(m.chat||[]).map(x=>`<option>${esc(x)}</option>`).join('');
-    const IMG_LABELS={'aqua:nanobanana-pro':'Nano Banana Pro — AquaDevs','aqua:agnes-image':'Agnes Image — AquaDevs','aqua:gpt-image-2.5-flare':'GPT Image 2.5 Flare — AquaDevs','aqua:gpt-image-2.5-sunburst':'GPT Image 2.5 Sunburst — AquaDevs','giz:krea-2-turbo':'Krea 2 Turbo — Giz','giz:flux-3-klein':'Flux 3 Klein — Giz','giz:z-image-turbo':'Z Image Turbo — Giz','giz:gpt-image':'GPT Image — Giz','giz:gpt-2.5-lite':'GPT 2.5 Lite — Giz',
+    const IMG_LABELS={'aqua:nanobanana-pro':'Nano Banana Pro — AquaDevs','aqua:agnes-image':'Agnes Image — AquaDevs','aqua:gpt-image-2.5-flare':'GPT Image 2.5 Flare — AquaDevs','aqua:gpt-image-2.5-sunburst':'GPT Image 2.5 Sunburst — AquaDevs','giz:krea-2':'KREA 2 — Giz','giz:flux3-klein':'Flux 3 Klein — Giz','giz:z-image-turbo':'Z Image Turbo — Giz','giz:gpt-image':'GPT Image — Giz','giz:gpt-image-2-lite':'GPT Image 2.5 Lite — Giz',
       'xclis:gpt-image-2.5-sunburst-az':'GPT Image 2.5 Sunburst AZ — xclis','xclis:gpt-image-2.5-sunburst':'GPT Image 2.5 Sunburst — xclis','xclis:gpt-image-2.5-flare-az':'GPT Image 2.5 Flare AZ — xclis','xclis:gpt-image-2.5-flare':'GPT Image 2.5 Flare — xclis'};
     $('imageModel').innerHTML=(m.image||[]).map(x=>`<option value="${esc(x)}">${esc(IMG_LABELS[x]||x)}</option>`).join('');
     $('videoModel').innerHTML=(m.video||[]).map(x=>`<option value="${esc(x.id||x)}">${esc(x.label||x)}</option>`).join('');
