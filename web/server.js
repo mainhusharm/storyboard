@@ -9,6 +9,9 @@ const { execFile } = require('child_process');
 const { URL } = require('url');
 const { createVault } = require('./vault');
 const { MODEL: MODELSCOPE_IMAGE_MODEL, createModelscopeProvider } = require('./modelscope');
+const giz = require('./giz');
+const isGiz = (model,kind) => giz.meta(model)?.kind === kind;
+const gizProvider = giz.createGizProvider({ getKey: () => GIZ_API_KEY, log: message => logLine(message) });
 const { Readable } = require('node:stream');
 const { createJobStore, createStudioJobs } = require('./studio-jobs');
 const studioQueue = require('./studio-queue');
@@ -82,6 +85,8 @@ async function withStoryboardRun(req,res,fn){
 let API_KEY = process.env.PAXSENIX_API_KEY || '';
 if (!IS_VERCEL) { try { API_KEY = API_KEY || fs.readFileSync(path.join(ROOT, 'pipeline', 'apikey.txt'), 'utf8').trim(); } catch {} }
 let AQUA_API_KEY = process.env.AQUA_API_KEY || '';
+let GIZ_API_KEY = process.env.GIZ_API_KEY || '';
+if (!IS_VERCEL) { try { GIZ_API_KEY = GIZ_API_KEY || fs.readFileSync(path.join(path.resolve(__dirname, '..'), 'pipeline', 'giz_apikey.txt'), 'utf8').trim(); } catch {} }
 if (!IS_VERCEL) { try { AQUA_API_KEY = AQUA_API_KEY || fs.readFileSync(path.join(ROOT, 'pipeline', 'aqua_apikey.txt'), 'utf8').trim(); } catch {} }
 // Fish Audio TTS — the default narration engine (free s2.1-pro-free model).
 // Reads from env FISH_API_KEY first, then pipeline/fish_apikey.txt (gitignored).
@@ -1293,7 +1298,7 @@ function aquaHeaders(extra) {
   for (const key of Object.keys(headers)) if (headers[key] == null) delete headers[key];
   return headers;
 }
-const AQUA_IMAGE_MODELS = ['agnes-image', 'nanobanana-2', 'nanobanana-pro', 'gptimage-2', 'qwen-image-3.0-pro'];
+const AQUA_IMAGE_MODELS = ['agnes-image', 'nanobanana-2', 'nanobanana-pro', 'gptimage-2', 'gpt-image-2.5-flare', 'gpt-image-2.5-sunburst', 'qwen-image-3.0-pro'];
 // Grok Imagine is xAI's image model on PaxSenix: GET /ai-image/grok-imagine
 // (text-to-image, params: prompt + ratio) and POST /ai-img2img/grok-imagine
 // (image-to-image, body: prompt/model/ratio/image_urls — same shape as seedream,
@@ -1439,6 +1444,9 @@ const NARRATION_ENGINES = [
   { id: 'logfare', label: 'Logfare — Deepgram Aura-2 (aura-2-en, English)' }
 ];
 const DEFAULT_NARRATION_ENGINE = 'fish';
+VIDEO_MODELS.push(...giz.models.filter(m=>m.kind==='video').map(m=>({id:m.id,label:m.label})));
+for(const m of giz.models.filter(m=>m.kind==='video')) VIDEO_RATIOS[m.id]=['16:9','9:16','1:1','4:3','3:4'];
+NARRATION_ENGINES.push(...giz.models.filter(m=>m.kind==='speech').map(m=>({id:m.id,label:m.label})));
 // Fish Audio TTS: the model is passed as a custom HTTP header and the voice is
 // chosen via `reference_id` (a public or cloned voice model on Fish Audio).
 // Verified live against the Fish Audio API (GET /model/{id}):
@@ -2133,6 +2141,10 @@ async function submitTask(pathAndQuery, logFn = logLine, outInfo = null) {
   // Logfare image models are not PaxSenix endpoints — render locally and hand the
   // finished file back (waitTask/download understand the logfare-local: marker).
   const lfModel = /[?&]model=([^&]+)/.exec(pq);
+  if (lfModel && giz.meta(decodeURIComponent(lfModel[1]))) {
+    const query=new URLSearchParams(pq.slice(pq.indexOf('?')+1));
+    return gizProvider.submit(decodeURIComponent(lfModel[1]),{prompt:query.get('prompt')||'',ratio:query.get('ratio')||'16:9',image:query.get('imageUrl')||query.get('imageUrls')||undefined});
+  }
   if (lfModel && isModelscopeImageModel(decodeURIComponent(lfModel[1]))) {
     const query = new URLSearchParams(pq.slice(pq.indexOf('?') + 1));
     try {
@@ -2235,6 +2247,16 @@ async function refImageBuffer(url) {
 
 // img2img with reference image(s) — anchors character identity
 async function submitImg2ImgTask(prompt, refUrls, imageModel = 'seedream-5', ratio = '16:9', outInfo = null) {
+  if(isGiz(imageModel,'image')) {
+    const references=[];
+    for(const u of refUrls||[]) {
+      if(/^https:\/\//i.test(u)) references.push(u);
+      else if(isLogfareLocal(u))references.push(await uploadToImageHost(u.slice(LOGFARE_LOCAL_PREFIX.length),logLine));
+      else if(/^\/frames\/[^/?#]+$/.test(u))references.push(await uploadToImageHost(path.join(storyPath('frames'),decodeURIComponent(u.slice(8))),logLine));
+      else throw Object.assign(Error('Giz reference must be hosted as a public HTTPS URL.'),{terminal:true});
+    }
+    return gizProvider.submit(imageModel,{prompt,ratio,references});
+  }
   if (isModelscopeImageModel(imageModel)) {
     try {
       const refs = await Promise.all(refUrls.slice(0, 10).map(url => refImageBuffer(url)));
@@ -2337,6 +2359,7 @@ async function submitImg2ImgTask(prompt, refUrls, imageModel = 'seedream-5', rat
 }
 
 async function waitTask(taskUrl, maxMin = 25, logFn = logLine, outInfo = null) {
+  if(String(taskUrl).startsWith(giz.PREFIX))return gizProvider.wait(taskUrl,maxMin);
   // A Logfare render is already finished when submitTask returns it — nothing to
   // poll, hand the local file straight back (download() copies it into place).
   if (isLogfareLocal(taskUrl)) return taskUrl;
@@ -4095,6 +4118,12 @@ async function generateVideos(frames, ratio, videoModel = DEFAULT_VIDEO_MODEL, c
       logLine(`frame ${f.frame}: ${model0} is text-only — image anchor/chaining not applicable, continuing via prompt`);
     }
     const img = novitaNoImage ? null : (anchorImg || await resolveVideoImage(f, model0));
+    if(isGiz(model0,'video')) {
+      const task=await gizProvider.submit(model0,{prompt:basePrompt,ratio,duration:f.duration_sec,image:img});
+      const url=await gizProvider.wait(task,25);
+      if(!await download(url,videoFile(f.frame)))throw Object.assign(Error('Giz clip download failed; no resubmission.'),{terminal:true});
+      return true;
+    }
 
     // One render attempt. Returns 'ok' | 'fail' | 'cancel'.
     const attempt = async (label, p, useImg) => {
@@ -4377,6 +4406,13 @@ async function overlayNarrationOnFinal(finalPath, fullAudioPath, opts = {}) {
 
 // Generate ONE TTS for the entire film narration and overlay it on the final video
 async function generateFullNarration(frames, voice = DEFAULT_VOICE, language = DEFAULT_LANGUAGE, engine = DEFAULT_NARRATION_ENGINE, opts = {}) {
+  if(isGiz(engine,'speech')) {
+    const task=await gizProvider.submit(engine,{text:buildNarrationText(frames),voice,language});
+    const url=await gizProvider.wait(task,25),file=path.join(storyPath('video'),'full_narration.mp3');
+    if(!await download(url,file))throw Error('Giz narration download failed. No replacement task was submitted.');
+    const narrationUrl=await hostNarrationAudio();
+    return {ok:true,narrationUrl};
+  }
   const withSpeech = frames.filter(f => f.narration || f.dialogue);
   if (!withSpeech.length) { logLine('no narration text found'); return false; }
 
@@ -4669,6 +4705,7 @@ function stillImageToVideo(imagePath, targetSec, outputPath) {
 // behind the `logfare-local:` marker), so every chain member goes through the same
 // submit → wait → download path.
 function emergencyImageChain(preferred) {
+  if(isGiz(preferred,'image'))return [preferred];
   if (isAquaImageModel(preferred)) return [preferred]; // Preserve the explicitly selected provider.
   const chain = [preferred, 'flux-2-klein-9b', 'nano-banana-pro'].filter(Boolean);
   return chain.filter((m, i) => chain.indexOf(m) === i &&
@@ -5661,6 +5698,7 @@ async function readBody(req) {
   // Resume in the request's async context before updating per-account settings.
   assetVault.setBody(body);
   modelscopeImages.setOptions(body?.modelscope);
+  gizProvider.setOptions(body?.giz);
   return body;
 }
 async function runJobOnVercel(res, jobFn, successData = { ok: true }) {
@@ -5779,7 +5817,7 @@ const routeRequest = async (req, res) => {
       } catch (e) { return sendJson(res, 200, { hasAudio: false, matchesCurrent: false, withSpeech: 0, error: e.message }); }
     }
     if (p === '/api/health' || p === '/api/ping') return sendJson(res, 200, { ok: true, vercel: IS_VERCEL, path: p, url: rawUrl, hasKey: !!API_KEY, commit: (process.env.VERCEL_GIT_COMMIT_SHA || '').slice(0, 7) || 'local', deployedAt: process.env.VERCEL_DEPLOYMENT_ID ? 'vercel' : 'local', logfare: { key: !!LOGFARE_API_KEY, lastOkAt: logfareStatus.lastOkAt, lastModel: logfareStatus.lastModel, lastError: logfareStatus.lastError }, aqua: { key: !!AQUA_API_KEY, lastOkAt: aquaStatus.lastOkAt, lastModel: aquaStatus.lastModel, lastError: aquaStatus.lastError } });
-    if (p === '/api/models') return sendJson(res, 200, { chat: MODELS, image: IMAGE_MODELS.concat([MODELSCOPE_IMAGE_MODEL, ...XCLIS_IMAGE_MODELS.map(m => 'xclis:' + m), 'aqua:nanobanana-pro', 'aqua:agnes-image', 'aqua:qwen-image-3.0-pro'], LOGFARE_IMAGE_MODELS, NOVITA_IMAGE_MODELS.map(m => m.id)), video: VIDEO_MODELS, voices: VOICES, languages: LANGUAGES, narrationModes: NARRATION_MODES, narrationEngines: NARRATION_ENGINES, narrationVoices: { fish: VOICES, mimo: VOICES, logfare: LOGFARE_VOICES }, styles: STYLE_KEYS.map(k => ({ key: k, label: STYLES[k].label })) });
+    if (p === '/api/models') return sendJson(res, 200, { chat: MODELS, image: IMAGE_MODELS.concat([MODELSCOPE_IMAGE_MODEL, ...XCLIS_IMAGE_MODELS.map(m => 'xclis:' + m), 'aqua:nanobanana-pro', 'aqua:agnes-image', 'aqua:qwen-image-3.0-pro', 'aqua:gpt-image-2.5-flare', 'aqua:gpt-image-2.5-sunburst'], LOGFARE_IMAGE_MODELS, NOVITA_IMAGE_MODELS.map(m => m.id),giz.models.filter(m=>m.kind==='image').map(m=>m.id)), video: VIDEO_MODELS, gizModels:giz.models, musicModels:giz.models.filter(m=>m.kind==='music').map(m=>({id:m.id,label:m.label})), voices: VOICES, languages: LANGUAGES, narrationModes: NARRATION_MODES, narrationEngines: NARRATION_ENGINES, narrationVoices: { fish: VOICES, mimo: VOICES, logfare: LOGFARE_VOICES, ...Object.fromEntries(giz.models.filter(m=>m.kind==='speech').map(m=>[m.id,(m.input.properties.voice?.enum||['female','male']).map(id=>({id,label:id}))])) }, styles: STYLE_KEYS.map(k => ({ key: k, label: STYLES[k].label })) });
 
     // --- CREDITS ---
     if (p === '/api/credits' && req.method === 'GET') {
@@ -5862,6 +5900,27 @@ const routeRequest = async (req, res) => {
     }
 
     if (await assetVault.handle(req, res, u)) return;
+
+    // Only the private durable worker may submit/poll these checkpoints. Public
+    // callers submit account-owned studio jobs, never another account's task ID.
+    if(p==='/api/giz/media'&&req.method==='POST') {
+      if(!req[STUDIO_WORKER])return sendJson(res,403,{error:'Use the authenticated studio job queue.'});
+      const body=await readBody(req),m=giz.meta(body.model);
+      if(!m)return sendJson(res,400,{error:'Unsupported Giz model.'});
+      if(!body.pollTask){
+        const params={...(body.params||{})};if(body.applyVisualStyle&&params.prompt){if(params.references?.length)params.prompt='Preserve the exact faces, hair, skin tone and wardrobe from all reference portraits. '+params.prompt;params.prompt=capProviderImagePrompt(applyStyle(params.prompt,body.style));}
+        const settings={...(body.giz?.[m.id]||{})};if(body.referencePortrait)settings.size='1024x1024';
+        giz.shape(m.id,params,settings);
+        if(!await requireCredits(req,res,m.kind==='image'?CREDIT_COSTS.flashloopI2I:m.kind==='video'?CREDIT_COSTS.flashloopVideo:1,'Giz '+m.kind))return;
+        const task=await gizProvider.submit(m.id,params,settings);
+        return sendJson(res,202,{ok:true,pending:true,task,taskUrl:task});
+      }
+      let result;try{result=await gizProvider.poll(body.pollTask);}catch(e){if(e.permanent)throw e;return sendJson(res,202,{ok:true,pending:true,task:body.pollTask,taskUrl:body.pollTask});}
+      if(result.failed)return sendJson(res,502,{error:result.error});
+      if(!result.url)return sendJson(res,202,{ok:true,pending:true,task:body.pollTask,taskUrl:body.pollTask});
+      // Speech and music checkpoints read audioUrl; image checkpoints read imageUrl.
+      return sendJson(res,200,{ok:true,imageUrl:m.kind==='image'?result.url:undefined,audioUrl:['speech','music'].includes(m.kind)?result.url:undefined,urls:result.urls,output:result.output});
+    }
 
     if (p === '/api/tasks' || p.startsWith('/api/tasks/')) {
       try {
@@ -7439,11 +7498,18 @@ RULES:
     if (p === '/api/flashloop/generate-i2i' && req.method === 'POST') {
       try {
         const body = await readBody(req);
+        if(String(body.model||'').startsWith('giz:')&&!req[STUDIO_WORKER])return sendJson(res,409,{error:'Submit Giz image generation through the saved studio job queue.'});
         const { prompt = '', refImageUrl = '', ratio = '9:16', model = 'seedream-5', trendName = '', tagline = '', slug = '', source = '' } = body || {};
       let aquaFailureNote = '';
         if (!prompt) return sendJson(res, 400, { error: 'prompt required' });
+        if(isGiz(model,'image'))giz.shape(model,{prompt,ratio,references:[...new Set([refImageUrl,...(body.referenceImages||[])].filter(Boolean))]},body.giz?.[model]||{});
         // Credit gate: one first-frame image render.
         if (!(await requireCredits(req, res, CREDIT_COSTS.flashloopI2I, 'generate image'))) return;
+
+        if(isGiz(model,'image')) {
+          const taskUrl=await gizProvider.submit(model,{prompt:trendPromptPrefix(source,slug,trendName,tagline)+prompt,ratio,references:[...new Set([refImageUrl,...(body.referenceImages||[])].filter(Boolean))]});
+          return sendJson(res,202,{ok:true,pending:true,taskUrl,model});
+        }
 
         // Respect the selected image model: PaxSenix ids, "aqua:<id>", a Logfare
         // image model (flux-2-klein-9b / lucid-origin / phoenix-1.0) or "novita:<id>".
@@ -7703,6 +7769,7 @@ RULES:
     if (p === '/api/flashloop/generate-video' && req.method === 'POST') {
       const body = await readBody(req).catch(() => ({}));
       const worker = req[STUDIO_WORKER];
+      if((String(body.model||'').startsWith('giz:')||String(body.pollTask||'').startsWith(giz.PREFIX))&&!worker)return sendJson(res,409,{error:'Submit and observe Giz videos through the saved studio job queue.'});
       const flashVideoDir = worker ? worker.videoDir : path.join(ROOT,'video');
       const flashFramesDir = worker ? worker.framesDir : path.join(ROOT,'frames');
       const { prompt:rawPrompt = '', imageUrl = '', ratio = '9:16', resolution = '720P', chainAnchor = '', model: bodyModel = '', duration: bodyDuration = 0, pollTask: pollTaskId = '' } = body || {};
@@ -7712,11 +7779,12 @@ RULES:
       // A POLL request only carries the task id (the prompt went with the submit),
       // so the prompt check only applies when submitting a new render.
       if (!pollTaskId && !prompt) return sendJson(res, 400, { error: 'prompt required' });
-      const MODEL = isNovitaVideoModel(bodyModel) || (worker?.source==='storyboard'&&['grok-video','veo-3.1','omni-flash'].includes(bodyModel)) ? bodyModel : 'omni-flash';
+      const MODEL = isGiz(bodyModel,'video') || isNovitaVideoModel(bodyModel) || (worker?.source==='storyboard'&&['grok-video','veo-3.1','omni-flash'].includes(bodyModel)) ? bodyModel : 'omni-flash';
       const isNov = isNovitaVideoModel(MODEL);
       const novDur = isNov ? novitaDurationFor(MODEL, Number(bodyDuration) || 8) : 0;
       const out = path.join(flashVideoDir, `flash_scene_${String(sceneN).padStart(2, '0')}.mp4`);
       const anchorPng = path.join(flashFramesDir, `flash_chain_${String(sceneN).padStart(2, '0')}.png`);
+      if(!pollTaskId&&isGiz(MODEL,'video'))giz.shape(MODEL,{prompt,ratio,duration:Number(bodyDuration)||8,image:String(chainAnchor||imageUrl||'')||undefined},body.giz?.[MODEL]||{});
       // Credit gate on the SUBMIT only — polling the same job must not charge twice.
       if (!pollTaskId && !(await requireCredits(req, res, CREDIT_COSTS.flashloopVideo, 'flashloop video'))) return;
       return (async () => {
@@ -7733,10 +7801,14 @@ RULES:
               if (status.failed) return sendJson(res,502,{error:status.error||'Provider render failed'});
               if (!status.url) return sendJson(res,202,{ok:true,pending:true,task:pollTaskId});
               url=status.url;
-            } else url = await novitaWait(pollTaskId, IS_VERCEL ? 4 : 25, logLine);
+            } else url = String(pollTaskId).startsWith(giz.PREFIX) ? await gizProvider.wait(pollTaskId,4) : await novitaWait(pollTaskId, IS_VERCEL ? 4 : 25, logLine);
             if (!url) return sendJson(res, 504, { error: `${MODEL} render still running or failed — try this scene again`, pending: true, task: pollTaskId });
             if (!(await download(url, out))) return sendJson(res, 500, { error: 'clip download failed' });
           } else {
+            if(isGiz(MODEL,'video')) {
+              const task=await gizProvider.submit(MODEL,{prompt,ratio,duration:Number(bodyDuration)||8,image:String(chainAnchor||imageUrl||'')||undefined});
+              return sendJson(res,202,{ok:true,pending:true,task,model:MODEL,scene:sceneN});
+            }
             // ---- phase 1: submit (and, off-Vercel, wait as before) ----
             // Anchor: chainAnchor (seamless chain) > imageUrl (scene's first frame).
             // Always re-host through ffmpeg → JPG because omni-flash's i2v asset
@@ -7950,7 +8022,8 @@ const normalizedOk=await new Promise((resolve) => {
             });
           }
           if (!fs.existsSync(finalPath)) return sendJson(res, 500, { error: 'combine failed' });
-          if(worker?.source==='storyboard'&&preNormalized&&body.narrationUrl){const voice=path.join(flashVideoDir,'full_voice.mp3');if(!await download(body.narrationUrl,voice)||!await overlayNarrationOnFinal(finalPath,voice,{narrVol:body.narrVolume,origVol:body.origVolume,fitDuration:true}))throw Error('Saved narration could not be mixed.');}
+          if(preNormalized&&body.narrationUrl){const voice=path.join(flashVideoDir,'full_voice.mp3');if(!await download(body.narrationUrl,voice)||!await overlayNarrationOnFinal(finalPath,voice,{narrVol:body.narrVolume,origVol:body.origVolume,fitDuration:true}))throw Error('Saved narration could not be mixed.');}
+          if(body.musicUrl)await mixSoundtrack(finalPath,body.musicUrl,body.musicVolume);
           // Same serverless trap as the scene clips: /video/flash_final.mp4 only
           // exists on THIS instance, so the browser's next request (possibly a
           // different instance) would 404. Host the finished film too and return
@@ -8749,7 +8822,19 @@ ${infl.description || '(no description - describe a beautiful confident influenc
 
 // Internal dispatch retains existing credit gates and per-request provider/vault
 // contexts. Only this process can set the Symbol: JSON/headers cannot impersonate it.
+async function mixSoundtrack(video,musicUrl,volume=0.15) {
+  const audio=video+'.music',out=video+'.mixed.mp4';
+  if(!await download(musicUrl,audio))throw Error('Soundtrack download failed; final film retained.');
+  const gain=Number(volume);if(!Number.isFinite(gain)||gain<0||gain>1)throw Error('Soundtrack volume must be between 0 and 1.');
+  const duration=await probeDuration(video),hasAudio=await probeHasAudio(video);
+  const filter=hasAudio?`[1:a]volume=${gain}[music];[0:a][music]amix=inputs=2:duration=first:normalize=0[a]`:`[1:a]volume=${gain}[a]`;
+  try {
+    await new Promise((resolve,reject)=>execFile(ffmpegBin(),['-y','-i',video,'-stream_loop','-1','-i',audio,'-filter_complex',filter,'-map','0:v:0','-map','[a]','-c:v','copy','-c:a','aac','-t',String(duration),'-movflags','+faststart',out],{timeout:studioTimeout(120000)},e=>e?reject(Error('Soundtrack mix failed; original film retained.')):resolve()));
+    await fsp.rename(out,video);
+  } finally {await fsp.unlink(audio).catch(()=>{});await fsp.unlink(out).catch(()=>{});}
+}
 async function pollStudioTask(task) {
+  if(String(task).startsWith(giz.PREFIX)) { try{return await gizProvider.poll(task);}catch(e){if(e.permanent)throw e;return {pending:true,task};} }
   if (String(task).startsWith(NOVITA_TASK_PREFIX)) return novitaPollOnce(task);
   let parsed;
   try { parsed=new URL(task); } catch { throw new Error('Invalid provider task URL'); }
@@ -8764,7 +8849,7 @@ async function pollStudioTask(task) {
   } catch (e) { return {pending:true}; }
 }
 async function executeStudioStep(job, route, body) {
-  if (!['/api/storyboard','/api/char-refs','/api/images','/api/narration','/api/flashloop/generate-i2i','/api/flashloop/generate-video','/api/flashloop/combine','/api/flashloop/generate-prompt','/api/flashloop/generate-outline','/api/flashloop/generate-scene'].includes(route)) throw new Error('Invalid internal studio route');
+   if (!['/api/giz/media','/api/storyboard','/api/char-refs','/api/images','/api/narration','/api/flashloop/generate-i2i','/api/flashloop/generate-video','/api/flashloop/combine','/api/flashloop/generate-prompt','/api/flashloop/generate-outline','/api/flashloop/generate-scene'].includes(route)) throw new Error('Invalid internal studio route');
   const runDir='studio_'+job.id+'_'+crypto.randomUUID();
   const scope={user:job.user,source:job.input.source,videoDir:path.join(ROOT,'video',runDir),framesDir:path.join(ROOT,'frames',runDir)};
   if(job.input.kind==='storyboard'){const dir=path.join(ROOT,'studio-work',runDir),storyboard=path.join(dir,'storyboard');scope.storyPaths={frames:scope.framesDir,video:scope.videoDir,storyboard,framesJson:path.join(storyboard,'frames.json'),charsJson:path.join(storyboard,'characters.json')};}
@@ -8774,7 +8859,7 @@ async function executeStudioStep(job, route, body) {
     return await new Promise((resolve,reject)=>{
       const headers={};
       const res={statusCode:200,headersSent:false,setHeader(k,v){headers[k]=v;},getHeader(k){return headers[k];},writeHead(code,h){this.statusCode=code;this.headersSent=true;Object.assign(headers,h);},end(text){
-        try { const data=JSON.parse(String(text)); if(this.statusCode>=400 && !data.pending) reject(new Error(data.error||'Studio step HTTP '+this.statusCode)); else resolve(data); } catch(e){reject(e);}
+        try { const data=JSON.parse(String(text)); if(this.statusCode>=400 && !data.pending) reject(Object.assign(new Error(data.error||'Studio step HTTP '+this.statusCode),{statusCode:this.statusCode})); else resolve(data); } catch(e){reject(e);}
       }};
       Promise.resolve(studioExecutionContext.run({deadline:Date.now()+255000},()=>requestHandler(req,res))).catch(reject);
     });
@@ -8786,16 +8871,17 @@ async function executeStudioStep(job, route, body) {
 const studioJobs=createStudioJobs({
   store:createJobStore({root:ROOT,isVercel:IS_VERCEL,getDb:async()=>{await initAuthStore();return authMode==='pg'?authPool:null;}}),
   publish:studioQueue.publish,execute:executeStudioStep,
-  pollImage:async task=>{const result=await pollStudioTask(task);if(result.failed)throw new Error(result.error);return result.url?{imageUrl:result.url}:{pending:true};}
+  pollImage:async task=>{const result=await pollStudioTask(task);if(result.failed)throw new Error(result.error);return result.url?{imageUrl:result.url,urls:result.urls,output:result.output}:{pending:true};}
 });
 studioQueue.setLocalHandler(studioJobs.process);
 const taskHub=createTasks({root:ROOT,isVercel:IS_VERCEL,studioJobs,getDb:async()=>{await initAuthStore();return authMode==='pg'?authPool:null;}});
 
-const requestHandler = (req, res) => withStoryboardRun(req,res,()=>modelscopeImages.run(() => assetVault.run(() => routeRequest(req, res))));
+const requestHandler = (req, res) => withStoryboardRun(req,res,()=>gizProvider.run(()=>modelscopeImages.run(() => assetVault.run(() => routeRequest(req, res)))));
 module.exports = requestHandler;
 module.exports.processStudioJob = studioJobs.process;
 // Exposed for the pipeline/test-*.js regression tests.
 module.exports.__internal = {
+  gizProvider, giz, mixSoundtrack,
   STYLES, applyStyle, assetVault, modelscopeImages, submitTask, waitTask, studioJobs, executeStudioStep, pollStudioTask, storyPath, storyboardScope, job, withStoryboardRun, frameFile, videoFile, saveStoryboardJob, loadStoryboardJob,
   flashloopScenePlan,
   storyboardFrameCount, emergencyImageChain, vocalizeAnimationPrompts,

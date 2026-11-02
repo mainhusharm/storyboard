@@ -249,6 +249,13 @@ A different story…" style="width:100%;min-height:150px"></textarea><button id=
           <option value="aqua:nanobanana-pro">NanoBanana Pro — AquaDevs</option>
           <option value="aqua:nanobanana-2">NanoBanana 2 — AquaDevs</option>
           <option value="aqua:gptimage-2">GPT Image 2 — AquaDevs</option>
+          <option value="aqua:gpt-image-2.5-flare">GPT Image 2.5 Flare — AquaDevs</option>
+          <option value="aqua:gpt-image-2.5-sunburst">GPT Image 2.5 Sunburst — AquaDevs</option>
+          <option value="giz:krea-2-turbo">Krea 2 Turbo — Giz</option>
+          <option value="giz:flux-3-klein">Flux 3 Klein — Giz</option>
+          <option value="giz:z-image-turbo">Z Image Turbo — Giz</option>
+          <option value="giz:gpt-image">GPT Image — Giz</option>
+          <option value="giz:gpt-2.5-lite">GPT 2.5 Lite — Giz</option>
           <option value="seedream-5">Seedream 5 (PaxSenix)</option>
           <option value="seedream-4">Seedream 4</option>
           <option value="seedream-4.5">Seedream 4.5</option>
@@ -294,6 +301,10 @@ A different story…" style="width:100%;min-height:150px"></textarea><button id=
               <option value="wan2.7-i2v">Wan 2.7 I2V</option>
               <option value="wan2.1-i2v-turbo">Wan 2.1 I2V Turbo</option>
               <option value="wan2.1-i2v-plus">Wan 2.1 I2V Plus</option>
+            </optgroup>
+            <optgroup label="Giz — video generation">
+              <option value="giz:minimax-h3-turbo">Minimax H3 Turbo — Giz</option>
+              <option value="giz:ltx-2.5-distilled">LTX 2.5 Distilled — Giz</option>
             </optgroup>
           </select>
           <div class="hint">The video engine for every scene.</div>
@@ -355,6 +366,7 @@ A different story…" style="width:100%;min-height:150px"></textarea><button id=
 
 <script src="/auth.js"></script>
 <script src="/modelscope-controls.js"></script>
+<script src="/giz-controls.js"></script>
 <script>
 // Auth guard — shared resilient guard (window.SBAuth). Retries transient
 // /api/auth/me failures and only redirects on a real 401, so a logged-in user
@@ -421,7 +433,7 @@ let sceneLen = 8; // seconds per scene (from the dropdown / server response)
 
 // Carry the creating studio through every request, including serverless polls.
 function vaultPayload(payload) {
-  return { ...(window.SBModelscope?.payload()||{}), ...(payload.model === 'modelscope:qwen-image-2.1' ? { referenceImages: getRefs().map(ref => ref.imageUrl).filter(Boolean) } : {}), ...payload, source: source === 'sjinn' ? 'sjinn' : 'flashloop', title: payload.title || $('storyTitle').value.trim() || scriptTitle || name || ($('idea').value || '').trim().slice(0, 100) || 'Studio creation' };
+  return { ...(window.SBModelscope?.payload()||{}),...(window.SBGiz?.payload()||{}), ...((payload.model === 'modelscope:qwen-image-2.1'||payload.model?.startsWith('giz:')||payload.imageModel?.startsWith('giz:')) ? { referenceImages: getRefs().map(ref => ref.imageUrl).filter(Boolean) } : {}), ...payload, source: source === 'sjinn' ? 'sjinn' : 'flashloop', title: payload.title || $('storyTitle').value.trim() || scriptTitle || name || ($('idea').value || '').trim().slice(0, 100) || 'Studio creation' };
 }
 
 
@@ -721,7 +733,7 @@ function syncMvDuration(){
   const n=Number(d.value)||8;
   if(v==='omni-flash') d.value='8';
   else if(v.startsWith('wan3.0')&&![1,2,3,4,5,10,15,20,25,30].includes(n)) d.value='30';
-  else if(!v.startsWith('wan3.0')&&n>15) d.value='15';
+  else if(!v.startsWith('wan3.0')&&!v.startsWith('giz:')&&n>15) d.value='15';
   $('sceneLength').value=d.value;
 }
 function syncMvEngine(){
@@ -749,7 +761,7 @@ function mvSummaryText(){
   let dur=want;
   if(v==='omni-flash') dur=8;
   else if(v.startsWith('wan3.0')) dur=[1,2,3,4,5,10,15,20,25,30].reduce((b,a)=>Math.abs(a-want)<Math.abs(b-want)?a:b,5);
-  else dur=Math.max(1,Math.min(15,want));
+  else if(!v.startsWith('giz:')) dur=Math.max(1,Math.min(15,want));
   const r=$('ratio').value;
   const px={ '16:9':'1280×720','9:16':'720×1280','1:1':'1024×1024','4:3':'1024×768','3:4':'768×1024' }[r]||r;
   const n=scenes.length||0;
@@ -775,6 +787,7 @@ async function studioApi(url, options={}) {
   return j;
 }
 function displayStudioJob(j) {
+  if($('scriptContainer').dataset.gizJob!==j.id&&j.options){window.SBGiz?.restore(j.options);$('scriptContainer').dataset.gizJob=j.id;for(const [id,key]of [['mvModel','model'],['i2iModel','imageModel']])if(j.options[key]){$(id).value=j.options[key];$(id).dispatchEvent(new Event('change'));}}
   $('outputPanel').classList.add('visible');
   $('makeVideoSection').style.display='block';
   $('btnGenerate').disabled=j.kind==='prompt'&&studioActive(j);
@@ -890,7 +903,7 @@ $('btnMakeVideo').onclick=async()=>{
   let perScene=mvDuration();
   if(engine==='omni-flash')perScene=8;
   else if(engine.startsWith('wan3.0'))perScene=[1,2,3,4,5,10,15,20,25,30].reduce((b,a)=>Math.abs(a-perScene)<Math.abs(b-perScene)?a:b,5);
-  else perScene=Math.max(1,Math.min(15,perScene));
+  else if(!engine.startsWith('giz:'))perScene=Math.max(1,Math.min(15,perScene));
   if(!confirm('Queue a film with '+scenes.length+' scenes (~'+perScene+' seconds each)? Generation will continue in the cloud after you close this page.'))return;
   $('btnMakeVideo').disabled=true;$('mvStatus').textContent='Saving background film…';$('mvStatus').style.display='block';
   try{

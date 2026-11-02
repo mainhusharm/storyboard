@@ -4,6 +4,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const TERMINAL = new Set(['completed', 'failed', 'cancelled']);
 const storyboardFlow=require('./storyboard-jobs');
+const giz=require('./giz');
 const TTL = 7 * 86400000;
 const fail = (message, statusCode = 400) => Object.assign(new Error(message), { statusCode });
 const copy = value => JSON.parse(JSON.stringify(value));
@@ -108,13 +109,20 @@ function validateInput(body) {
   const scenes = body.scenes.map(s => ({ imagePrompt: text(s.imagePrompt, 24000), videoPrompt: text(s.videoPrompt, 24000), imageUrl: media(s.imageUrl) }));
   if (scenes.some(s => (kind==='film' && !s.videoPrompt.trim()) || (!s.imageUrl && !s.imagePrompt.trim()))) throw fail('Each scene needs a video prompt and an image or image prompt.');
   const model = text(body.model, 100);
-  if (kind==='film' && !['omni-flash','wan3.0-video-prime','wan3.0-video','wan2.7-t2v','wan2.1-t2v-turbo','wan2.1-t2v-plus','wan2.7-i2v','wan2.1-i2v-turbo','wan2.1-i2v-plus'].includes(model)) throw fail('Unsupported video model.');
+  if (kind==='film' && !['omni-flash','wan3.0-video-prime','wan3.0-video','wan2.7-t2v','wan2.1-t2v-turbo','wan2.1-t2v-plus','wan2.7-i2v','wan2.1-i2v-turbo','wan2.1-i2v-plus'].includes(model)&&giz.meta(model)?.kind!=='video') throw fail('Unsupported video model.');
+  if(body.musicModel&&giz.meta(body.musicModel)?.kind!=='music')throw fail('Unsupported music model.');
+  if(body.narrationEngine&&giz.meta(body.narrationEngine)?.kind!=='speech')throw fail('Studio spoken narration needs a supported Giz speech model.');
+  const gizOptions=giz.options(body.giz||{});
+  if(kind==='film'&&body.musicModel)giz.shape(body.musicModel,{},gizOptions[body.musicModel]);
+  if(kind==='film'&&body.narrationEngine)giz.shape(body.narrationEngine,{},gizOptions[body.narrationEngine]);
+  if(String(body.imageModel||'').startsWith('giz:')&&giz.meta(body.imageModel)?.kind!=='image')throw fail('Unsupported Giz image model.');
   let story;
   if(kind==='image'&&body.story){
     if(!Array.isArray(body.story.scenes)||!body.story.scenes.length||body.story.scenes.length>60)throw fail('Invalid parent story snapshot.');
     story={title:text(body.story.title,160),sceneLength:Math.max(1,Math.min(30,Number(body.story.sceneLength)||8)),scenes:body.story.scenes.map(s=>({title:text(s.title,160),imagePrompt:text(s.imagePrompt,24000),videoPrompt:text(s.videoPrompt,24000),imageUrl:media(s.imageUrl)}))};
   }
   return { story, kind, scenes, source: body.source === 'sjinn' ? 'sjinn' : 'flashloop', title: text(body.title,160) || 'Finished film', model,
+    giz:gizOptions,musicModel:body.musicModel||'',musicUrl:media(body.musicUrl),musicVolume:Math.max(0,Math.min(1,Number(body.musicVolume??0.15))),narrationEngine:body.narrationEngine||'',
     imageModel: text(body.imageModel,100) || 'seedream-5', ratio: ['9:16','16:9','1:1','4:3','3:4'].includes(body.ratio) ? body.ratio : '9:16',
     resolution: body.resolution === '1080P' ? '1080P' : '720P', duration: Math.max(1,Math.min(30,Number(body.duration)||8)), chained: body.chained !== false,
     refImageUrl: media(body.refImageUrl), referenceImages: (Array.isArray(body.referenceImages) ? body.referenceImages : []).slice(0,10).map(media),
@@ -126,7 +134,7 @@ function publicJob(j) {
   return { id:j.id, kind:j.input.kind||'film', source:j.input.source, title:j.input.title, status:j.status, createdAt:j.createdAt, updatedAt:j.updatedAt,
     sceneCount:j.scenes.length, completedScenes:j.scenes.filter(s => j.input.kind==='prompt'?s.draft:j.input.kind==='image'?s.image:s.clip).length, message:j.message, error:j.error,
     scenes:j.scenes.map((s,i) => ({ scene:i+1, imageUrl:s.image, clip_url:s.clip, chain_image_url:s.chain, status:s.stage })),
-    result:j.result, script:j.input.kind==='film'?{scenes:j.input.scenes,title:j.input.title,sceneLength:j.input.duration}:j.input.kind==='image'?j.input.story:undefined, logs:j.logs, background:true };
+    options:{giz:j.input.giz,musicModel:j.input.musicModel,musicVolume:j.input.musicVolume,narrationEngine:j.input.narrationEngine,model:j.input.model,imageModel:j.input.imageModel},result:j.result, script:j.input.kind==='film'?{scenes:j.input.scenes,title:j.input.title,sceneLength:j.input.duration}:j.input.kind==='image'?j.input.story:undefined, logs:j.logs, background:true };
 }
 function createStudioJobs({ store, publish, execute, pollImage, now = Date.now, leaseMs = 330000 }) {
   const note = (j, message) => { j.message = message; j.logs.push(message); j.logs = j.logs.slice(-120); };
@@ -139,7 +147,11 @@ function createStudioJobs({ store, publish, execute, pollImage, now = Date.now, 
       const i=j.scenes.findIndex(s=>!s.draft);return {kind:'write-scene',i,key:'write-scene:'+i};
     }
     if (j.input.kind==='image') return {kind:j.scenes[0].imageTask?'image-poll':'image',i:0,key:'image:0'};
-    if (j.scenes.every(s => s.normalized)) return {kind:'combine', key:'combine'};
+    if (j.scenes.every(s => s.normalized)) {
+      if(j.input.narrationEngine&&!j.voice)return {kind:j.voiceTask?'speech-poll':'speech',key:'speech'};
+      if(j.input.musicModel&&!j.music&&!j.input.musicUrl)return {kind:j.musicTask?'music-poll':'music',key:'music'};
+      return {kind:'combine', key:'combine'};
+    }
     if (j.scenes.every(s => s.clip)) { const i = j.scenes.findIndex(s => !s.normalized); return {kind:'normalize',i,key:'normalize:'+i}; }
     let i;
     if (j.input.chained) i = j.scenes.findIndex(s => !s.clip);
@@ -160,7 +172,7 @@ function createStudioJobs({ store, publish, execute, pollImage, now = Date.now, 
       if (TERMINAL.has(j.status)) return;
       if (j.leaseUntil > now()) throw fail('Job step is already running.',503);
       if (now() - j.createdAt > 24 * 3600000) { j.status='failed'; j.error='This film exceeded the 24-hour job limit. Completed scenes were retained.'; note(j,j.error); return; }
-      if (j.inflight && !['image-poll','video-poll','normalize'].includes(j.inflight.kind)) {
+      if (j.inflight && !['image-poll','video-poll','reference-poll','frame-image-poll','narrate-poll','music-poll','speech-poll','normalize'].includes(j.inflight.kind)) {
         j.status='failed'; j.error='A worker stopped during '+j.inflight.kind+'. Saved scenes are retained. The step was not submitted again to avoid duplicate charges.'; note(j,j.error); return;
       }
       operation = next(j); j.inflight=operation; j.leaseUntil=now()+leaseMs; j.leaseToken=token; j.status='running';
@@ -172,9 +184,12 @@ function createStudioJobs({ store, publish, execute, pollImage, now = Date.now, 
     if (!claimed || !operation) return;
     const op = operation, input = claimed.input, scene = claimed.scenes[op.i];
     let result, error;
-    const base = { source:input.source,title:input.title,ratio:input.ratio,resolution:input.resolution,model:input.model,duration:input.duration };
+    const base = { source:input.source,title:input.title,ratio:input.ratio,resolution:input.resolution,model:input.model,duration:input.duration,giz:input.giz,musicVolume:input.musicVolume };
     try {
       if(input.kind==='storyboard')result=await storyboardFlow.execute(claimed,op,execute);
+      else if(['music','music-poll','speech','speech-poll'].includes(op.kind)) {
+        const speech=op.kind.startsWith('speech');result=await execute(claimed,'/api/giz/media',{...base,model:speech?input.narrationEngine:input.musicModel,pollTask:(speech?claimed.voiceTask:claimed.musicTask)||''});
+      }
       else if (op.kind==='prompt-single') result=await execute(claimed,'/api/flashloop/generate-prompt',{...input,sceneDuration:input.duration});
       else if (op.kind==='outline') result=await execute(claimed,'/api/flashloop/generate-outline',input);
       else if (op.kind==='write-scene') {
@@ -185,7 +200,7 @@ function createStudioJobs({ store, publish, execute, pollImage, now = Date.now, 
       else if (op.kind==='image') result = await execute(claimed, '/api/flashloop/generate-i2i', {...base, model:input.imageModel,prompt:input.scenes[op.i].imagePrompt,refImageUrl:input.refImageUrl,referenceImages:input.referenceImages,modelscope:input.modelscope,trendName:input.trendName,tagline:input.tagline,slug:input.slug});
       else if (op.kind==='video' || op.kind==='video-poll') result = await execute(claimed, '/api/flashloop/generate-video', {...base,scene:op.i+1,prompt:input.scenes[op.i].videoPrompt,imageUrl:scene.image,chainAnchor:op.anchor,pollTask:scene.task||''});
       else if (op.kind==='normalize') result = await execute(claimed, '/api/flashloop/combine', {...base,scenes:[op.i+1],clipUrls:[scene.clip],normalizeOnly:true});
-      else result = await execute(claimed, '/api/flashloop/combine', {...base,scenes:claimed.scenes.map((_,i)=>i+1),clipUrls:claimed.scenes.map(s=>s.normalized),preNormalized:true});
+      else result = await execute(claimed, '/api/flashloop/combine', {...base,scenes:claimed.scenes.map((_,i)=>i+1),clipUrls:claimed.scenes.map(s=>s.normalized),preNormalized:true,musicUrl:claimed.music||input.musicUrl,narrationUrl:claimed.voice});
       if (result.error && !result.pending) throw new Error(result.error);
     } catch (e) { error=e; }
     // A database failure here must throw: queue redelivery recovers a saved task
@@ -197,6 +212,9 @@ function createStudioJobs({ store, publish, execute, pollImage, now = Date.now, 
       if (error) { j.status='failed'; j.error=String(error.message||error); note(j,j.error); return; }
       const s=j.scenes[op.i];
       if(input.kind==='storyboard'){try{storyboardFlow.apply(j,op,result);if(j.status==='completed')note(j,'FINAL FILM READY');}catch(e){j.status='failed';j.error=e.message;note(j,e.message);}return;}
+      if(['music','music-poll','speech','speech-poll'].includes(op.kind)) {
+        const key=op.kind.startsWith('speech')?'voice':'music';if(result.pending)j[key+'Task']=result.task;else if(result.audioUrl){j[key]=result.audioUrl;j[key+'Task']='';j[key+'Output']=result.output;}else {j.status='failed';j.error='Audio provider returned no saved media URL.';}return;
+      }
       if (op.kind==='prompt-single') {
         if(!Array.isArray(result.scenes)||!result.scenes.length){j.status='failed';j.error='No script scenes were returned.';}
         else {j.result=result;j.scenes=result.scenes.map(draft=>({draft,stage:'ready'}));j.status='completed';note(j,'Script ready.');}
@@ -207,7 +225,7 @@ function createStudioJobs({ store, publish, execute, pollImage, now = Date.now, 
         if(!result.scene){j.status='failed';j.error='The script writer returned no scene.';}
         else {s.draft=result.scene;s.stage='ready';if(j.scenes.every(s=>s.draft)){j.result={scenes:j.scenes.map(s=>s.draft),title:j.scriptTitle,sceneLength:result.sceneLength||input.sceneLength};j.status='completed';note(j,'Script ready.');}}
       } else if (op.kind==='image' || op.kind==='image-poll') {
-        if (result.imageUrl) { s.image=result.imageUrl; s.imageTask=''; s.stage='image-ready'; if(input.kind==='image'){j.status='completed';j.result={imageUrl:result.imageUrl,sceneIndex:input.sceneIndex};note(j,'Image ready.');} }
+        if (result.imageUrl) { s.image=result.imageUrl;s.imageUrls=result.urls;s.imageOutput=result.output; s.imageTask=''; s.stage='image-ready'; if(input.kind==='image'){j.status='completed';j.result={imageUrl:result.imageUrl,urls:result.urls,output:result.output,sceneIndex:input.sceneIndex};note(j,'Image ready.');} }
         else if (result.taskUrl) { s.imageTask=result.taskUrl; s.stage='image-rendering'; }
         else if (!result.pending) { j.status='failed'; j.error='Image provider returned no image or task.'; }
       } else if (op.kind==='video' || op.kind==='video-poll') {

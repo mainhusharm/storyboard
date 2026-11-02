@@ -103,6 +103,7 @@ Story two script…"></textarea><button id="btnBatch" class="primary" style="mar
 <script src="/auth.js"></script>
 <script src="/storyboard-cloud.js"></script>
 <script src="/modelscope-controls.js"></script>
+<script src="/giz-controls.js"></script>
 <script>
 // Auth guard (shared resilient guard, same as the other tool pages).
 (async function(){
@@ -160,7 +161,7 @@ async function waitForLocalJob(R,IO){
   throw new Error('local storyboard generation did not finish in time');
 }
 async function executeRun(R, IO=DEFAULT_IO){
-  if(IS_VERCEL_CLIENT&&IO===DEFAULT_IO)return executeCloudRun(R);
+  if((IS_VERCEL_CLIENT||Object.keys(R.opts.giz||{}).length||R.opts.musicModel)&&IO===DEFAULT_IO)return executeCloudRun(R);
   const O=R.opts;
   const req=(path,body,opts)=>IO.call(path,body,R,opts);
   try{
@@ -361,10 +362,10 @@ function newRunFromForm(){
   const R={ id:'r_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,7), createdAt:Date.now(), title, script,
     status:'queued', phase:'', running:false, cancelled:false, log:[], characters:[], frames:[], clipUrls:{}, narrUrl:'', resultUrl:'', thumbUrl:'',
     ctrl:new AbortController(),
-    opts:{ ...(window.SBModelscope?.payload()||{}),chatModel:$('chatModel').value, imageModel:$('imageModel').value, videoModel:$('videoModel').value,
+    opts:{ ...(window.SBModelscope?.payload()||{}),...(window.SBGiz?.payload()||{}),chatModel:$('chatModel').value, imageModel:$('imageModel').value, videoModel:$('videoModel').value,
       ratio:$('ratio').value, resolution:$('videoResolution').value, duration:Number($('duration').value)||60, clipDuration:Number($('clipDuration').value)||6,
       narrationMode:$('narrationMode').value||'prompt', voice:$('voice').value||'female', language:$('language').value||'en', style:$('style').value||'cinematic',
-      consistency:$('consistency').checked, chainContinuity:$('chainContinuity').checked, narrationEngine:'fish' } };
+       consistency:$('consistency').checked, chainContinuity:$('chainContinuity').checked, narrationEngine:window.SBGiz?.payload().narrationEngine||'fish' } };
   addRunObject(R);
   $('script').value=''; $('title').value='';
 }
@@ -387,7 +388,7 @@ $('btnBatch').onclick=()=>{
   try{
     const m=await getApi('/models');
     $('chatModel').innerHTML=(m.chat||[]).map(x=>`<option>${esc(x)}</option>`).join('');
-    const IMG_LABELS={'aqua:nanobanana-pro':'Nano Banana Pro — AquaDevs','aqua:agnes-image':'Agnes Image — AquaDevs',
+    const IMG_LABELS={'aqua:nanobanana-pro':'Nano Banana Pro — AquaDevs','aqua:agnes-image':'Agnes Image — AquaDevs','aqua:gpt-image-2.5-flare':'GPT Image 2.5 Flare — AquaDevs','aqua:gpt-image-2.5-sunburst':'GPT Image 2.5 Sunburst — AquaDevs','giz:krea-2-turbo':'Krea 2 Turbo — Giz','giz:flux-3-klein':'Flux 3 Klein — Giz','giz:z-image-turbo':'Z Image Turbo — Giz','giz:gpt-image':'GPT Image — Giz','giz:gpt-2.5-lite':'GPT 2.5 Lite — Giz',
       'xclis:gpt-image-2.5-sunburst-az':'GPT Image 2.5 Sunburst AZ — xclis','xclis:gpt-image-2.5-sunburst':'GPT Image 2.5 Sunburst — xclis','xclis:gpt-image-2.5-flare-az':'GPT Image 2.5 Flare AZ — xclis','xclis:gpt-image-2.5-flare':'GPT Image 2.5 Flare — xclis'};
     $('imageModel').innerHTML=(m.image||[]).map(x=>`<option value="${esc(x)}">${esc(IMG_LABELS[x]||x)}</option>`).join('');
     $('videoModel').innerHTML=(m.video||[]).map(x=>`<option value="${esc(x.id||x)}">${esc(x.label||x)}</option>`).join('');
@@ -402,7 +403,7 @@ $('btnBatch').onclick=()=>{
   let changed=false;
   for(const R of RUNS) if(!R.cloudId&&(R.status==='running'||R.status==='cancelling')){R.status='interrupted';R.running=false;changed=true;}
   if(changed) saveRuns();
-  if(IS_VERCEL_CLIENT){
+  if(IS_VERCEL_CLIENT||RUNS.some(r=>r.cloudId)){
     try{for(const j of await SBStoryCloud.list()){let R=RUNS.find(r=>r.cloudId===j.id);if(!R){R={id:'saved_'+j.id,cloudId:j.id,title:j.title,createdAt:j.createdAt,opts:{ratio:'',resolution:'',videoModel:''},frames:[],characters:[],clipUrls:{},log:[]};RUNS.push(R);}R.status=j.status==='completed'?'done':j.status;R.cloudPercent=j.percent;R.resultUrl=j.result?.url||'';R.frames=j.board?.frames||[];R.characters=j.board?.characters||[];R.phase=j.message;R.script=j.script||R.script;R.opts={...R.opts,...j.options,chatModel:j.options?.model,chainContinuity:j.options?.chained};R.narrUrl=j.options?.narrationUrl||'';R.log=(j.logs||[]).map(m=>({m,t:new Date(j.updatedAt).toLocaleTimeString(),c:''}));if(SBStoryCloud.active(j)){ACTIVE++;executeCloudRun(R).finally(()=>{ACTIVE--;pump();});}}}catch(e){console.warn('Cloud story list:',e.message);}
   }
   renderRuns(); renderConc(); pump();
