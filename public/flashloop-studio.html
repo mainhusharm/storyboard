@@ -847,8 +847,25 @@ function displayStudioJob(j) {
       row.append(video,link);$('mvClips').append(row);
     }
   }
-  const url=j.kind==='film'?(j.result?.url||''):'';
-  if($('mvVideo').dataset.url!==url){$('mvVideo').dataset.url=url;$('mvVideo').src=url;$('mvDownload').href=url;}
+  const url=j.kind==='film'?(j.result?.clip_url||j.result?.hosted_url||j.result?.url||''):'';
+  const altUrl=j.kind==='film'?(j.result?.vault_url||j.result?.url||''):'';
+  if($('mvVideo').dataset.url!==url){
+    $('mvVideo').dataset.url=url;
+    $('mvVideo').dataset.altUrl=altUrl&&altUrl!==url?altUrl:'';
+    $('mvVideo').src=url;
+    $('mvDownload').href=url;
+  }
+  $('mvVideo').onerror=async()=>{
+    const fallback=$('mvVideo').dataset.altUrl||($('mvVideo').dataset.url?.startsWith('/api/vault/')?$('mvVideo').dataset.url:'');
+    if(!fallback||$('mvVideo').dataset.blobLoaded===fallback)return;
+    $('mvVideo').dataset.blobLoaded=fallback;
+    try{
+      const r=await (window.SBAuth?.authFetch||fetch)(fallback,{credentials:'same-origin'});
+      if(!r.ok)return;
+      const b=URL.createObjectURL(await r.blob());
+      $('mvVideo').src=b;$('mvDownload').href=b;
+    }catch(_){}
+  };
   $('mvVideo').style.display=url?'block':'none';
   $('mvDownload').style.display=url?'inline-block':'none';
   if(j.error)mvLog(j.error,true);

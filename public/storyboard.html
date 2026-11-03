@@ -1320,7 +1320,8 @@ function cloudFilmOptions(){return {...(window.SBModelscope?.payload()||{}),...(
 function renderCloudFilm(j){
  $('phasepill').classList.toggle('busy',SBStoryCloud.active(j));$('phasetxt').textContent='CLOUD · '+(j.status==='running'?(j.message||j.phase):j.status.toUpperCase());$('gprog').firstElementChild.style.width=j.percent+'%';$('btnCancel').style.display=SBStoryCloud.active(j)?'':'none';
  $('log').textContent=(j.logs||[]).join('\n');$('log').scrollTop=$('log').scrollHeight;
- if(j.result?.url)rememberFinalFilm(j.result.url);
+ const finalUrl=j.result?.clip_url||j.result?.hosted_url||j.result?.url;
+ if(finalUrl)rememberFinalFilm(finalUrl);
 }
 function watchCloudFilm(j){
   stopCloudWatch?.();CLOUD_JOB=j;if(j.script)$('script').value=j.script;for(const [id,key] of Object.entries({chatModel:'model',style:'style',imageModel:'imageModel',videoModel:'videoModel',ratio:'ratio',videoResolution:'resolution',clipDuration:'clipDuration',narrationMode:'narrationMode',narrationEngine:'narrationEngine',voice:'voice',language:'language',duration:'duration'})){const value=j.options?.[key],el=$(id);if(value!==undefined&&Array.from(el?.options||[]).some(o=>o.value===String(value)))el.value=value;}localStorage.setItem('sb_cloud_job',j.id);renderCloudFilm(j);

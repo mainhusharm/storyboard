@@ -7999,16 +7999,17 @@ const normalizedOk=await new Promise((resolve) => {
               args.push(
                 '-vf', `scale=${w}:${h}:force_original_aspect_ratio=decrease,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=24`,
                 '-c:v', 'libx264', '-crf', '20', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p',
+                '-video_track_timescale', '24000',
+                ...(hasAudio ? ['-af', 'aresample=async=1:first_pts=0,apad'] : []),
                 '-c:a', 'aac', '-b:a', '128k', '-ar', '44100', '-ac', '2',
                 // video is always mapped explicitly — once any -map is present,
                 // ffmpeg keeps ONLY the mapped streams.
                 '-map', '0:v:0',
                 // hasAudio: the clip's own track (optional map); else the silent one.
-                '-map', hasAudio ? '0:a:0?' : '1:a:0'
+                '-map', hasAudio ? '0:a:0?' : '1:a:0',
+                '-shortest',
+                '-movflags', '+faststart'
               );
-              // -shortest is only safe for the silent track, which we bound to the
-              // clip ourselves; with real audio it would truncate the video early.
-              if (!hasAudio) args.push('-shortest');
               if(worker?.source==='storyboard'){
                 const target=Math.min(sourceDuration,Number(body.targetDuration)||sourceDuration);
                 args.push('-t',String(target));
@@ -8044,8 +8045,8 @@ const normalizedOk=await new Promise((resolve) => {
             execFile(ffmpegBin(), ['-y', '-f', 'concat', '-safe', '0', '-i', 'flash_concat.txt', '-c', 'copy', '-movflags', '+faststart', 'flash_final.mp4'],
               { cwd: flashVideoDir, timeout: 180000 }, err => resolve(!err));
           });
-          if (!okConcat || !fs.existsSync(finalPath)) {
-            if(worker&&preNormalized)throw Error('Prepared clips could not be joined. Saved clips are retained; the entire film was not re-encoded.');
+          const concatDur = okConcat && fs.existsSync(finalPath) ? await probeDuration(finalPath) : 0;
+          if (!okConcat || !fs.existsSync(finalPath) || !(concatDur > 0)) {
             logLine('flashloop combine: copy-concat failed — re-encoding');
             await new Promise((resolve) => {
               execFile(ffmpegBin(), ['-y', '-f', 'concat', '-safe', '0', '-i', listFile, '-c:v', 'libx264', '-crf', '20', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', finalPath],
