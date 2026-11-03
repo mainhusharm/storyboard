@@ -38,9 +38,13 @@ function shape(id,{prompt,text,ratio='16:9',duration=8,references=[],image,voice
     if(references.length){const key=p.referenceImages?'referenceImages':'image';input[key]=[...new Set([...references,...(input[key]||[])])];if(id==='giz:krea-2'&&(!input.workflow||input.workflow==='create'))input.workflow='edit';}
    if(id==='giz:krea-2'&&input.workflow==='edit'&&input.referenceImages?.length>2)throw fail('KREA edit accepts one or two references. Select GPT Image Lite to preserve more references; none were dropped.');
  }
- if(m.kind==='video'){
+  if(m.kind==='video'){
+   if(id==='giz:ltx2-5-distilled'){
+    if(input.workflow===undefined)input.workflow='standard';
+    if(input.autoDuration===undefined)input.autoDuration=false;
+   }else if(id==='giz:minimax-h3-turbo'&&input.h3Mode===undefined)input.h3Mode='fl2va';
   if(input.frames===undefined)input.frames=nearest(p.frames.enum,Number(duration)*24+(id==='giz:ltx2-5-distilled'?1:0));
-   if(input.resolution===undefined){const target=Number(ratio.split(':')[0])/Number(ratio.split(':')[1]);input.resolution=p.resolution.enum.reduce((a,b)=>{const ar=s=>{const [w,h]=s.split('x').map(Number);return w/h;};return Math.abs(ar(b)-target)<Math.abs(ar(a)-target)?b:a;});}
+    if(input.resolution===undefined){const target=Number(ratio.split(':')[0])/Number(ratio.split(':')[1]);const sizes=id==='giz:ltx2-5-distilled'?p.resolution.enum.slice(0,3):p.resolution.enum;input.resolution=sizes.reduce((a,b)=>{const ar=s=>{const [w,h]=s.split('x').map(Number);return w/h;};return Math.abs(ar(b)-target)<Math.abs(ar(a)-target)?b:a;});}
    if(image){input.image=image;input.generateImage=false;}
  }
  if(m.kind==='speech'){
@@ -76,7 +80,7 @@ function createGizProvider({getKey,fetchImpl=(...args)=>fetch(...args),log=()=>{
    const m=meta(id),settings=overrides||context.getStore()?.options[id]||{},input=shape(id,params,settings);
    // Speech and music always use model.run: generateMusic cannot pin a model and
    // generateAudio renames the verified model.get fields (text → script).
-    const advanced=m.native||Object.keys(settings).length>0||params.native===true||!['image','video'].includes(m.kind);
+     const advanced=m.kind==='video'||m.native||Object.keys(settings).length>0||params.native===true||!['image','video'].includes(m.kind);
    const tool=advanced?'model.run':m.kind==='image'?'generateImage':'generateVideo';
    const references=[...new Set(params.references||[])];
    if(!advanced&&m.kind==='image'&&references.length>4)throw fail('Giz generateImage accepts up to four references; none were dropped.');
