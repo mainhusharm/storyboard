@@ -1003,14 +1003,14 @@ ${concept ? concept + ' ' : ''}Scene: ${randomVisualVariation()}. Use the suppli
 // the explicit 30s total option — a 30s scene length on a 1 min / 2 min total
 // is 2 / 4 scenes (60s / 120s), never one prompt. Tying the single-prompt lock
 // to the scene length made "~2 min" come back as one 30s prompt forever.
-const FLASHLOOP_SCENE_LENGTHS = [5, 8, 10, 15, 30];
+const FLASHLOOP_SCENE_LENGTHS = [1, 2, 3, 4, 5, 8, 10, 15, 20, 25, 30];
 function flashloopScenePlan(sceneDuration, sceneLength) {
   const rawDur = Number(sceneDuration);
   const durMode = Number.isFinite(rawDur) && rawDur > 0 ? rawDur : 15; // 5 = 30s, 15 = ~64s, 30 = ~120s
   let perScene = FLASHLOOP_SCENE_LENGTHS.includes(Number(sceneLength)) ? Number(sceneLength) : 8;
   const singlePrompt = durMode <= 5;
   if (singlePrompt) perScene = 30;
-  const targetTotal = singlePrompt ? 30 : (durMode >= 30 ? 120 : 64);
+  const targetTotal = singlePrompt ? 30 : (durMode >= 30 ? 120 : 60);
   const sceneCount = singlePrompt ? 1 : Math.max(2, Math.round(targetTotal / perScene));
   return { durMode, perScene, singlePrompt, sceneCount, totalSec: perScene * sceneCount };
 }

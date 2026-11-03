@@ -96,8 +96,8 @@ function validateInput(body) {
     const text=(v,n)=>String(v||'').slice(0,n);
     if (!text(body.idea,30000).trim() && !text(body.name||body.slug,160).trim()) throw fail('Describe your scene or select a trend.');
     const duration=Number(body.duration)>0?Number(body.duration):15;
-    const sceneLength=duration<=5?30:([5,8,10,15,30].includes(Number(body.sceneLength))?Number(body.sceneLength):8);
-    const totalScenes=duration<=5?1:Math.max(2,Math.round((duration>=30?120:64)/sceneLength));
+    const sceneLength=duration<=5?30:([1,2,3,4,5,8,10,15,20,25,30].includes(Number(body.sceneLength))?Number(body.sceneLength):8);
+    const totalScenes=duration<=5?1:Math.max(2,Math.round((duration>=30?120:60)/sceneLength));
     return {kind,source:body.source==='sjinn'?'sjinn':'flashloop',title:text(body.title||body.name||body.idea,160)||'Studio script',
       name:text(body.name,160),slug:text(body.slug,200),idea:text(body.idea,30000),tagline:text(body.tagline,1000),trendThumbnail:text(body.trendThumbnail,3000),
       ratio:['9:16','16:9','1:1','4:3','3:4'].includes(body.ratio)?body.ratio:'9:16',model:text(body.model,100)||'logfare:auto',

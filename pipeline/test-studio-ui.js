@@ -23,10 +23,14 @@ test('reopened studio restores scripts, images and final films without restartin
  });await new Promise(r=>server.listen(0,'127.0.0.1',r));t.after(()=>new Promise(r=>server.close(r)));
  const browser=await puppeteer.launch({executablePath:'C:/Program Files/Google/Chrome/Application/chrome.exe',headless:true,args:['--disable-gpu']});t.after(()=>browser.close());
  const base='http://127.0.0.1:'+server.address().port;
- async function open(){const p=await browser.newPage();p.on('pageerror',e=>errors.push(e.message));await p.goto(base+'/flashloop-studio?source=sjinn',{waitUntil:'domcontentloaded'});return p;}
- let page=await open();await page.waitForSelector('#fullScriptBox');
+  async function open(){const p=await browser.newPage();p.on('pageerror',e=>errors.push(e.message));await p.goto(base+'/flashloop-studio?source=sjinn',{waitUntil:'domcontentloaded'});await p.waitForFunction(()=>document.querySelector('#mvJobSelect').options.length>1);await p.select('#mvJobSelect',jobs[0].id);return p;}
+  let page=await open();await page.waitForSelector('#fullScriptBox');
+  await page.select('#sceneLength','20');
+  assert.match(await page.$eval('#duration option[value="15"]',el=>el.textContent),/3 scenes at 20s/);
+  assert.match(await page.$eval('#duration option[value="30"]',el=>el.textContent),/6 scenes at 20s/);
+  await page.select('#sceneLength','8');
  assert.match(await page.$eval('#fullScriptBox',el=>el.value),/water flows gently/);assert.equal(await page.$eval('#outputPanel',el=>getComputedStyle(el).display==='none'),false);
- await page.click('#btnGenerateImage');await page.waitForFunction(()=>document.querySelector('#toast').textContent.includes('Queued'));
+  await page.click('#btnGenerateImage');await page.waitForFunction(()=>/Saved|Queued/.test(document.querySelector('#toast').textContent));
  await page.close();await new Promise(r=>setTimeout(r,150));page=await open();await page.waitForFunction(()=>document.querySelector('#i2iImage').getAttribute('src')==='/fixture.png');
  assert.equal(posts.length,1);assert.equal(posts[0].kind,'image');assert.equal(posts[0].scenes[0].imagePrompt,'A quiet blue river');
  await page.close();

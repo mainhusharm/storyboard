@@ -125,8 +125,8 @@
       <div class="field">
         <label for="duration">Video Length</label>
         <select id="duration">
-          <option value="15" selected>~1 min (8 scenes at 8s each)</option>
-          <option value="30">~2 min (15 scenes at 8s each)</option>
+          <option value="15" selected>~1 min</option>
+          <option value="30">~2 min</option>
           <option value="5">30s — 1 prompt (single clip)</option>
         </select>
         <div class="hint">Total video length — this sets the SCENE COUNT (total ÷ per-scene length).</div>
@@ -550,6 +550,9 @@ function syncSceneLength() {
   const d = $('duration'), sl = $('sceneLength');
   if (!d || !sl) return;
   const single = d.value === '5';
+  const per=Number(sl.value)||8;
+  d.querySelector('[value="15"]').textContent='~1 min ('+Math.max(2,Math.round(60/per))+' scenes at '+per+'s each)';
+  d.querySelector('[value="30"]').textContent='~2 min ('+Math.max(2,Math.round(120/per))+' scenes at '+per+'s each)';
   if (single) {
     if (!wasSingle && sl.value !== '30') lastSceneLen = sl.value;
     sl.value = '30';
@@ -571,6 +574,7 @@ function syncSceneLength() {
 }
 $('duration').addEventListener('change', syncSceneLength);
 $('sceneLength').addEventListener('change', () => {
+  syncSceneLength();
   const md = $('mvDuration');
   if (md && md.value !== $('sceneLength').value) md.value = $('sceneLength').value;
   const s = $('mvSummary'); if (s) s.textContent = mvSummaryText();
@@ -580,7 +584,7 @@ syncSceneLength();
 // Same rule the server uses, so the client knows how many scenes to ask for.
 function plannedSceneCount(durMode, perScene){
   if (durMode <= 5) return 1;
-  const total = durMode >= 30 ? 120 : 64;
+  const total = durMode >= 30 ? 120 : 60;
   return Math.max(2, Math.round(total / perScene));
 }
 function setLoadingText(t){ const el = $('loading'); if (el) el.innerHTML = '<div class="spinner"></div> ' + escapeHtml(t); }

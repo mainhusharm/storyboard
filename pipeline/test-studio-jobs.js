@@ -96,7 +96,7 @@ test('single script and standalone image jobs finish without buying a video or e
 });
 
 test('background script scene counts match the supported total duration and scene length',()=>{
- for(const [duration,sceneLength,count,per] of [[30,30,4,30],[15,30,2,30],[30,5,24,5],[5,8,1,30],[15,9,8,8]]) {
+  for(const [duration,sceneLength,count,per] of [[15,20,3,20],[30,20,6,20],[15,15,4,15],[15,10,6,10],[30,30,4,30],[15,30,2,30],[30,5,24,5],[5,8,1,30],[15,9,8,8]]) {
   const input=validateInput({kind:'prompt',idea:'A story',duration,sceneLength});assert.equal(input.totalScenes,count);assert.equal(input.sceneLength,per);
  }
 });
