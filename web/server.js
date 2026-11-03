@@ -1262,7 +1262,8 @@ const MODELS = ['gemini-2.5-pro', 'gemini-3.1-pro', 'gemini-3.1-flash-lite', 'ge
   // AquaDevs chat models — same "aqua:<id>" prefix convention the Aqua IMAGE
   // models already use. Routed through chatCompletion()'s Aqua path
   // (pinned model → gemini-2.5-pro → deepseek-v3.2 on PaxSenix).
-  ...AQUA_CHAT_MODELS.map(m => 'aqua:' + m)];
+  ...AQUA_CHAT_MODELS.map(m => 'aqua:' + m),
+  ...['gpt-6-luna','gpt-5-4-nano','grok','deepseek-flash','gemini-flash-lite','gemini-flash','gemma-4-31b','glm-5'].map(m=>'giz:'+m)];
 // Logfare chat models (https://logfare.ai/v1) — flashloop/sjinn prompt generation ONLY.
 // Selected from the UI with a "logfare:" prefix so they never collide with same-named
 // PaxSenix models. gemma-4-26b + logfare/auto work without opt-in; the rest require
@@ -2421,6 +2422,18 @@ async function download(fileUrl, outPath) {
 
 // ---------------- streaming chat ----------------
 async function chatCompletion(model, messages, maxTokens = 16384, temperature = 0.7, options = {}) {
+  if(String(model||'').startsWith('giz:')){
+    if(!GIZ_API_KEY)throw new Error('Set GIZ_API_KEY to use Giz chat models.');
+    const response=await fetch('https://www.giz.ai/v1/chat/completions',{
+      method:'POST',headers:{Authorization:'Bearer '+GIZ_API_KEY,'Content-Type':'application/json'},
+      body:JSON.stringify({model:String(model).slice(4),messages,max_tokens:maxTokens,temperature,stream:false}),
+      signal:AbortSignal.timeout(options.timeoutMs||250000)
+    });
+    if(!response.ok)throw new Error('Giz chat failed (HTTP '+response.status+').');
+    const data=await response.json(),text=data.choices?.[0]?.message?.content;
+    if(typeof text!=='string'||!text.trim())throw new Error('Giz chat returned no text.');
+    return text;
+  }
   // A "logfare:<model>" pick routes through the Logfare gateway chain (pinned
   // model → logfare/auto → gemma-4-26b → PaxSenix), the SAME path the SJinn /
   // Flashloop studio uses. Sending the raw id to PaxSenix would just 400.
@@ -2566,6 +2579,7 @@ async function chatWithLogfare(model, messages, maxTokens = 16000, temperature =
 // A "logfare:<model>" model from the UI pins that Logfare model first, then
 // logfare/auto, then gemma-4-26b, then the PaxSenix chain as last resort.
 async function chatWithLogfareFallback(model, messages, maxTokens = 16000, temperature = 0.7) {
+  if(String(model||'').startsWith('giz:'))return chatCompletion(model,messages,maxTokens,temperature);
   const raw = String(model || '');
   const isLogfare = raw.startsWith('logfare:');
   const pinnedRaw = isLogfare ? raw.slice('logfare:'.length) : '';

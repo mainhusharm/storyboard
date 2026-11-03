@@ -35,7 +35,7 @@ function shape(id,{prompt,text,ratio='16:9',duration=8,references=[],image,voice
  if(text!==undefined)input.text=text;
  if(m.kind==='image'){
   if(input.size===undefined){const target=Number(ratio.split(':')[0])/Number(ratio.split(':')[1]);input.size=p.size.enum.reduce((a,b)=>{const ar=s=>{const [w,h]=s.split('x').map(Number);return w/h;};return Math.abs(ar(b)-target)<Math.abs(ar(a)-target)?b:a;});}
-   if(references.length){const key=id==='giz:krea-2'?'referenceImages':'image';input[key]=[...new Set([...references,...(input[key]||[])])];if(id==='giz:krea-2'&&(!input.workflow||input.workflow==='create'))input.workflow='edit';}
+    if(references.length){const key=p.referenceImages?'referenceImages':'image';input[key]=[...new Set([...references,...(input[key]||[])])];if(id==='giz:krea-2'&&(!input.workflow||input.workflow==='create'))input.workflow='edit';}
    if(id==='giz:krea-2'&&input.workflow==='edit'&&input.referenceImages?.length>2)throw fail('KREA edit accepts one or two references. Select GPT Image Lite to preserve more references; none were dropped.');
  }
  if(m.kind==='video'){
@@ -50,7 +50,8 @@ function shape(id,{prompt,text,ratio='16:9',duration=8,references=[],image,voice
   if(id==='giz:gateway/heygen:voice@1.0'&&!input.voice&&!input.audio)input.voice='3195f3da04c94984a0a77a4b757c8119';
  }
  if(m.kind==='music'&&id==='giz:acestep'&&input.lyrics===undefined)input.lyrics='[inst]';
- return validate(id,input);
+  Object.assign(input,m.fixedInput||{});
+  return validate(id,input);
 }
 function outputUrls(output){
  const urls=[];
@@ -75,7 +76,7 @@ function createGizProvider({getKey,fetchImpl=(...args)=>fetch(...args),log=()=>{
    const m=meta(id),settings=overrides||context.getStore()?.options[id]||{},input=shape(id,params,settings);
    // Speech and music always use model.run: generateMusic cannot pin a model and
    // generateAudio renames the verified model.get fields (text → script).
-   const advanced=Object.keys(settings).length>0||params.native===true||!['image','video'].includes(m.kind);
+    const advanced=m.native||Object.keys(settings).length>0||params.native===true||!['image','video'].includes(m.kind);
    const tool=advanced?'model.run':m.kind==='image'?'generateImage':'generateVideo';
    const references=[...new Set(params.references||[])];
    if(!advanced&&m.kind==='image'&&references.length>4)throw fail('Giz generateImage accepts up to four references; none were dropped.');

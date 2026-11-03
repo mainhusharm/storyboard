@@ -28,4 +28,13 @@ add('minimax-music','MiniMax Music 1.5','music',{prompt:string('Music style, moo
 for(const id of ['giz:xai-tts','giz:gateway/heygen:voice@1.0'])models.find(m=>m.id===id).input.properties.language.minLength=1;
 // Story prompts and narration text are supplied by the story, so KREA only needs them at submit time.
 models.find(m=>m.id==='giz:krea-2').input.required=[];
+// GPT 2.5 variants are parameters to gpt-image, not upstream model IDs.
+const gptInput={prompt:string('Request'),variant:choice(['v2','flare','sunburst'],'flare'),size:choice(['1024x1024','1536x1024','1024x1536','2048x2048','2048x1152','1152x2048','3840x2160','2160x3840'],'1024x1024'),quality:choice(['high','xhigh','max']),format:choice(['png','jpeg','webp']),background:choice(['auto','opaque','transparent']),outputCompression:number(0,100),numberResults:choice([1,2,3,4,5],1,'integer'),image:images('Reference images')};
+add('gpt-image','GPT Image — Giz','image',gptInput);
+for(const variant of ['flare','sunburst']){
+ add('gpt-image-2-5-'+variant,'GPT Image 2.5 '+(variant==='flare'?'Flare':'Sunburst')+' — Giz','image',{...gptInput,variant:{type:'string',const:variant,default:variant}});
+ Object.assign(models[models.length-1],{model:'gpt-image',native:true,fixedInput:{variant}});
+}
+add('flux3-klein','FLUX.3 Klein — Giz','image',{prompt:string('Request'),referenceImages:images('Reference images'),size:choice(['1024x1024','1152x896','1344x768','896x1152','768x1344','1536x1024','1024x1536'],'1024x1024'),count:number(1,4,{default:1}),seed:number(0),enhancePrompt:bool(true),outputFormat:choice(['webp','png','jpeg'],'webp'),outputQuality:number(60,100,{default:90})});
+add('z-image-turbo','Z-Image Turbo — Giz','image',{prompt:string('Request'),size:choice(['1024x1024','1152x896','1344x768','896x1152','768x1344','1280x1280','1536x1536','1920x1088','1088x1920','2048x1152','1152x2048','2048x2048'],'1024x1024'),steps:choice([4,5,6,7,8,9,10,11,12],8,'integer'),outputFormat:choice(['webp','png','jpg'],'webp'),outputQuality:number(60,100,{default:90}),numberResults:choice([1,2,4],1,'integer'),seed:number(0)});
 module.exports=models;

@@ -4,8 +4,8 @@ const assert=require('node:assert/strict');
 const giz=require('../web/giz');
 const image='giz:krea-2',video='giz:minimax-h3-turbo',speech='giz:omnivoice',music='giz:acestep';
 function fixture(respond){const calls=[];return {calls,provider:giz.createGizProvider({getKey:()=> 'mock-secret',fetchImpl:async(url,options)=>{const call={url,body:JSON.parse(options.body)};calls.push(call);assert.equal(options.headers.Authorization,'Bearer mock-secret');assert.equal(options.redirect,'error');return respond?respond(call,calls.length):Response.json({id:'original-job'},{status:201});}})};}
-test('all twelve verified IDs are discoverable and advanced values are validated',()=>{
- assert.deepEqual(giz.models.map(m=>m.id),[video,'giz:ltx2-5-distilled',image,'giz:gpt-image-2-lite','giz:omnivoice','giz:inworld-tts-1-5-mini','giz:xai-tts','giz:tts-1','giz:gateway/heygen:voice@1.0','giz:acestep','giz:stable-audio','giz:minimax-music']);
+test('all supported IDs are discoverable and advanced values are validated',()=>{
+ assert.deepEqual(giz.models.map(m=>m.id),[video,'giz:ltx2-5-distilled',image,'giz:gpt-image-2-lite','giz:omnivoice','giz:inworld-tts-1-5-mini','giz:xai-tts','giz:tts-1','giz:gateway/heygen:voice@1.0','giz:acestep','giz:stable-audio','giz:minimax-music','giz:gpt-image','giz:gpt-image-2-5-flare','giz:gpt-image-2-5-sunburst','giz:flux3-klein','giz:z-image-turbo']);
  assert.deepEqual(giz.options({'giz:tts-1':{}}),{'giz:tts-1':{}});
  assert.throws(()=>giz.options({'giz:tts-1':{voice:'baritone'}}),/Unsupported/);
  assert.throws(()=>giz.shape('giz:tts-1',{}),/text/);
@@ -16,6 +16,13 @@ test('all twelve verified IDs are discoverable and advanced values are validated
  assert.throws(()=>giz.shape(image,{prompt:'Scene'},{apiKey:'secret'}),/Unknown/);
  assert.throws(()=>giz.shape(image,{prompt:'Scene',references:['https://x/1','https://x/2','https://x/3']}),/none were dropped/);
  assert.throws(()=>giz.shape(video,{prompt:'Scene'},{controlVideo:'file:///secret'}),/HTTPS/);
+});
+test('GPT 2.5 aliases send the verified gpt-image variant without resubmitting',async()=>{
+ const {provider,calls}=fixture();
+ for(const variant of ['flare','sunburst']){
+  await provider.submit('giz:gpt-image-2-5-'+variant,{prompt:'Portrait',references:['https://x/ref.png']});
+  const call=calls.at(-1);assert.match(call.url,/model.run$/);assert.equal(call.body.model,'gpt-image');assert.equal(call.body.input.variant,variant);assert.deepEqual(call.body.input.image,['https://x/ref.png']);
+ }
 });
 test('basic image and video use exact generate tool contracts with selected IDs and references',async()=>{
  const {provider,calls}=fixture();

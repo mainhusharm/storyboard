@@ -153,6 +153,14 @@
         <label for="model">Model</label>
         <select id="model">
           <option value="logfare:auto" selected>Logfare Auto (recommended)</option>
+          <option value="giz:gpt-6-luna">GPT-6 Luna — Giz</option>
+          <option value="giz:gpt-5-4-nano">GPT-5.4 Nano — Giz</option>
+          <option value="giz:grok">Grok 4.7 — Giz</option>
+          <option value="giz:deepseek-flash">DeepSeek V4.1 Flash — Giz</option>
+          <option value="giz:gemini-flash-lite">Gemini 3.5 Flash-Lite — Giz</option>
+          <option value="giz:gemini-flash">Gemini 3.8 Flash — Giz</option>
+          <option value="giz:gemma-4-31b">Gemma 4 31B — Giz</option>
+          <option value="giz:glm-5">GLM 5.3 — Giz</option>
           <option value="logfare:gemma-4-26b">Gemma 4 26B — Logfare</option>
           <option value="logfare:deepseek-v4.1-flash">DeepSeek V4.1 Flash — Logfare</option>
           <option value="logfare:glm-5.3">GLM 5.3 — Logfare (needs opt-in)</option>
@@ -862,8 +870,9 @@ async function restoreStudioJobs(preferredId) {
   $('makeVideoSection').style.display='block';$('mvJobs').style.display='block';
   const select=$('mvJobSelect');select.replaceChildren();const draft=document.createElement('option');draft.value='';draft.textContent='Select a saved story…';select.append(draft);
   for(const job of jobs){const option=document.createElement('option');option.value=job.id;option.textContent=job.title+' · '+({prompt:'script',image:'image',film:'film'}[job.kind]||'film')+' · '+job.status+' · '+job.completedScenes+'/'+job.sceneCount+' scenes';select.append(option);}
-  const selected=jobs.find(j=>j.id===preferredId)||jobs.find(studioActive)||jobs[0];
-  select.value=selected.id;displayStudioJob(selected);watchStudioJob(selected.id);
+  // Saved jobs are account-wide; never copy another template's story into a draft.
+  const selected=preferredId&&jobs.find(j=>j.id===preferredId);
+  if(selected){select.value=selected.id;displayStudioJob(selected);watchStudioJob(selected.id);}
 }
 $('mvJobSelect').onchange=()=>{if($('mvJobSelect').value)watchStudioJob($('mvJobSelect').value);};
 $('mvCancel').onclick=async()=>{
@@ -879,7 +888,12 @@ async function queueStudioJob(payload){
     if(studioRequestBody!==serialized){studioRequestBody=serialized;studioRequestKey=crypto.randomUUID();}
     const {job}=await studioApi('/api/studio-jobs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...payload,requestKey:studioRequestKey})});
     displayStudioJob(job);watchStudioJob(job.id);await restoreStudioJobs(job.id).catch(()=>{});
-    studioRequestKey='';studioRequestBody='';showToast('Queued — use New story to start another in parallel.');return job;
+    studioRequestKey='';studioRequestBody='';
+    if((payload.kind||'film')==='film'){
+      studioSubmitting=false;$('btnNewStory').disabled=false;$('btnNewStory').click();
+      showToast('Video saved and queued. Start a new story, or select the saved story to view progress.');
+    }else showToast('Saved — use New story to start another in parallel.');
+    return job;
   }finally{studioSubmitting=false;$('btnNewStory').disabled=false;}
 }
 $('btnNewStory').onclick=()=>{

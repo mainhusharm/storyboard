@@ -5,7 +5,7 @@ test('Giz model discovery, advanced controls and selections work across all stud
  const server=http.createServer(async(req,res)=>{const p=new URL(req.url,'http://localhost').pathname;if(!p.startsWith('/api/')){try{const file=p==='/storyboard'?'storyboard.html':p==='/flashloop-studio'?'flashloop-studio.html':p==='/generations'?'generations.html':path.basename(p);res.setHeader('Content-Type',file.endsWith('.js')?'application/javascript':'text/html');return res.end(await fs.readFile(path.join(__dirname,'../web/public',file)));}catch{res.statusCode=404;return res.end();}}if(p==='/api/studio-jobs'&&req.method==='POST')posts.push(p);return handler(req,res);});await new Promise(r=>server.listen(0,'127.0.0.1',r));const base='http://127.0.0.1:'+server.address().port;
  const user=await(await fetch(base+'/api/auth/signup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:'giz@ui.test',name:'Giz UI',password:'offline-password-12345'})})).json();
  const discovered=await(await fetch(base+'/api/models')).json();
- assert.equal(discovered.gizModels.length,12,'four image/video, five speech and three music models');
+ assert.equal(discovered.gizModels.length,17,'nine image/video, five speech and three music models');
  assert.ok(discovered.image.includes('giz:krea-2'));
  assert.ok(discovered.video.some(m=>m.id==='giz:minimax-h3-turbo'));
  assert.deepEqual(discovered.narrationEngines.filter(m=>m.id.startsWith('giz:')).map(m=>m.id),['giz:omnivoice','giz:inworld-tts-1-5-mini','giz:xai-tts','giz:tts-1','giz:gateway/heygen:voice@1.0']);

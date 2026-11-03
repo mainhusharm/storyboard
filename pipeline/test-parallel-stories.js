@@ -59,7 +59,17 @@ test('Flashloop and SJinn can start another story while existing stories remain 
   const saved=jobs.find(j=>j.source===source&&j.title==='River story');saved.status='completed';saved.result={title:'River story',sceneLength:8,scenes:[{title:'River',imagePrompt:'Only river reference',videoPrompt:'Water flows'}]};
   await page.select('#mvJobSelect',saved.id);await page.waitForSelector('#fullScriptBox');await page.click('#btnGenerateImage');await page.waitForFunction(()=>!document.querySelector('#btnNewStory').disabled&&document.querySelector('#btnGenerateImage').disabled);
   assert.equal(posts.at(-1).story.scenes[0].imagePrompt,'Only river reference','image carries the selected story, never the last batch idea');
-  await page.close();
+   await page.reload({waitUntil:'networkidle0'});
+   assert.equal(await page.$eval('#mvJobSelect',el=>el.value),'','opening another template never auto-loads an account-wide story');
+   assert.equal(await page.$eval('#idea',el=>el.value),'');
+   await page.select('#mvJobSelect',saved.id);await page.waitForFunction(()=>!document.querySelector('#btnMakeVideo').disabled);
+   page.once('dialog',dialog=>dialog.accept());
+   await page.click('#btnMakeVideo');await page.waitForFunction(()=>document.querySelector('#storyTitle').value==='');
+   assert.equal(posts.at(-1).kind||'film','film');
+   assert.equal(await page.$eval('#storyTitle',el=>el.value),'','queued video leaves a fresh story draft');
+   assert.equal(await page.$eval('#mvJobSelect',el=>el.value),'');
+   assert.ok(jobs.some(j=>j.source===source&&(j.kind||'film')==='film'),'queued job remains saved');
+   await page.close();
  }
  assert.deepEqual(errors,[]);
 });

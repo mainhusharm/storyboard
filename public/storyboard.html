@@ -368,6 +368,7 @@ The Director AI will:
 <script src="/auth.js"></script>
 <script src="/storyboard-cloud.js"></script>
 <script src="/modelscope-controls.js"></script>
+<script src="/giz-controls.js"></script>
 <script>
 // Auth guard — shared resilient guard (window.SBAuth). Retries transient
 // /api/auth/me failures and only redirects on a real 401, so a logged-in user
@@ -418,7 +419,7 @@ function rememberFinalFilm(url){
 }
 function resetStoryboardAssets(){
   FINAL_FILM=null;
-  for(const key of ['sb_final_url','sb_final_board','sb_clip_urls','sb_narr_url']){
+  for(const key of ['sb_final_url','sb_final_board','sb_clip_urls','sb_narr_url','sb_voice_urls']){
     try{localStorage.removeItem(key)}catch(e){}
   }
   renderFinalFilm();
@@ -587,6 +588,7 @@ async function init(){
   }).join('');
   const IMG_MODEL_LABELS={'aqua:qwen-image-3.0-pro':'Qwen Image 3.0 Pro — AquaDevs','modelscope:qwen-image-2.1':'Qwen Image 2.1 — ModelScope','aqua:nanobanana-pro':'Nano Banana Pro — AquaDevs','aqua:agnes-image':'Agnes Image — AquaDevs',
     'xclis:gpt-image-2.5-sunburst-az':'GPT Image 2.5 Sunburst AZ — xclis','xclis:gpt-image-2.5-sunburst':'GPT Image 2.5 Sunburst — xclis','xclis:gpt-image-2.5-flare-az':'GPT Image 2.5 Flare AZ — xclis','xclis:gpt-image-2.5-flare':'GPT Image 2.5 Flare — xclis'};
+  for(const model of m.gizModels||[])if(model.kind==='image')IMG_MODEL_LABELS[model.id]=model.label;
   $('imageModel').innerHTML=m.image.map(x=>`<option value="${x}">${IMG_MODEL_LABELS[x]||x}</option>`).join('');
   try{const saved=localStorage.getItem('sb_image_model');if(m.image.includes(saved))$('imageModel').value=saved;}catch(e){}
   $('imageModel').addEventListener('change',()=>{try{localStorage.setItem('sb_image_model',$('imageModel').value);}catch(e){}});
@@ -744,7 +746,7 @@ let LOCAL_BUSY=false;
 // then carry characters/framesData along; on localhost this stays false so the
 // server's authoritative disk files are never overwritten with a stale copy.
 let OFFLINE_BOARD=false;
-function sbPayload(extra){const b={...(window.SBModelscope?.payload()||{}),...extra};if(OFFLINE_BOARD||IS_VERCEL_CLIENT){if(CHARS.length)b.characters=CHARS;if(FRAMES.length)b.framesData=FRAMES;}return b;}
+function sbPayload(extra){const b={...(window.SBModelscope?.payload()||{}),...(window.SBGiz?.payload()||{}),...extra};if(OFFLINE_BOARD||IS_VERCEL_CLIENT){if(CHARS.length)b.characters=CHARS;if(FRAMES.length)b.framesData=FRAMES;}return b;}
 async function acceptCharacterResults(result){
   if(!result)return;
   if(Array.isArray(result.characters)){
@@ -851,6 +853,9 @@ async function guardBusy(){
 let SUBMITTING=false;
 // POST a run with busy-guard + double-click lock; alerts on server errors.
  async function postJob(path, body){
+  if((path==='/char-refs'||path==='/images')&&body?.imageModel?.startsWith('giz:'))return queueCloudFilm({mode:path==='/char-refs'?'references':'images',framesData:FRAMES,characters:CHARS,...body,onlyCharacters:Array.isArray(body.force)?body.force:undefined});
+  if(path==='/narration'&&body?.narrationEngine?.startsWith('giz:'))return queueCloudFilm({mode:'narration',framesData:FRAMES,characters:CHARS,...body});
+  if(path==='/videos'&&body?.videoModel?.startsWith('giz:'))return queueCloudFilm({mode:'videos',framesData:FRAMES,characters:CHARS,...body});
   if(SUBMITTING) return null;
   if(!(await guardBusy())) return null;
   clearLocalLog();
@@ -891,7 +896,7 @@ $('btnAuto').onclick=async()=>{
   if(script.length<10)return alert('Paste a script first.');
   if(!confirm(`Full auto pipeline: archives old renders, then builds storyboard → character refs → images → ${$('narrationMode').value==='tts'?'TTS narration → ':''}videos → final film. Language: ${$('language').selectedOptions[0]?.text||'English'}. This can take 20–60 minutes. Start?`))return;
   if(!(await guardBusy()))return;
-  if(IS_VERCEL_CLIENT) return queueCloudFilm({script});
+  if(IS_VERCEL_CLIENT||window.SBGiz?.active()) return queueCloudFilm({script,voiceUrls:{}});
   clearLocalLog();
   const r=await api('/run-all',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
     ...(window.SBModelscope?.payload()||{}),script,model:$('chatModel').value,duration:Number($('duration').value),look:$('look').value,
@@ -1190,6 +1195,7 @@ async function pollVideoTask(frameNum, task, body, idx, total){
 // request small; the server returns the rendered frame (with chain anchor) so the
 // next frame can anchor across separate invocations.
 $('btnVideos').onclick=async()=>{
+  if($('videoModel').value.startsWith('giz:'))return queueCloudFilm({mode:'videos',framesData:FRAMES,characters:CHARS});
   if(IS_VERCEL_CLIENT) return runVideosVercel();
   await postJob('/videos',sbPayload({ratio:$('ratio').value,resolution:$('videoResolution').value,videoModel:$('videoModel').value,style:$('style').value,force:true,chainContinuity:$('chainContinuity').checked,narrationMode:$('narrationMode').value}));
 };
@@ -1256,7 +1262,7 @@ $('btnNarration').onclick=async()=>{
   if(r&&r.narrationUrl){try{localStorage.setItem('sb_narr_url',r.narrationUrl)}catch(e){}}
 };
 $('btnCombine').onclick=async()=>{
-  if(IS_VERCEL_CLIENT)return queueCloudFilm({mode:'combine',framesData:FRAMES,characters:CHARS,clipUrls:loadClipUrls(),narrationUrl:localStorage.getItem('sb_narr_url')||''});
+  if(IS_VERCEL_CLIENT||window.SBGiz?.active())return queueCloudFilm({mode:'combine',framesData:FRAMES,characters:CHARS,clipUrls:loadClipUrls(),narrationUrl:localStorage.getItem('sb_narr_url')||''});
   // Cross-instance recovery: clips + narration live on the instance that rendered
   // them — pass their hosted URLs so combine can re-download anything missing.
   const clipUrls=loadClipUrls();
@@ -1310,15 +1316,16 @@ async function saveCharacterRef(index){
   await regenChar(c.id,true);openCharacterRef(CHARS.findIndex(x=>x.id===c.id));
 }
 
-function cloudFilmOptions(){return {...(window.SBModelscope?.payload()||{}),model:$('chatModel').value,duration:Number($('duration').value),look:$('look').value,style:$('style').value,imageModel:$('imageModel').value,videoModel:$('videoModel').value,ratio:$('ratio').value,voice:$('voice').value,language:$('language').value,narrationMode:$('narrationMode').value,narrationEngine:$('narrationEngine').value,narrVolume:Number($('narrVolume').value),origVolume:Number($('origVolume').value),consistency:$('consistency').checked,chainContinuity:$('chainContinuity').checked,clipDuration:Number($('clipDuration').value),resolution:$('videoResolution').value,title:($('script').value||'Storyboard film').split('\n').find(s=>s.trim())?.replace(/^#+\s*/,'').slice(0,120)};}
+function cloudFilmOptions(){return {...(window.SBModelscope?.payload()||{}),...(window.SBGiz?.payload()||{}),voiceUrls:JSON.parse(localStorage.getItem('sb_voice_urls')||'{}'),model:$('chatModel').value,duration:Number($('duration').value),look:$('look').value,style:$('style').value,imageModel:$('imageModel').value,videoModel:$('videoModel').value,ratio:$('ratio').value,voice:$('voice').value,language:$('language').value,narrationMode:$('narrationMode').value,narrationEngine:$('narrationEngine').value,narrVolume:Number($('narrVolume').value),origVolume:Number($('origVolume').value),consistency:$('consistency').checked,chainContinuity:$('chainContinuity').checked,clipDuration:Number($('clipDuration').value),resolution:$('videoResolution').value,title:($('script').value||'Storyboard film').split('\n').find(s=>s.trim())?.replace(/^#+\s*/,'').slice(0,120)};}
 function renderCloudFilm(j){
  $('phasepill').classList.toggle('busy',SBStoryCloud.active(j));$('phasetxt').textContent='CLOUD · '+(j.status==='running'?(j.message||j.phase):j.status.toUpperCase());$('gprog').firstElementChild.style.width=j.percent+'%';$('btnCancel').style.display=SBStoryCloud.active(j)?'':'none';
  $('log').textContent=(j.logs||[]).join('\n');$('log').scrollTop=$('log').scrollHeight;
  if(j.result?.url)rememberFinalFilm(j.result.url);
 }
 function watchCloudFilm(j){
- stopCloudWatch?.();CLOUD_JOB=j;if(j.script)$('script').value=j.script;for(const [id,key] of Object.entries({chatModel:'model',style:'style',imageModel:'imageModel',videoModel:'videoModel',ratio:'ratio',videoResolution:'resolution',clipDuration:'clipDuration',narrationMode:'narrationMode',narrationEngine:'narrationEngine',voice:'voice',language:'language',duration:'duration'})){const value=j.options?.[key],el=$(id);if(value!==undefined&&Array.from(el?.options||[]).some(o=>o.value===String(value)))el.value=value;}localStorage.setItem('sb_cloud_job',j.id);renderCloudFilm(j);
- stopCloudWatch=SBStoryCloud.watch(j.id,async latest=>{CLOUD_JOB=latest;renderCloudFilm(latest);if(latest.board?.frames?.length){CHARS=latest.board.characters;FRAMES=latest.board.frames;OFFLINE_BOARD=true;localStorage.setItem('sb_chars',JSON.stringify(CHARS));localStorage.setItem('sb_frames',JSON.stringify(FRAMES));await refresh({characters:CHARS,frames:FRAMES});}},e=>{$('phasetxt').textContent='Cloud film saved · reconnecting to progress…';});
+  stopCloudWatch?.();CLOUD_JOB=j;if(j.script)$('script').value=j.script;for(const [id,key] of Object.entries({chatModel:'model',style:'style',imageModel:'imageModel',videoModel:'videoModel',ratio:'ratio',videoResolution:'resolution',clipDuration:'clipDuration',narrationMode:'narrationMode',narrationEngine:'narrationEngine',voice:'voice',language:'language',duration:'duration'})){const value=j.options?.[key],el=$(id);if(value!==undefined&&Array.from(el?.options||[]).some(o=>o.value===String(value)))el.value=value;}localStorage.setItem('sb_cloud_job',j.id);renderCloudFilm(j);
+  window.SBGiz?.restore(j.options||{});
+  stopCloudWatch=SBStoryCloud.watch(j.id,async latest=>{CLOUD_JOB=latest;renderCloudFilm(latest);if(latest.board?.frames?.length){CHARS=latest.board.characters;FRAMES=latest.board.frames;OFFLINE_BOARD=true;localStorage.setItem('sb_chars',JSON.stringify(CHARS));localStorage.setItem('sb_frames',JSON.stringify(FRAMES));for(const f of FRAMES)if(f.clip_url){const urls=loadClipUrls();urls[f.frame]=f.clip_url;localStorage.setItem('sb_clip_urls',JSON.stringify(urls));}if(latest.result?.voiceUrls)localStorage.setItem('sb_voice_urls',JSON.stringify(latest.result.voiceUrls));await refresh({characters:CHARS,frames:FRAMES});}},e=>{$('phasetxt').textContent='Cloud film saved · reconnecting to progress…';});
 }
 async function queueCloudFilm(extra){
  if(SUBMITTING)return;SUBMITTING=true;CLOUD_SUBMITTING=true;
