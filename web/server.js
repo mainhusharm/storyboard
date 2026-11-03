@@ -2424,9 +2424,13 @@ async function download(fileUrl, outPath) {
 async function chatCompletion(model, messages, maxTokens = 16384, temperature = 0.7, options = {}) {
   if(String(model||'').startsWith('giz:')){
     if(!GIZ_API_KEY)throw new Error('Set GIZ_API_KEY to use Giz chat models.');
+    // /v1 uses provider-qualified IDs, unlike the media tool model aliases.
+    const chatIds={'gpt-6-luna':'openai/gpt-6-luna','gpt-5-4-nano':'openai/gpt-5.4-nano','grok':'x-ai/grok-4.7','deepseek-flash':'deepseek/deepseek-v4.1-flash-1017','gemini-flash-lite':'google/gemini-3.5-flash-lite','gemini-flash':'google/gemini-3.8-flash','gemma-4-31b':'google/gemma-4-31b-it','glm-5':'z-ai/glm-5.3'};
+    const selected=String(model).slice(4),upstream=chatIds[selected];
+    if(!upstream)throw new Error('Unsupported Giz chat model.');
     const response=await fetch('https://www.giz.ai/v1/chat/completions',{
       method:'POST',headers:{Authorization:'Bearer '+GIZ_API_KEY,'Content-Type':'application/json'},
-      body:JSON.stringify({model:String(model).slice(4),messages,max_tokens:maxTokens,temperature,stream:false}),
+      body:JSON.stringify({model:upstream,messages,max_tokens:maxTokens,temperature,stream:false}),
       signal:AbortSignal.timeout(options.timeoutMs||250000)
     });
     if(!response.ok){
