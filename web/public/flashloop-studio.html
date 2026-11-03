@@ -809,8 +809,9 @@ function displayStudioJob(j) {
   if(j.kind==='prompt'&&studioActive(j))setLoadingText(j.message||'Writing script in the cloud…');
   $('btnGenerateImage').disabled=j.kind==='image'&&studioActive(j);
   $('i2iLoading').style.display=j.kind==='image'&&studioActive(j)?'flex':'none';
-  const script=j.kind==='prompt'&&j.status==='completed'?j.result:j.script;
-  if($('scriptContainer').dataset.job!==j.id&&!script){
+  const statusOnly=$('scriptContainer').dataset.monitorOnly===j.id;
+  const script=statusOnly?null:j.kind==='prompt'&&j.status==='completed'?j.result:j.script;
+  if(!statusOnly&&$('scriptContainer').dataset.job!==j.id&&!script){
     scenes=[];sceneImages={};scriptTitle='';$('scriptContainer').replaceChildren();$('scriptContainer').dataset.job='';
     $('btnGenerateImage').style.display='none';$('i2iSection').style.display='none';$('storyTitle').value=j.title;
   }
@@ -878,7 +879,7 @@ async function restoreStudioJobs(preferredId) {
   const selected=preferredId&&jobs.find(j=>j.id===preferredId);
   if(selected){select.value=selected.id;displayStudioJob(selected);watchStudioJob(selected.id);}
 }
-$('mvJobSelect').onchange=()=>{if($('mvJobSelect').value)watchStudioJob($('mvJobSelect').value);};
+$('mvJobSelect').onchange=()=>{delete $('scriptContainer').dataset.monitorOnly;if($('mvJobSelect').value)watchStudioJob($('mvJobSelect').value);};
 $('mvCancel').onclick=async()=>{
   if(!studioJobId)return;
   try{const {job}=await studioApi('/api/studio-jobs/'+encodeURIComponent(studioJobId),{method:'DELETE'});++studioPollEpoch;clearTimeout(studioJobTimer);displayStudioJob(job);}
@@ -895,6 +896,9 @@ async function queueStudioJob(payload){
     studioRequestKey='';studioRequestBody='';
     if((payload.kind||'film')==='film'){
       studioSubmitting=false;$('btnNewStory').disabled=false;$('btnNewStory').click();
+      // Clear the draft, but keep observing the saved film independently.
+      $('scriptContainer').dataset.monitorOnly=job.id;
+      $('mvJobSelect').value=job.id;watchStudioJob(job.id);
       showToast('Video saved and queued. Start a new story, or select the saved story to view progress.');
     }else showToast('Saved — use New story to start another in parallel.');
     return job;

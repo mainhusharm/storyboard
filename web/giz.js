@@ -87,9 +87,9 @@ function createGizProvider({getKey,fetchImpl=(...args)=>fetch(...args),log=()=>{
  async function poll(task){
   if(!String(task).startsWith(PREFIX))throw fail('Invalid Giz task.');let id;try{id=decodeURIComponent(task.slice(PREFIX.length));}catch{throw fail('Invalid Giz task.');}if(!id||id.length>200)throw fail('Invalid Giz task.');
   const data=await request('job.get',{job:id,wait:false});const status=String(data.status||data.job?.status||'').toLowerCase();
-   if(['queued','running','pending','created','processing'].includes(status))return {pending:true,task};
+    if(['queued','running','pending','created','processing'].includes(status))return {pending:true,task};
   if(['failed','cancelled','canceled'].includes(status))return {failed:true,error:'Giz job '+status+(data.error?': '+String(data.error).replace(/[.\s]+$/,''):'')+'. Saved outputs retained; no generation was resubmitted.'};
-  if(status!=='completed')throw fail('Giz returned an unknown job state. Keep the existing task ID.',{statusCode:502});
+   if(status!=='completed')throw fail('Giz returned an unknown job state. Keep the existing task ID; no new generation was submitted.',{permanent:true,statusCode:502});
    const output=data.result?.output||data.job?.result?.output;const urls=outputUrls(output);if(!urls.length)throw fail('Giz completed without a downloadable media URL. Existing task retained.',{permanent:true,statusCode:502});return {url:urls[0],urls,output};
  }
  async function wait(task,minutes=25){const deadline=now()+minutes*60000;while(now()<deadline){const r=await poll(task);if(r.failed)throw fail(r.error);if(r.url)return r.url;await sleep(10000);}throw fail('Giz job is still pending. Keep task '+task+'; no new generation was submitted.',{task,statusCode:504});}

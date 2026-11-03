@@ -67,7 +67,7 @@ test('Flashloop and SJinn can start another story while existing stories remain 
    await page.click('#btnMakeVideo');await page.waitForFunction(()=>document.querySelector('#storyTitle').value==='');
    assert.equal(posts.at(-1).kind||'film','film');
    assert.equal(await page.$eval('#storyTitle',el=>el.value),'','queued video leaves a fresh story draft');
-   assert.equal(await page.$eval('#mvJobSelect',el=>el.value),'');
+   assert.ok(await page.$eval('#mvJobSelect',el=>el.value),'queued film stays selected for progress');
    assert.ok(jobs.some(j=>j.source===source&&(j.kind||'film')==='film'),'queued job remains saved');
    await page.close();
  }
