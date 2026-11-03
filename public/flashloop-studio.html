@@ -754,7 +754,7 @@ function syncMvEngine(){
   const sel=$('mvModel');
   if(!sel||!sel.options.length)return;
   const v=sel.value;
-  $('btnMakeVideo').textContent='🎬 Make Video ('+((sel.options[sel.selectedIndex].text||'').split('—')[0].trim()||v)+')';
+  $('btnMakeVideo').textContent='🎬 Make Video ('+((sel.options[sel.selectedIndex]?.text||v).split('—')[0].trim()||'Select a model')+')';
   syncMvDuration();
   const s=$('mvSummary'); if(s) s.textContent=mvSummaryText();
 }
@@ -770,7 +770,7 @@ function mvSummaryText(){
   const sel=$('mvModel');
   if(!sel||!sel.options.length)return '';
   const v=sel.value;
-  const model=(sel.options[sel.selectedIndex].text||'').split('—')[0].trim();
+  const model=(sel.options[sel.selectedIndex]?.text||v||'Select a model').split('—')[0].trim();
   const want=mvDuration();
   let dur=want;
   if(v==='omni-flash') dur=8;

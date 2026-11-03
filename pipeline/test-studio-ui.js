@@ -29,6 +29,7 @@ test('reopened studio restores scripts, images and final films without restartin
   assert.match(await page.$eval('#duration option[value="15"]',el=>el.textContent),/3 scenes at 20s/);
   assert.match(await page.$eval('#duration option[value="30"]',el=>el.textContent),/6 scenes at 20s/);
   await page.select('#sceneLength','8');
+  await page.evaluate(()=>{document.querySelector('#mvModel').selectedIndex=-1;syncMvEngine();mvSummaryText();});
  assert.match(await page.$eval('#fullScriptBox',el=>el.value),/water flows gently/);assert.equal(await page.$eval('#outputPanel',el=>getComputedStyle(el).display==='none'),false);
   await page.click('#btnGenerateImage');await page.waitForFunction(()=>/Saved|Queued/.test(document.querySelector('#toast').textContent));
  await page.close();await new Promise(r=>setTimeout(r,150));page=await open();await page.waitForFunction(()=>document.querySelector('#i2iImage').getAttribute('src')==='/fixture.png');
