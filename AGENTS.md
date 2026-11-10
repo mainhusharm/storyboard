@@ -447,6 +447,12 @@ powershell -ExecutionPolicy Bypass -File pipeline\Continue-Full.ps1
 
 ## Flashloop / SJinn background generations
 
+Giz script jobs use one complete-script chat request, cached trend grounding (or
+an explicitly ungrounded heuristic), and a timeout within studioTimeout's worker
+deadline. Do not retry malformed/partial responses or exhausted allowances with
+new paid requests. Keep ambiguous submissions non-replayable. Regression coverage:
+pipeline/test-script-request.js (included in npm run test:giz).
+
 All three studio generation buttons submit durable jobs to /api/studio-jobs.
 web/studio-jobs.js owns Postgres checkpoints, account ownership, leases and
 the script/image/film state machines. web/studio-queue.js publishes Vercel Queue

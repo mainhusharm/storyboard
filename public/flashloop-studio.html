@@ -885,7 +885,7 @@ function displayStudioJob(j) {
   };
   $('mvVideo').style.display=url?'block':'none';
   $('mvDownload').style.display=url?'inline-block':'none';
-  if(j.error)mvLog(j.error,true);
+  if(j.error&&!(j.logs||[]).includes(j.error))mvLog(j.error,true);
   if(j.result?.vault_warning)mvLog(j.result.vault_warning,true);
 }
 function watchStudioJob(id) {

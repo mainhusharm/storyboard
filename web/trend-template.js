@@ -357,7 +357,7 @@ module.exports = function createTrendTemplates(deps) {
   }
 
   // ---------- build ----------
-  async function buildTrendTemplate({ source, slug, name, tagline = '', thumbnail = '', refresh = false, concept = '' } = {}) {
+  async function buildTrendTemplate({ source, slug, name, tagline = '', thumbnail = '', refresh = false, concept = '', cacheOnly = false } = {}) {
     const src = String(source || 'flashloop').toLowerCase();
     const key = `${src}:${slug || name}`;
     const store = loadTrendTemplateStore();
@@ -366,6 +366,11 @@ module.exports = function createTrendTemplates(deps) {
       return { ...cached.template, meta: { ...(cached.meta || {}), fromCache: true } };
     }
 
+    // Single-request script jobs reuse grounding without more network/LLM work.
+    if (cacheOnly) return {
+      ...heuristicTrendTemplate({source:src,slug,name,tagline,concept}),
+      meta:{version:TEMPLATE_VERSION,builtAt:Date.now(),grounded:false,fromCache:false}
+    };
     let examples = [];
     let media = [];
     let images = [];

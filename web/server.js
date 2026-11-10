@@ -1031,7 +1031,7 @@ logLine(`flashloop script: mode ${durMode} -> ${sceneCount} scene(s) x ${perScen
   // concept still lands via TREND_CONCEPTS + the effect name).
   let styleText = '';
   let visionConcept = '';
-  if (trendThumbnail && !IS_VERCEL) {
+  if (trendThumbnail && !IS_VERCEL && !String(promptModel).startsWith('giz:')) {
     try {
       const analysis = await analyzeTrendReference(trendThumbnail, effectName, promptModel, mode);
       styleText = analysis.style;
@@ -1087,7 +1087,8 @@ Mode: ${mode === 'style' ? 'VISUAL STYLE — apply this look to a subject.' : 'V
   let parsed = {};
   let raw = '';
   let lastScriptErr = null;
-  for (let attempt = 0; attempt < 2 && !Array.isArray(parsed.scenes); attempt++) {
+  const scriptAttempts = String(promptModel).startsWith('giz:') ? 1 : 2;
+  for (let attempt = 0; attempt < scriptAttempts && !Array.isArray(parsed.scenes); attempt++) {
     try {
       raw = await chatWithLogfareFallback(promptModel, [{ role: 'system', content: system }, { role: 'user', content: promptText }], 20000, 1.0);
       parsed = parseJsonLenient(raw);
@@ -1132,6 +1133,9 @@ Mode: ${mode === 'style' ? 'VISUAL STYLE — apply this look to a subject.' : 'V
     }
   }
 
+  if (String(promptModel).startsWith('giz:') && scenes.length !== sceneCount && !lastScriptErr) {
+    throw new Error(`The script response contained ${scenes.length}/${sceneCount} scenes. No extra requests were submitted. Try a shorter video or another chat model.`);
+  }
   if (!scenes.length) {
     throw new Error(lastScriptErr
       ? 'Script LLM unavailable: ' + lastScriptErr.message
@@ -2455,11 +2459,15 @@ async function chatCompletion(model, messages, maxTokens = 16384, temperature = 
     const selected=String(model).slice(4),upstream=GIZ_CHAT_MODELS[selected];
     if(!upstream)throw new Error('Unsupported Giz chat model.');
     const gizMaxTokens=Math.min(Math.max(1,Number(maxTokens)||8192),8192);
-    const response=await fetch('https://www.giz.ai/v1/chat/completions',{
+    let response;
+    try { response=await fetch('https://www.giz.ai/v1/chat/completions',{
       method:'POST',headers:{Authorization:'Bearer '+GIZ_API_KEY,'Content-Type':'application/json'},
       body:JSON.stringify({model:upstream,messages,max_tokens:gizMaxTokens,temperature,stream:false}),
-      signal:AbortSignal.timeout(options.timeoutMs||250000)
-    });
+      signal:AbortSignal.timeout(studioTimeout(options.timeoutMs||220000))
+    }); } catch(e) {
+      if(e.name==='TimeoutError'||e.name==='AbortError')throw Object.assign(new Error('Giz did not finish within this worker\'s time budget. No replacement request was submitted. Try a shorter video or another chat model.'),{terminal:true,code:'GIZ_CHAT_TIMEOUT'});
+      throw e;
+    }
     if(!response.ok){
       // Classify provider errors without exposing raw upstream bodies or credentials.
       const detail=await response.json().catch(()=>({}));
@@ -2470,13 +2478,18 @@ async function chatCompletion(model, messages, maxTokens = 16384, temperature = 
       const retryHeader=response.headers.get('retry-after');
       const retrySeconds=retryHeader?(Number.isFinite(Number(retryHeader))?Math.max(0,Math.ceil(Number(retryHeader))):Math.max(0,Math.ceil((Date.parse(retryHeader)-Date.now())/1000))):0;
       const message=response.status===429
-        ? quota?'Giz chat allowance or credits are exhausted.'+(cleanMsg?' ('+cleanMsg+')':' Check your Giz account limits/credits, or select another provider.')
+        ? quota?'Giz chat allowance or credits are exhausted.'+(cleanMsg?' ('+cleanMsg+')':'')+' Choose another chat model or wait for the allowance to reset. No automatic replacement was submitted.'
           :'Giz is rate-limiting chat requests.'+(Number.isFinite(retrySeconds)&&retrySeconds>0?' Retry after '+retrySeconds+' seconds.':' Wait before retrying, or select another provider.')
-        :quota?'Giz chat allowance or credits are exhausted.'+(cleanMsg?' ('+cleanMsg+')':' Check your Giz account limits/credits, or select another provider.')
+        :quota?'Giz chat allowance or credits are exhausted.'+(cleanMsg?' ('+cleanMsg+')':'')+' Choose another chat model or add Giz credits. No automatic replacement was submitted.'
         :'Giz chat failed (HTTP '+response.status+')'+(cleanMsg?': '+cleanMsg:'.');
       throw Object.assign(new Error(message),{code:quota?'GIZ_CHAT_QUOTA':'GIZ_CHAT_HTTP_ERROR',statusCode:response.status,terminal:true,retryAfterSeconds:Number.isFinite(retrySeconds)?retrySeconds:0});
     }
-    const data=await response.json(),text=data.choices?.[0]?.message?.content;
+    let data;
+    try { data=await response.json(); } catch(e) {
+      throw Object.assign(new Error('Giz chat response was interrupted before the complete script arrived. No replacement request was submitted.'),{terminal:true,code:'GIZ_CHAT_INCOMPLETE'});
+    }
+    if(data.choices?.[0]?.finish_reason==='length')throw Object.assign(new Error('Giz reached the output token limit before finishing the script. Try a shorter video. No extra scene requests were submitted.'),{terminal:true,code:'GIZ_CHAT_TRUNCATED'});
+    const text=data.choices?.[0]?.message?.content;
     if(typeof text!=='string'||!text.trim())throw new Error('Giz chat returned no text.');
     return text;
   }
@@ -7479,13 +7492,14 @@ const { slug = '', name = '', tagline = '', idea = '', duration, sceneDuration, 
       // sceneLength is the PER-SCENE seconds (5/8/10/15/30); the scene count adapts.
         const mode = Number(sceneDuration ?? duration) || 15;
 const perScene = flashloopScenePlan(mode, sceneLength).perScene;
-        // Ground the script in this trend's own example material (cached a week).
+        // Reuse verified cached examples; never spend this script worker's budget
+        // on scraping, frame downloads or extra template/vision LLM requests.
         let trendTpl = null;
         try {
           trendTpl = await trendTemplates.buildTrendTemplate({
             source: String(source || (trendMode === 'style' ? 'flashloop' : 'sjinn')),
             slug: String(slug || ''), name: effectName, tagline: String(tagline || ''),
-            thumbnail: String(trendThumbnail || ''), concept: resolveTrendConcept(String(slug || ''), effectName, '')
+            thumbnail: String(trendThumbnail || ''), concept: resolveTrendConcept(String(slug || ''), effectName, ''), cacheOnly:true
           });
         } catch (e) { logLine('generate-prompt: trend template unavailable — ' + e.message); }
         const script = await generateFlashloopScript(effectName, String(tagline || ''), String(idea || ''), mode, String(ratio), selectedModel, refs, String(trendThumbnail || ''), perScene, trendMode, String(slug || ''), trendTpl);

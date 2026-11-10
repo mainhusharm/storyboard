@@ -14,7 +14,7 @@
     "test:tasks": "node --test pipeline/test-tasks.js",
     "test:parallel": "node --test pipeline/test-parallel-stories.js && node pipeline/test-generations.js",
     "test:storyboard-cloud": "node --test pipeline/test-storyboard-cloud.js pipeline/test-storyboard-cloud-ui.js",
-    "test:giz": "node --test pipeline/test-giz.js pipeline/test-giz-worker.js pipeline/test-giz-ui.js pipeline/test-giz-chat.js"
+    "test:giz": "node --test pipeline/test-giz.js pipeline/test-giz-worker.js pipeline/test-giz-ui.js pipeline/test-giz-chat.js pipeline/test-script-request.js"
   },
   "keywords": [],
   "author": "",
