@@ -1092,7 +1092,7 @@ Mode: ${mode === 'style' ? 'VISUAL STYLE — apply this look to a subject.' : 'V
       raw = await chatWithLogfareFallback(promptModel, [{ role: 'system', content: system }, { role: 'user', content: promptText }], 20000, 1.0);
       parsed = parseJsonLenient(raw);
       if (!Array.isArray(parsed.scenes)) lastScriptErr = new Error('LLM returned JSON without a scenes array');
-    } catch (e) { logLine(`flashloop script attempt ${attempt + 1} failed: ${e.message}`); lastScriptErr = e; }
+    } catch (e) { logLine(`flashloop script attempt ${attempt + 1} failed: ${e.message}`); lastScriptErr = e; if (e.terminal) break; }
     if (!Array.isArray(parsed.scenes)) {
       promptText += '\n\nIMPORTANT: your previous response was not valid JSON. Return ONLY the JSON object — no markdown, no commentary, no extra text.';
     }
@@ -2454,23 +2454,26 @@ async function chatCompletion(model, messages, maxTokens = 16384, temperature = 
     // /v1 uses provider-qualified IDs, unlike the media tool model aliases.
     const selected=String(model).slice(4),upstream=GIZ_CHAT_MODELS[selected];
     if(!upstream)throw new Error('Unsupported Giz chat model.');
+    const gizMaxTokens=Math.min(Math.max(1,Number(maxTokens)||8192),8192);
     const response=await fetch('https://www.giz.ai/v1/chat/completions',{
       method:'POST',headers:{Authorization:'Bearer '+GIZ_API_KEY,'Content-Type':'application/json'},
-      body:JSON.stringify({model:upstream,messages,max_tokens:maxTokens,temperature,stream:false}),
+      body:JSON.stringify({model:upstream,messages,max_tokens:gizMaxTokens,temperature,stream:false}),
       signal:AbortSignal.timeout(options.timeoutMs||250000)
     });
     if(!response.ok){
       // Classify provider errors without exposing raw upstream bodies or credentials.
       const detail=await response.json().catch(()=>({}));
       const error=detail.error||detail;
-      const reason=String(error.code||'')+' '+String(error.type||'')+' '+String(error.message||'');
-      const quota=/quota|credits?|balance|allowance|billing|payment|budget|daily.limit/i.test(reason);
+      const cleanMsg=String(error.message||'').replace(/\s+/g,' ').trim().slice(0,220);
+      const reason=String(error.code||'')+' '+String(error.type||'')+' '+cleanMsg;
+      const quota=response.status===402||/quota|credits?|balance|allowance|billing|payment|budget|daily.limit/i.test(reason);
       const retryHeader=response.headers.get('retry-after');
       const retrySeconds=retryHeader?(Number.isFinite(Number(retryHeader))?Math.max(0,Math.ceil(Number(retryHeader))):Math.max(0,Math.ceil((Date.parse(retryHeader)-Date.now())/1000))):0;
       const message=response.status===429
-        ? quota?'Giz chat allowance or credits are exhausted. Check your Giz account limits/credits, or select another provider.'
+        ? quota?'Giz chat allowance or credits are exhausted.'+(cleanMsg?' ('+cleanMsg+')':' Check your Giz account limits/credits, or select another provider.')
           :'Giz is rate-limiting chat requests.'+(Number.isFinite(retrySeconds)&&retrySeconds>0?' Retry after '+retrySeconds+' seconds.':' Wait before retrying, or select another provider.')
-        :'Giz chat failed (HTTP '+response.status+').';
+        :quota?'Giz chat allowance or credits are exhausted.'+(cleanMsg?' ('+cleanMsg+')':' Check your Giz account limits/credits, or select another provider.')
+        :'Giz chat failed (HTTP '+response.status+')'+(cleanMsg?': '+cleanMsg:'.');
       throw Object.assign(new Error(message),{code:quota?'GIZ_CHAT_QUOTA':'GIZ_CHAT_HTTP_ERROR',statusCode:response.status,terminal:true,retryAfterSeconds:Number.isFinite(retrySeconds)?retrySeconds:0});
     }
     const data=await response.json(),text=data.choices?.[0]?.message?.content;
