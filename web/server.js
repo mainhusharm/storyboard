@@ -1120,7 +1120,7 @@ Mode: ${mode === 'style' ? 'VISUAL STYLE — apply this look to a subject.' : 'V
   }
 
   // Fallback: fill any missing scenes one-by-one so the scene count is always right.
-  if (scenes.length < sceneCount) {
+  if (scenes.length < sceneCount && !/^giz:/i.test(String(promptModel || ''))) {
     logLine(`flashloop script: got ${scenes.length}/${sceneCount} scenes — filling the rest individually`);
     for (let i = scenes.length; i < sceneCount; i++) {
       try {
@@ -1263,7 +1263,34 @@ const MODELS = ['gemini-2.5-pro', 'gemini-3.1-pro', 'gemini-3.1-flash-lite', 'ge
   // models already use. Routed through chatCompletion()'s Aqua path
   // (pinned model → gemini-2.5-pro → deepseek-v3.2 on PaxSenix).
   ...AQUA_CHAT_MODELS.map(m => 'aqua:' + m),
-  ...['gpt-6-luna','gpt-5-4-nano','grok','deepseek-flash','gemini-flash-lite','gemini-flash','gemma-4-31b','glm-5'].map(m=>'giz:'+m)];
+  ...['claude-opus-5-5','claude-opus-4-8','claude-sonnet-5-5','claude-fable-5-2','gpt-6-1-sol','gpt-6-1-sol-pro','gpt-6-sol','gpt-6-sol-pro','gpt-6-1-terra','gpt-6-1-terra-pro','gpt-6-luna-pro','gpt-6-luna','gpt-5-4-nano','gemini-3-1-pro','gemini-flash','gemini-flash-lite','grok','deepseek-v4-pro','deepseek-flash','qwen3-8-max','kimi-k3-1-pro','mistral-large-4','glm-5-3-prime','glm-5','gemma-4-31b'].map(m=>'giz:'+m)];
+const GIZ_CHAT_MODELS = {
+  'claude-opus-5-5': 'anthropic/claude-opus-5.5',
+  'claude-opus-4-8': 'anthropic/claude-opus-4.8',
+  'claude-sonnet-5-5': 'anthropic/claude-sonnet-5.5',
+  'claude-fable-5-2': 'anthropic/claude-fable-5.2',
+  'gpt-6-1-sol': 'openai/gpt-6.1-sol',
+  'gpt-6-1-sol-pro': 'openai/gpt-6.1-sol-pro',
+  'gpt-6-sol': 'openai/gpt-6-sol',
+  'gpt-6-sol-pro': 'openai/gpt-6-sol-pro',
+  'gpt-6-1-terra': 'openai/gpt-6.1-terra',
+  'gpt-6-1-terra-pro': 'openai/gpt-6.1-terra-pro',
+  'gpt-6-luna-pro': 'openai/gpt-6-luna-pro',
+  'gpt-6-luna': 'openai/gpt-6-luna',
+  'gpt-5-4-nano': 'openai/gpt-5.4-nano',
+  'gemini-3-1-pro': 'google/gemini-3.1-pro-preview',
+  'gemini-flash': 'google/gemini-3.8-flash',
+  'gemini-flash-lite': 'google/gemini-3.5-flash-lite',
+  'grok': 'x-ai/grok-4.7',
+  'deepseek-v4-pro': 'deepseek/deepseek-v4-pro',
+  'deepseek-flash': 'deepseek/deepseek-v4.1-flash-1017',
+  'qwen3-8-max': 'qwen/qwen3.8-max-prime',
+  'kimi-k3-1-pro': 'moonshotai/kimi-k3.1-pro',
+  'mistral-large-4': 'mistralai/mistral-large-4-0',
+  'glm-5-3-prime': 'z-ai/glm-5.3-prime',
+  'glm-5': 'z-ai/glm-5.3',
+  'gemma-4-31b': 'google/gemma-4-31b-it'
+};
 // Logfare chat models (https://logfare.ai/v1) — flashloop/sjinn prompt generation ONLY.
 // Selected from the UI with a "logfare:" prefix so they never collide with same-named
 // PaxSenix models. gemma-4-26b + logfare/auto work without opt-in; the rest require
@@ -2425,8 +2452,7 @@ async function chatCompletion(model, messages, maxTokens = 16384, temperature = 
   if(String(model||'').startsWith('giz:')){
     if(!GIZ_API_KEY)throw new Error('Set GIZ_API_KEY to use Giz chat models.');
     // /v1 uses provider-qualified IDs, unlike the media tool model aliases.
-    const chatIds={'gpt-6-luna':'openai/gpt-6-luna','gpt-5-4-nano':'openai/gpt-5.4-nano','grok':'x-ai/grok-4.7','deepseek-flash':'deepseek/deepseek-v4.1-flash-1017','gemini-flash-lite':'google/gemini-3.5-flash-lite','gemini-flash':'google/gemini-3.8-flash','gemma-4-31b':'google/gemma-4-31b-it','glm-5':'z-ai/glm-5.3'};
-    const selected=String(model).slice(4),upstream=chatIds[selected];
+    const selected=String(model).slice(4),upstream=GIZ_CHAT_MODELS[selected];
     if(!upstream)throw new Error('Unsupported Giz chat model.');
     const response=await fetch('https://www.giz.ai/v1/chat/completions',{
       method:'POST',headers:{Authorization:'Bearer '+GIZ_API_KEY,'Content-Type':'application/json'},

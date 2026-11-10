@@ -583,8 +583,9 @@ async function init(){
     // API routes on).
     const LOGFARE_LABELS={'logfare:deepseek-v4.1-flash':'DeepSeek V4.1 Flash — Logfare'};
     const AQUA_LABELS={'aqua:deepseek-v4.1-flash':'DeepSeek V4.1 Flash — Aqua AI','aqua:deepseek-v4-pro':'DeepSeek V4 Pro — Aqua AI','aqua:mimo-v2.6':'MIMO 2.6 — Aqua AI','aqua:gpt-6.1-sol':'GPT-6.1 Sol — Aqua AI'};
+    const GIZ_CHAT_LABELS={'giz:claude-opus-5-5':'Claude Opus 5.5 — Giz','giz:claude-opus-4-8':'Claude Opus 4.8 — Giz','giz:claude-sonnet-5-5':'Claude Sonnet 5.5 — Giz','giz:claude-fable-5-2':'Claude Fable 5.2 — Giz','giz:gpt-6-1-sol':'GPT-6.1 Sol — Giz','giz:gpt-6-1-sol-pro':'GPT-6.1 Sol Pro — Giz','giz:gpt-6-sol':'GPT-6 Sol — Giz','giz:gpt-6-sol-pro':'GPT-6 Sol Pro — Giz','giz:gpt-6-1-terra':'GPT-6.1 Terra — Giz','giz:gpt-6-1-terra-pro':'GPT-6.1 Terra Pro — Giz','giz:gpt-6-luna-pro':'GPT-6 Luna Pro — Giz','giz:gpt-6-luna':'GPT-6 Luna — Giz','giz:gpt-5-4-nano':'GPT-5.4 Nano — Giz','giz:gemini-3-1-pro':'Gemini 3.1 Pro — Giz','giz:gemini-flash':'Gemini 3.8 Flash — Giz','giz:gemini-flash-lite':'Gemini 3.5 Flash-Lite — Giz','giz:grok':'Grok 4.7 — Giz','giz:deepseek-v4-pro':'DeepSeek V4 Pro — Giz','giz:deepseek-flash':'DeepSeek V4.1 Flash — Giz','giz:qwen3-8-max':'Qwen 3.8 Max Prime — Giz','giz:kimi-k3-1-pro':'Kimi K3.1 Pro — Giz','giz:mistral-large-4':'Mistral Large 4 — Giz','giz:glm-5-3-prime':'GLM 5.3 Prime — Giz','giz:glm-5':'GLM 5.3 — Giz','giz:gemma-4-31b':'Gemma 4 31B — Giz'};
     const lbl=LOGFARE_LABELS[x]||AQUA_LABELS[x]||x;
-    return `<option value="${x}">${lbl}</option>`;
+    return `<option value="${x}">${GIZ_CHAT_LABELS[x]||lbl}</option>`;
   }).join('');
   const IMG_MODEL_LABELS={'aqua:qwen-image-3.0-pro':'Qwen Image 3.0 Pro — AquaDevs','modelscope:qwen-image-2.1':'Qwen Image 2.1 — ModelScope','aqua:nanobanana-pro':'Nano Banana Pro — AquaDevs','aqua:agnes-image':'Agnes Image — AquaDevs',
     'xclis:gpt-image-2.5-sunburst-az':'GPT Image 2.5 Sunburst AZ — xclis','xclis:gpt-image-2.5-sunburst':'GPT Image 2.5 Sunburst — xclis','xclis:gpt-image-2.5-flare-az':'GPT Image 2.5 Flare AZ — xclis','xclis:gpt-image-2.5-flare':'GPT Image 2.5 Flare — xclis'};

@@ -142,9 +142,8 @@ function createStudioJobs({ store, publish, execute, pollImage, now = Date.now, 
   function next(j) {
     if(j.input.kind==='storyboard')return storyboardFlow.next(j);
     if (j.input.kind==='prompt') {
-      if(j.input.totalScenes===1)return {kind:'prompt-single',key:'prompt-single'};
-      if(!j.outline)return {kind:'outline',key:'outline'};
-      const i=j.scenes.findIndex(s=>!s.draft);return {kind:'write-scene',i,key:'write-scene:'+i};
+      if(j.outline){const i=j.scenes.findIndex(s=>!s.draft);return {kind:'write-scene',i,key:'write-scene:'+i};}
+      return {kind:'prompt-single',key:'prompt-single'};
     }
     if (j.input.kind==='image') return {kind:j.scenes[0].imageTask?'image-poll':'image',i:0,key:'image:0'};
     if (j.scenes.every(s => s.normalized)) {
@@ -217,7 +216,7 @@ function createStudioJobs({ store, publish, execute, pollImage, now = Date.now, 
       }
       if (op.kind==='prompt-single') {
         if(!Array.isArray(result.scenes)||!result.scenes.length){j.status='failed';j.error='No script scenes were returned.';}
-        else {j.result=result;j.scenes=result.scenes.map(draft=>({draft,stage:'ready'}));j.status='completed';note(j,'Script ready.');}
+        else {j.result={...result,title:result.title||input.title,sceneLength:result.sceneLength||input.sceneLength};j.scenes=result.scenes.map(draft=>({draft,stage:'ready'}));j.status='completed';note(j,'Script ready.');}
       } else if (op.kind==='outline') {
         if(!Array.isArray(result.outline)||result.outline.length!==j.scenes.length){j.status='failed';j.error='The script outline is incomplete. No scenes were silently dropped.';}
         else {j.outline=result.outline;j.scriptTitle=result.title||input.title;j.input.sceneLength=result.sceneLength||input.sceneLength;}

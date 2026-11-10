@@ -79,11 +79,11 @@ test('cloud job storage refuses volatile disk and inputs cannot spoof owner or w
  assert.throws(()=>validateInput({...payload(),refImageUrl:'file:///secret'}),/HTTPS/);
 });
 
-test('script outline and writing complete through saved worker steps without a browser',async t=>{
- const calls=[];const f=await fixture(t,{execute:async(j,route,b)=>{calls.push(route);if(route.endsWith('generate-outline'))return {title:'Saved script',sceneLength:8,outline:Array.from({length:8},(_,i)=>({title:'Beat '+i,summary:'Action '+i}))};return {scene:{title:'Scene '+b.sceneIndex,imagePrompt:'Image',videoPrompt:'Video'},sceneLength:8};}}),service=f.service();
+test('multi-scene script writing completes in a single prompt request without a browser',async t=>{
+ const calls=[];const f=await fixture(t,{execute:async(j,route)=>{calls.push(route);return {title:'Saved script',sceneLength:8,scenes:Array.from({length:8},(_,i)=>({title:'Scene '+(i+1),imagePrompt:'Image',videoPrompt:'Video'}))};}}),service=f.service();
  const job=await service.start(owner,{requestKey:'script-key-123456789',kind:'prompt',source:'sjinn',idea:'A calm story',duration:15,sceneLength:8,model:'logfare:auto'});
  while(f.messages.length)await service.process(f.messages.shift().m);
- const result=await service.get(owner,job.id);assert.equal(result.status,'completed');assert.equal(result.kind,'prompt');assert.equal(result.result.scenes.length,8);assert.equal(calls.length,9);assert.equal(calls.some(r=>r.endsWith('combine')),false);
+ const result=await service.get(owner,job.id);assert.equal(result.status,'completed');assert.equal(result.kind,'prompt');assert.equal(result.result.scenes.length,8);assert.deepEqual(calls,['/api/flashloop/generate-prompt']);assert.equal(calls.some(r=>r.endsWith('combine')),false);
 });
 test('single script and standalone image jobs finish without buying a video or entering the vault',async t=>{
  const calls=[];const f=await fixture(t,{execute:async(j,route)=>{calls.push(route);return route.endsWith('generate-prompt')?{title:'Single',sceneLength:30,scenes:[{imagePrompt:'Image',videoPrompt:'Video'}]}:{imageUrl:'https://fixture.test/standalone.png'};}}),service=f.service();
