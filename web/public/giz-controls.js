@@ -46,14 +46,15 @@
       if(key==='prompt'&&m.kind!=='music')continue;
       const label=document.createElement('label');label.style.cssText='display:block;margin:10px 0';label.textContent=(s.title||key)+(m.input.required.includes(key)?' (required)':'');
       let input;
-      if(s.enum){input=document.createElement('select');input.append(new Option('Automatic / provider default','__auto__'));for(const value of s.enum)input.append(new Option(String(value),String(value)));}
+      const optionLabels={renderMode:{fast:'Fast (fast)',quality:'Two-stage quality (quality)'},decoder:{fast:'Fast (fast)',fidelity:'Higher fidelity (fidelity)'}};
+      if(s.enum){input=document.createElement('select');input.append(new Option('Automatic / provider default','__auto__'));for(const value of s.enum)input.append(new Option(optionLabels[key]?.[value]||String(value),String(value)));}
       else if(s.type==='boolean'){input=document.createElement('select');for(const [v,l]of [['__auto__','Automatic / provider default'],['true','Enabled'],['false','Disabled']])input.append(new Option(l,v));}
       else if(s.type==='array'||['prompt','text','lyrics','tags','negative','negativePrompt','negative_prompt'].includes(key)){input=document.createElement('textarea');input.rows=3;}
-      else {input=document.createElement('input');input.type=['integer','number'].includes(s.type)?'number':'text';if(input.type==='number'){input.step=s.multipleOf|| (s.type==='integer'?1:'any');if(s.minimum!==undefined)input.min=s.minimum;if(s.maximum!==undefined)input.max=s.maximum;}}
+      else {input=document.createElement('input');input.type=['integer','number'].includes(s.type)?'number':'text';if(input.type==='number'){input.step=s.multipleOf|| (s.type==='integer'?1:'any');if(input.type==='integer')input.inputMode='numeric';if(s.minimum!==undefined)input.min=s.minimum;if(s.maximum!==undefined)input.max=s.maximum;}}
       input.style.cssText='display:block;width:100%;min-width:0;box-sizing:border-box;margin-top:4px';input.dataset.gizField=key;
       input.title=s.description||key;input.placeholder=s.default===undefined?'Optional':String(s.default);
       if(s.maxLength)input.maxLength=s.maxLength;
-      const v=saved[m.id]?.[key];if(v!==undefined)input.value=Array.isArray(v)?v.join('\n'):String(v);else if(input.tagName==='SELECT')input.value='__auto__';
+      const v=saved[m.id]?.[key];if(v!==undefined)input.value=Array.isArray(v)?v.join('\n'):String(v);else if(input.tagName==='SELECT')input.value=(m.id==='giz:ltx2-5-distilled'&&(key==='renderMode'||key==='decoder')&&s.default)?String(s.default):'__auto__';
       // HeyGen accepts a cloned ID as well as named public voices.
       if(s.anyOf?.some(v=>v.const)){const list=document.createElement('datalist');list.id='giz_'+el.id+'_'+key;for(const v of s.anyOf.filter(v=>v.const))list.append(new Option(v.description||v.const,v.const));input.setAttribute('list',list.id);label.append(list);}
       input.addEventListener('input',()=>{const data=saved[m.id]||={};if(input.value===''||input.value==='__auto__')delete data[key];else data[key]=s.type==='array'?input.value.split(/\r?\n/).map(v=>v.trim()).filter(Boolean):s.type==='boolean'?input.value==='true':['integer','number'].includes(s.type)?Number(input.value):input.value;persist();});

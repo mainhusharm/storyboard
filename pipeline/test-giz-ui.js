@@ -37,6 +37,8 @@ test('Giz model discovery, advanced controls and selections work across all stud
   assert.equal(payload.narrationEngine,'giz:omnivoice');
   assert.equal(typeof payload.musicVolume,'number');
   const keys=await page.$$eval('[data-giz-field]',els=>els.map(e=>e.dataset.gizField));for(const key of ['imageEnd','controlVideo','videoMask','injectedFrames','renderMode','negativePrompt','negative_prompt','duration','text'])assert.ok(keys.includes(key),key);
+  assert.equal(await page.$eval('[data-giz-field="renderMode"]',e=>e.value),'quality',route);
+  assert.equal(await page.$eval('[data-giz-field="decoder"]',e=>e.value),'fidelity',route);
   const savedSelections=await page.evaluate(()=>localStorage.getItem('sb_giz_selections'));const selections=JSON.parse(savedSelections);
   assert.equal(selections[video],'giz:ltx2-5-distilled','Giz model selection saved before reload: '+savedSelections);
   assert.equal(selections.musicModel,'giz:stable-audio');
