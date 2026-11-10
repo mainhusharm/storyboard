@@ -54,7 +54,7 @@
       input.style.cssText='display:block;width:100%;min-width:0;box-sizing:border-box;margin-top:4px';input.dataset.gizField=key;
       input.title=s.description||key;input.placeholder=s.default===undefined?'Optional':String(s.default);
       if(s.maxLength)input.maxLength=s.maxLength;
-      const v=saved[m.id]?.[key];if(v!==undefined)input.value=Array.isArray(v)?v.join('\n'):String(v);else if(input.tagName==='SELECT')input.value=(m.id==='giz:ltx2-5-distilled'&&(key==='renderMode'||key==='decoder')&&s.default)?String(s.default):'__auto__';
+      const v=saved[m.id]?.[key];if(v!==undefined)input.value=Array.isArray(v)?v.join('\n'):String(v);else if(input.tagName==='SELECT')input.value=(((m.id==='giz:ltx2-5-distilled'&&(key==='renderMode'||key==='decoder'))||(m.id==='giz:minimax-h3-turbo'&&(key==='steps'||key==='upscale')))&&s.default!==undefined)?String(s.default):'__auto__';
       // HeyGen accepts a cloned ID as well as named public voices.
       if(s.anyOf?.some(v=>v.const)){const list=document.createElement('datalist');list.id='giz_'+el.id+'_'+key;for(const v of s.anyOf.filter(v=>v.const))list.append(new Option(v.description||v.const,v.const));input.setAttribute('list',list.id);label.append(list);}
       input.addEventListener('input',()=>{const data=saved[m.id]||={};if(input.value===''||input.value==='__auto__')delete data[key];else data[key]=s.type==='array'?input.value.split(/\r?\n/).map(v=>v.trim()).filter(Boolean):s.type==='boolean'?input.value==='true':['integer','number'].includes(s.type)?Number(input.value):input.value;persist();});

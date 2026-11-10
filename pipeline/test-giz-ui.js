@@ -14,7 +14,10 @@ test('Giz model discovery, advanced controls and selections work across all stud
  const browser=await require('puppeteer-core').launch({executablePath:'C:/Program Files/Google/Chrome/Application/chrome.exe',headless:true,args:['--disable-gpu']});t.after(async()=>{await browser.close();server.closeAllConnections();await new Promise(r=>server.close(r));await fs.rm(root,{recursive:true,force:true});});const errors=[];
  for(const route of ['/storyboard','/flashloop-studio?source=flashloop','/flashloop-studio?source=sjinn','/generations']){
   const page=await browser.newPage();page.on('pageerror',e=>errors.push(e.message));await page.setCookie({name:'sb_session',value:user.token,url:base,httpOnly:true});await page.goto(base+route,{waitUntil:'networkidle0'});const studio=route.startsWith('/flashloop');const image=studio?'i2iModel':'imageModel',video=studio?'mvModel':'videoModel';
-  await page.waitForFunction(id=>[...document.getElementById(id).options].some(o=>o.value==='giz:krea-2'),{},image);await page.select('#'+image,'giz:krea-2');await page.select('#'+video,'giz:ltx2-5-distilled');
+  await page.waitForFunction(id=>[...document.getElementById(id).options].some(o=>o.value==='giz:krea-2'),{},image);await page.select('#'+image,'giz:krea-2');await page.select('#'+video,'giz:minimax-h3-turbo');
+  assert.equal(await page.$eval('[data-giz-field="steps"]',e=>e.value),'8',route);
+  assert.equal(await page.$$eval('[data-giz-field="upscale"]',els=>els.at(-1).value),'true',route);
+  await page.select('#'+video,'giz:ltx2-5-distilled');
 
   // Spoken narration and soundtrack pickers: the native narration dropdown hosts Giz
   // speech on Storyboard, so Flashloop/generations get their own Giz-only selector.

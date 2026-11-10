@@ -44,7 +44,11 @@ function shape(id,{prompt,text,ratio='16:9',duration=8,references=[],image,voice
     if(input.autoDuration===undefined)input.autoDuration=false;
     if(input.renderMode===undefined)input.renderMode='quality';
     if(input.decoder===undefined)input.decoder='fidelity';
-   }else if(id==='giz:minimax-h3-turbo'&&input.h3Mode===undefined)input.h3Mode='fl2va';
+   }else if(id==='giz:minimax-h3-turbo'){
+    if(input.h3Mode===undefined)input.h3Mode='fl2va';
+    if(input.steps===undefined)input.steps=8;
+    if(input.upscale===undefined)input.upscale=true;
+   }
   if(input.frames===undefined)input.frames=nearest(p.frames.enum,Number(duration)*24+(id==='giz:ltx2-5-distilled'?1:0));
     if(input.resolution===undefined){const target=Number(ratio.split(':')[0])/Number(ratio.split(':')[1]);const sizes=id==='giz:ltx2-5-distilled'?p.resolution.enum.slice(0,3):p.resolution.enum;input.resolution=sizes.reduce((a,b)=>{const ar=s=>{const [w,h]=s.split('x').map(Number);return w/h;};return Math.abs(ar(b)-target)<Math.abs(ar(a)-target)?b:a;});}
    if(image){input.image=image;input.generateImage=false;}

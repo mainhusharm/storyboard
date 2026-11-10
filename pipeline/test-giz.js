@@ -29,7 +29,7 @@ test('basic image and video use exact generate tool contracts with selected IDs 
  assert.equal(await provider.submit(image,{prompt:'Keep her face',ratio:'4:3',references:['https://x/ref.png']}),'giz:task:original-job');
  assert.deepEqual(calls[0],{url:'https://www.giz.ai/api/tools/generateImage',body:{model:'krea-2',prompt:'Keep her face',aspectRatio:'4:3',references:['https://x/ref.png']}});
  await provider.submit(video,{prompt:'Walk',ratio:'9:16',duration:8,image:'https://x/chain.png'});
-   assert.deepEqual(calls[1],{url:'https://www.giz.ai/api/tools/model.run',body:{model:'minimax-h3-turbo',input:{prompt:'Walk',h3Mode:'fl2va',frames:192,resolution:'576x1024',image:'https://x/chain.png',generateImage:false}}});
+   assert.deepEqual(calls[1],{url:'https://www.giz.ai/api/tools/model.run',body:{model:'minimax-h3-turbo',input:{prompt:'Walk',h3Mode:'fl2va',steps:8,upscale:true,frames:192,resolution:'576x1024',image:'https://x/chain.png',generateImage:false}}});
    await provider.submit('giz:ltx2-5-distilled',{prompt:'Walk',ratio:'9:16',duration:20,image:'https://x/chain.png'});
    assert.deepEqual(calls[2],{url:'https://www.giz.ai/api/tools/model.run',body:{model:'ltx2-5-distilled',input:{prompt:'Walk',workflow:'standard',autoDuration:false,renderMode:'quality',decoder:'fidelity',frames:481,resolution:'448x832',image:'https://x/chain.png',generateImage:false}}});
 });
