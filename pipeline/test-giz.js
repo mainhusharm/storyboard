@@ -44,6 +44,22 @@ test('model.run keeps exact native fields, variant count, masks, keyframes and e
  assert.deepEqual(calls[2].body,{model:'ltx2-5-distilled',input:{...native,generateImage:false,prompt:'Action',image:'https://x/chain'}});
  assert.ok(calls.every(c=>c.url.endsWith('/model.run')));
 });
+test('LTX provider prompts fit 2000 characters without changing saved scenes or other models',async()=>{
+ const id='giz:ltx2-5-distilled',limit=giz.meta(id).input.properties.prompt.maxLength;
+ assert.equal(limit,2000);
+ assert.equal(giz.shape(id,{prompt:'x'.repeat(2000)}).prompt,'x'.repeat(2000));
+ const prompt=['0–5s: '+('The traveller walks forward. '.repeat(50)),'5–10s: '+('They cross the bridge. '.repeat(50)),'10–20s: '+('They arrive at the village. '.repeat(50))].join('\n');
+ const params={prompt,duration:20,image:'https://x/first.png'};
+ const {provider,calls}=fixture();await provider.submit(id,params);
+ const sent=calls[0].body.input;
+ assert.ok(sent.prompt.length<=2000);assert.equal(params.prompt,prompt);
+ for(const beat of ['0–5s:','5–10s:','10–20s:'])assert.ok(sent.prompt.includes(beat),beat);
+ assert.equal(sent.renderMode,'quality');assert.equal(sent.decoder,'fidelity');assert.equal(sent.frames,481);assert.equal(sent.image,params.image);
+ assert.equal(giz.shape(video,{prompt}).prompt,prompt,'MiniMax is unchanged');
+ assert.throws(()=>giz.validate(id,{prompt:'x'.repeat(2001)}),/Invalid Giz prompt/);
+ assert.ok(giz.shape(id,{prompt:'😀'.repeat(1500)}).prompt.length<=2000);
+ assert.equal(calls.length,1,'no prompt rewrite or resubmission');
+});
 test('speech and music jobs always run through model.run with verified model.get input',async()=>{
  const {provider,calls}=fixture();
  assert.equal(await provider.submit(speech,{text:'Hello there',voice:'female',language:'en'}),'giz:task:original-job');

@@ -27,11 +27,26 @@ function validate(id,input={},partial=false){
 }
 function options(value={}){if(!value||typeof value!=='object'||Array.isArray(value))throw fail('Invalid Giz options.');const out={};for(const [id,input]of Object.entries(value))out[id]=validate(id,input,true);return out;}
 const nearest=(values,n)=>values.reduce((a,b)=>Math.abs(b-n)<Math.abs(a-n)?b:a);
+// Bound the provider copy only. Allocate room to every timeline paragraph rather
+// than dropping later beats with a prefix-only slice. No paid rewrite is needed.
+function fitPrompt(value,limit){
+ if(typeof value!=='string'||value.length<=limit)return value;
+ const lines=value.split(/\n+/).map(s=>s.replace(/\s+/g,' ').trim()).filter(Boolean);
+ const text=lines.join('\n');if(text.length<=limit)return text;
+ const parts=lines.length<=40?lines:[text.replace(/\s+/g,' ')];
+ let remaining=limit-(parts.length-1),weight=parts.reduce((n,s)=>n+s.length,0);
+ return parts.map(s=>{
+  const budget=Math.min(s.length,Math.floor(remaining*s.length/weight));remaining-=budget;weight-=s.length;
+  if(s.length<=budget)return s;
+  const clipped=s.slice(0,Math.max(0,budget-1)),space=clipped.lastIndexOf(' ');
+  return (space>budget*0.6?clipped.slice(0,space):clipped).replace(/[\uD800-\uDBFF]$/,'').trimEnd()+(budget?'…':'');
+ }).join('\n');
+}
 function shape(id,{prompt,text,ratio='16:9',duration=8,references=[],image,voice,language}={},settings={}){
  const m=meta(id);if(!m)throw fail('Unsupported Giz model.');
  const p=m.input.properties,input={...validate(id,settings,true)};
  // Story action, narration and chaining own these fields; advanced options own all others.
- if(prompt!==undefined)input.prompt=prompt;
+  if(prompt!==undefined)input.prompt=id==='giz:ltx2-5-distilled'?fitPrompt(prompt,p.prompt.maxLength):prompt;
  if(text!==undefined)input.text=text;
  if(m.kind==='image'){
   if(input.size===undefined){const target=Number(ratio.split(':')[0])/Number(ratio.split(':')[1]);input.size=p.size.enum.reduce((a,b)=>{const ar=s=>{const [w,h]=s.split('x').map(Number);return w/h;};return Math.abs(ar(b)-target)<Math.abs(ar(a)-target)?b:a;});}

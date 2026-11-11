@@ -37,4 +37,6 @@ for(const variant of ['flare','sunburst']){
 }
 add('flux3-klein','FLUX.3 Klein — Giz','image',{prompt:string('Request'),referenceImages:images('Reference images'),size:choice(['1024x1024','1152x896','1344x768','896x1152','768x1344','1536x1024','1024x1536'],'1024x1024'),count:number(1,4,{default:1}),seed:number(0),enhancePrompt:bool(true),outputFormat:choice(['webp','png','jpeg'],'webp'),outputQuality:number(60,100,{default:90})});
 add('z-image-turbo','Z-Image Turbo — Giz','image',{prompt:string('Request'),size:choice(['1024x1024','1152x896','1344x768','896x1152','768x1344','1280x1280','1536x1536','1920x1088','1088x1920','2048x1152','1152x2048','2048x2048'],'1024x1024'),steps:choice([4,5,6,7,8,9,10,11,12],8,'integer'),outputFormat:choice(['webp','png','jpg'],'webp'),outputQuality:number(60,100,{default:90}),numberResults:choice([1,2,4],1,'integer'),seed:number(0)});
+// Verified LTX model.get limit; expose it in discovery and advanced controls.
+models.find(m=>m.id==='giz:ltx2-5-distilled').input.properties.prompt.maxLength=2000;
 module.exports=models;
